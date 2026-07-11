@@ -21,7 +21,8 @@ terminals; nothing needs to be started "through" a GUI.
   session title, and cwd.
 - **corral-announce** (pi extension) — announces *interactive* pi TUI
   sessions on the same socket dir, no wrapper needed: the TUI stays in your
-  terminal, corral sees the session with its name and cwd.
+  terminal while ACP clients discover the session, watch its activity
+  (messages, tool calls), send prompts into it, and cancel turns.
 
 ## Usage
 

@@ -1,16 +1,26 @@
 /**
- * corral-announce: make this pi session discoverable by corral.
+ * corral-announce: make this pi session discoverable and drivable by ACP
+ * clients while the interactive TUI keeps running.
  *
- * Binds an ACP socket at $XDG_RUNTIME_DIR/acp/pi-<pid>.sock while the
- * interactive session runs, so `corral` lists it next to agentwrap-hosted
- * sessions. Stage 1 scope: discovery + identity only (initialize and
- * session/list); prompting and update streaming come later.
+ * Binds an ACP socket at $XDG_RUNTIME_DIR/acp/pi-<pid>.sock. Served surface:
+ *   initialize            identity (agentInfo)
+ *   session/list          this session: id, title, cwd
+ *   session/prompt        inject a user message (queued as follow-up while
+ *                         the agent is busy); responds on turn completion
+ *   session/cancel        abort the current turn (notification)
+ * Broadcast to every connected client as session/update notifications:
+ *   user_message_chunk    user messages (TUI-typed or injected)
+ *   agent_message_chunk   assistant messages (whole message on message_end;
+ *                         token deltas are a later refinement -- the event
+ *                         stream shape is not part of pi's documented API)
+ *   tool_call / tool_call_update
+ *   session_info_update   session renames
  *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
  *   pi -e /path/to/corral-announce.ts
  *
- * Multiple concurrent clients are fine: each connection gets its own
- * JSON-RPC read loop and every request is answered from current state.
+ * Multiple concurrent clients are fine: every request is answered from
+ * current state and updates go to all connections.
  */
 
 import * as fs from "node:fs";
@@ -21,10 +31,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 export default function (pi: ExtensionAPI) {
 	let server: net.Server | undefined;
 	let socketPath: string | undefined;
+	let currentCtx: ExtensionContext | undefined;
+	const clients = new Set<net.Socket>();
+	// session/prompt requests waiting for the turn that consumes them to end.
+	const pendingPrompts: Array<{ conn: net.Socket; id: number | string }> = [];
 
 	const stop = () => {
 		// Idempotent: session_shutdown can fire more than once across
 		// session replacement flows (/resume, /fork).
+		for (const c of clients) c.destroy();
+		clients.clear();
 		server?.close();
 		server = undefined;
 		if (socketPath) {
@@ -35,6 +51,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
+		currentCtx = ctx;
 		const runtimeDir = process.env.XDG_RUNTIME_DIR;
 		if (!runtimeDir) return; // no runtime dir, no discovery -- stay silent
 
@@ -46,6 +63,7 @@ export default function (pi: ExtensionAPI) {
 		fs.rmSync(socketPath, { force: true }); // stale leftover from a crashed pid reuse
 
 		server = net.createServer((conn) => {
+			clients.add(conn);
 			let buf = "";
 			conn.on("data", (chunk) => {
 				buf += chunk.toString("utf8");
@@ -53,10 +71,15 @@ export default function (pi: ExtensionAPI) {
 				while ((nl = buf.indexOf("\n")) >= 0) {
 					const line = buf.slice(0, nl).trim();
 					buf = buf.slice(nl + 1);
-					if (line) handle(line, conn, ctx);
+					if (line) handle(line, conn);
 				}
 			});
-			conn.on("error", () => conn.destroy());
+			const drop = () => {
+				clients.delete(conn);
+				conn.destroy();
+			};
+			conn.on("error", drop);
+			conn.on("close", drop);
 		});
 		server.on("error", () => stop()); // e.g. EADDRINUSE: another announcer won
 		server.listen(socketPath);
@@ -64,14 +87,91 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => stop());
 
-	function handle(line: string, conn: net.Socket, ctx: ExtensionContext) {
-		let msg: { id?: number | string; method?: string };
+	// --- outgoing: agent activity -> session/update broadcasts ---
+
+	pi.on("message_end", async (event) => {
+		const role = event.message.role;
+		if (role !== "user" && role !== "assistant") return;
+		const text = messageText(event.message);
+		if (!text) return;
+		broadcast({
+			sessionUpdate: role === "user" ? "user_message_chunk" : "agent_message_chunk",
+			content: { type: "text", text },
+		});
+	});
+
+	pi.on("tool_execution_start", async (event) => {
+		broadcast({
+			sessionUpdate: "tool_call",
+			toolCallId: event.toolCallId,
+			title: event.toolName,
+			status: "in_progress",
+			rawInput: event.args,
+		});
+	});
+
+	pi.on("tool_execution_end", async (event) => {
+		broadcast({
+			sessionUpdate: "tool_call_update",
+			toolCallId: event.toolCallId,
+			status: event.isError ? "failed" : "completed",
+		});
+	});
+
+	pi.on("session_info_changed", async () => {
+		broadcast({ sessionUpdate: "session_info_update", title: pi.getSessionName() ?? null });
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		// Resolve waiting session/prompt requests once the queue is drained:
+		// a prompt delivered as follow-up is processed before this condition
+		// holds, so "idle with nothing pending" means every injected message
+		// has had its turn. Coarser than per-message tracking, documented so.
+		if (pendingPrompts.length === 0 || ctx.hasPendingMessages()) return;
+		while (pendingPrompts.length > 0) {
+			const p = pendingPrompts.shift();
+			if (p && !p.conn.destroyed) {
+				p.conn.write(
+					JSON.stringify({ jsonrpc: "2.0", id: p.id, result: { stopReason: "end_turn" } }) +
+						"\n",
+				);
+			}
+		}
+	});
+
+	function broadcast(update: Record<string, unknown>) {
+		if (clients.size === 0 || !currentCtx) return;
+		const notification = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "session/update",
+			params: { sessionId: sessionInfo(currentCtx).sessionId, update },
+		});
+		for (const c of clients) {
+			if (!c.destroyed) c.write(notification + "\n");
+		}
+	}
+
+	// --- incoming: client requests ---
+
+	function handle(line: string, conn: net.Socket) {
+		let msg: {
+			id?: number | string;
+			method?: string;
+			params?: { prompt?: Array<{ type?: string; text?: string }> };
+		};
 		try {
 			msg = JSON.parse(line);
 		} catch {
 			return;
 		}
-		if (msg.id === undefined || !msg.method) return; // ignore notifications
+		if (!msg.method) return;
+
+		// session/cancel is a notification (no id) per ACP.
+		if (msg.method === "session/cancel") {
+			currentCtx?.abort();
+			return;
+		}
+		if (msg.id === undefined) return;
 
 		const reply = (result: unknown) =>
 			conn.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\n");
@@ -88,8 +188,26 @@ export default function (pi: ExtensionAPI) {
 				});
 				break;
 			case "session/list":
-				reply({ sessions: [sessionInfo(ctx)] });
+				if (!currentCtx) return fail(-32603, "no active session");
+				reply({ sessions: [sessionInfo(currentCtx)] });
 				break;
+			case "session/prompt": {
+				if (!currentCtx) return fail(-32603, "no active session");
+				const text = (msg.params?.prompt ?? [])
+					.filter((b) => b.type === "text" && typeof b.text === "string")
+					.map((b) => b.text)
+					.join("\n");
+				if (!text) return fail(-32602, "prompt has no text content");
+				// Busy sessions get the message queued as a follow-up; the
+				// request stays open until the queue drains (see agent_end).
+				pendingPrompts.push({ conn, id: msg.id });
+				if (currentCtx.isIdle()) {
+					pi.sendUserMessage(text);
+				} else {
+					pi.sendUserMessage(text, { deliverAs: "followUp" });
+				}
+				break;
+			}
 			default:
 				fail(-32601, `method not supported by corral-announce: ${msg.method}`);
 		}
@@ -102,6 +220,19 @@ export default function (pi: ExtensionAPI) {
 			cwd: ctx.cwd,
 		};
 	}
+}
+
+/** Plain text of a session message whose content may be a string or blocks. */
+function messageText(message: { content?: unknown }): string {
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.filter((b) => b && b.type === "text" && typeof b.text === "string")
+			.map((b) => b.text)
+			.join("\n");
+	}
+	return "";
 }
 
 /** pi does not expose its own version to extensions; best-effort lookup. */

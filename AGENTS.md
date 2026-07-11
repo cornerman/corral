@@ -57,11 +57,16 @@ your terminal (pi, interactive TUI)
 ## Extensions
 
 - `extensions/corral-announce.ts` — pi extension announcing interactive pi
-  sessions on the socket dir. Stage 1 scope: identity only (`initialize`,
-  `session/list` with title from `pi.getSessionName()` and cwd). Serves
-  multiple concurrent clients (the extension, not a byte pump, is the
-  session authority). Prompting/steering and update streaming are later
-  stages. Install: symlink into `~/.pi/agent/extensions/`.
+  sessions on the socket dir. Serves `initialize`, `session/list` (title,
+  cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as
+  follow-up while busy; responds with stopReason once the message queue
+  drains — coarse, documented in-file), `session/cancel` → abort. Broadcasts
+  `session/update` to all connected clients: user/agent message chunks
+  (whole messages on `message_end`; token deltas deferred — stream event
+  shape is undocumented API), `tool_call`/`tool_call_update`,
+  `session_info_update` on rename. Serves multiple concurrent clients (the
+  extension, not a byte pump, is the session authority). `session/load`
+  replay is a later stage. Install: symlink into `~/.pi/agent/extensions/`.
 
 ## Interfaces to the Outside World
 
@@ -85,8 +90,13 @@ your terminal (pi, interactive TUI)
 - corral's `session/list` follow-up stalls up to the 2s read timeout per
   socket on agents that never answer unknown methods.
 - Sessions not wrapped or announced are invisible (no passive finder tier).
-- corral-announce answers `session/new`/`session/prompt` with method-not-
-  supported; external clients can discover but not yet drive pi sessions.
+- corral-announce answers `session/new`/`session/load` with method-not-
+  supported: clients can discover, watch, and prompt running pi sessions,
+  but attaching with history replay is not yet served.
+- corral-announce's `session/prompt` responses are resolved for all waiting
+  clients at once when the queue drains (no per-message turn attribution).
+- Approvals stay in the pi TUI; socket clients never receive
+  `session/request_permission`.
 
 ## Development Setup
 
