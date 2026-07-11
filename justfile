@@ -29,10 +29,6 @@ nix-build:
 watch:
     cargo watch -x test
 
-# Run the manager (live session list)
-manager *ARGS:
+# Run the attention board
+board *ARGS:
     cargo run -p corral -- {{ARGS}}
-
-# Wrap an ACP-mode agent command, e.g.: just wrap -- claude-agent-acp
-wrap *ARGS:
-    cargo run -p agentwrap -- {{ARGS}}

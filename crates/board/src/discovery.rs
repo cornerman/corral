@@ -1,9 +1,9 @@
 //! Socket discovery: the filesystem is the registry. Sockets follow the
-//! `<label>-<pid>.sock` convention established by agentwrap.
+//! `<label>-<pid>.sock` convention (pi announces `pi-<pid>.sock`).
 
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SocketEntry {
     pub path: PathBuf,
     pub label: String,
@@ -22,7 +22,7 @@ pub fn parse_socket_filename(name: &str) -> Option<(String, u32)> {
 }
 
 /// Scan a directory for convention-following sockets. A missing directory is
-/// an empty result, not an error: no wrapper has run yet.
+/// an empty result, not an error: no agent has announced yet.
 pub fn scan(dir: &Path) -> Vec<SocketEntry> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
