@@ -1,0 +1,12 @@
+[package]
+name = "corral"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "List locally running ACP agent sessions discovered via $XDG_RUNTIME_DIR/acp/"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
