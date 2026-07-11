@@ -15,9 +15,13 @@ terminals; nothing needs to be started "through" a GUI.
   `$XDG_RUNTIME_DIR/acp/<label>-<pid>.sock`. Protocol-agnostic byte pump; one
   client at a time; the agent survives client disconnects; the socket is
   removed on exit.
-- **corral** — scans `$XDG_RUNTIME_DIR/acp/`, probes each socket with an ACP
-  `initialize` request, and shows a live-updating table of sessions with
-  label, pid, status (live / busy / stale) and agent identity.
+- **corral** — scans `$XDG_RUNTIME_DIR/acp/`, probes each socket with ACP
+  `initialize` + `session/list` requests, and shows a live-updating table of
+  sessions with label, pid, status (live / busy / stale), agent identity,
+  session title, and cwd.
+- **corral-announce** (pi extension) — announces *interactive* pi TUI
+  sessions on the same socket dir, no wrapper needed: the TUI stays in your
+  terminal, corral sees the session with its name and cwd.
 
 ## Usage
 
@@ -35,6 +39,12 @@ Make it invisible with shell aliases (one-time setup per harness):
 
 ```bash
 alias claude-acp='agentwrap -- claude-agent-acp'
+```
+
+Announce interactive pi sessions (one-time setup):
+
+```bash
+ln -s ~/projects/corral/extensions/corral-announce.ts ~/.pi/agent/extensions/
 ```
 
 Any ACP client can connect to a discovered socket directly (e.g. with socat

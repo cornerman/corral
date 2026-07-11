@@ -26,7 +26,13 @@ your terminal                                    another terminal
     |  spawns child (ACP JSON-RPC on stdio)          |  scans $XDG_RUNTIME_DIR/acp/
     |  binds $XDG_RUNTIME_DIR/acp/foo-<pid>.sock     |  probes each socket:
     |  pumps bytes: socket <-> child stdio           |    ACP initialize -> live/busy/stale
-    |  unlinks socket on exit                        |  renders table, 1s refresh
+    |  unlinks socket on exit                        |    ACP session/list -> title, cwd
+                                                     |  renders table, 1s refresh
+your terminal (pi, interactive TUI)
+  pi -e extensions/corral-announce.ts
+    |  extension binds $XDG_RUNTIME_DIR/acp/pi-<pid>.sock on session_start
+    |  serves minimal ACP (initialize, session/list) beside the live TUI
+    |  unlinks socket on session_shutdown
 ```
 
 ## Crates
@@ -48,11 +54,22 @@ your terminal                                    another terminal
   with a cleared screen every second.
   - `src/discovery.rs` — filename parsing + dir scan (pure, unit-tested)
 
+## Extensions
+
+- `extensions/corral-announce.ts` — pi extension announcing interactive pi
+  sessions on the socket dir. Stage 1 scope: identity only (`initialize`,
+  `session/list` with title from `pi.getSessionName()` and cwd). Serves
+  multiple concurrent clients (the extension, not a byte pump, is the
+  session authority). Prompting/steering and update streaming are later
+  stages. Install: symlink into `~/.pi/agent/extensions/`.
+
 ## Interfaces to the Outside World
 
 - CLI `agentwrap [--name <label>] [--] <command> [args...]` — stderr of the
   child passes through to the terminal; exit code mirrors the child.
-- CLI `corral [--once]` — writes a table to stdout.
+- CLI `corral [--once]` — writes a table to stdout (label, pid, status,
+  agent, title, cwd).
+- pi extension `corral-announce` — see Extensions above.
 - Unix sockets in `$XDG_RUNTIME_DIR/acp/` (created 0700). No TCP ports, no
   network exposure. Peer authentication relies on the directory permissions.
 
@@ -65,7 +82,11 @@ your terminal                                    another terminal
   observes the EOF. Clients must treat a bounced connect as retryable.
 - corral's probe sends `initialize` a second time when a real client later
   initializes the same agent; agents are expected to tolerate re-initialize.
-- Sessions not started via agentwrap are invisible (no passive finder tier).
+- corral's `session/list` follow-up stalls up to the 2s read timeout per
+  socket on agents that never answer unknown methods.
+- Sessions not wrapped or announced are invisible (no passive finder tier).
+- corral-announce answers `session/new`/`session/prompt` with method-not-
+  supported; external clients can discover but not yet drive pi sessions.
 
 ## Development Setup
 

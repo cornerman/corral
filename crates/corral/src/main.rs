@@ -18,8 +18,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, PartialEq)]
 enum Status {
-    /// Agent answered our initialize probe.
-    Live { agent: String },
+    /// Agent answered our initialize probe. Title/cwd come from an
+    /// optional session/list follow-up; agents without it yield None.
+    Live {
+        agent: String,
+        title: Option<String>,
+        cwd: Option<String>,
+    },
     /// Socket accepted the connection but closed it: another client is
     /// driving this session (agentwrap allows one client at a time).
     Busy,
@@ -60,20 +65,28 @@ fn main() {
 }
 
 fn render(rows: &[(SocketEntry, Status)]) {
-    println!("{:<24} {:>8} {:<8} AGENT", "SESSION", "PID", "STATUS");
+    println!(
+        "{:<16} {:>8} {:<8} {:<18} {:<28} CWD",
+        "SESSION", "PID", "STATUS", "AGENT", "TITLE"
+    );
     if rows.is_empty() {
         println!("(no agent sockets found)");
         return;
     }
     for (entry, status) in rows {
-        let (status_str, agent) = match status {
-            Status::Live { agent } => ("live", agent.as_str()),
-            Status::Busy => ("busy", "-"),
-            Status::Stale => ("stale", "-"),
+        let (status_str, agent, title, cwd) = match status {
+            Status::Live { agent, title, cwd } => (
+                "live",
+                agent.as_str(),
+                title.as_deref().unwrap_or("-"),
+                cwd.as_deref().unwrap_or("-"),
+            ),
+            Status::Busy => ("busy", "-", "-", "-"),
+            Status::Stale => ("stale", "-", "-", "-"),
         };
         println!(
-            "{:<24} {:>8} {:<8} {}",
-            entry.label, entry.pid, status_str, agent
+            "{:<16} {:>8} {:<8} {:<18} {:<28} {}",
+            entry.label, entry.pid, status_str, agent, title, cwd
         );
     }
 }
@@ -119,10 +132,46 @@ fn probe(path: &Path) -> Status {
                     continue;
                 };
                 if msg.get("id") == Some(&serde_json::json!(0)) {
-                    return Status::Live {
-                        agent: describe_agent(&msg),
-                    };
+                    let agent = describe_agent(&msg);
+                    let (title, cwd) = query_session(&mut reader);
+                    return Status::Live { agent, title, cwd };
                 }
+            }
+        }
+    }
+}
+
+/// Best-effort session/list follow-up on the already-open probe stream.
+/// Agents without the method (or that never answer within the read
+/// timeout) simply yield no title -- the row stays useful either way.
+fn query_session(reader: &mut BufReader<UnixStream>) -> (Option<String>, Option<String>) {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "session/list", "params": {}
+    });
+    if reader
+        .get_mut()
+        .write_all((request.to_string() + "\n").as_bytes())
+        .is_err()
+    {
+        return (None, None);
+    }
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return (None, None),
+            Ok(_) => {
+                let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if msg.get("id") != Some(&serde_json::json!(1)) {
+                    continue;
+                }
+                let session = &msg["result"]["sessions"][0];
+                return (
+                    session["title"].as_str().map(String::from),
+                    session["cwd"].as_str().map(String::from),
+                );
             }
         }
     }
@@ -181,11 +230,55 @@ mod tests {
             });
             let mut w = &stream;
             w.write_all((resp.to_string() + "\n").as_bytes()).unwrap();
+            // Answer the session/list follow-up like corral-announce does.
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(req["method"], "session/list");
+            let resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": req["id"],
+                "result": {"sessions": [{"sessionId": "s1", "title": "fix bug", "cwd": "/tmp/p"}]}
+            });
+            w.write_all((resp.to_string() + "\n").as_bytes()).unwrap();
         });
         assert_eq!(
             probe(&sock),
             Status::Live {
-                agent: "fake 1.0".to_string()
+                agent: "fake 1.0".to_string(),
+                title: Some("fix bug".to_string()),
+                cwd: Some("/tmp/p".to_string()),
+            }
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn probe_live_agent_without_session_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock = dir.path().join("plain-4.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": req["id"],
+                "result": {"protocolVersion": 1, "agentInfo": {"name": "fake", "version": "1.0"}}
+            });
+            let mut w = &stream;
+            w.write_all((resp.to_string() + "\n").as_bytes()).unwrap();
+            // Close without answering session/list: probe must degrade to no title.
+        });
+        assert_eq!(
+            probe(&sock),
+            Status::Live {
+                agent: "fake 1.0".to_string(),
+                title: None,
+                cwd: None,
             }
         );
         server.join().unwrap();
