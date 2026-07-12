@@ -25,10 +25,15 @@ resume.
 
 - [ ] Operator-initiated: board keybinding to send a `session/prompt` to the
       selected agent (optionally spawn-in-dir then send).
-- [ ] Agent-initiated: a tool routing through corral to a target agent, gated
-      by popup and/or whitelist. corral is the only cross-workdir bridge
-      (sockets are workdir-isolated), so it needs the board (or a broker)
-      running.
+- [ ] Agent-initiated transport: `message_agent` tool writes
+      `~/.corral/outbox/<id>.json`; corral watches the outbox and routes
+      (async, survives board-down). Address by target dir; spawn there if
+      absent; `force_new` flag.
+- [ ] Provenance + auth: inject with `[from agent in <dir>]` tag (+ `_meta` if
+      possible); whitelist of `(sender-dir -> target-dir)` in `~/.corral` plus
+      operator popup for the rest. v1 fire-and-forget; response-to-A is v2.
+- [ ] OPEN: delivery-target policy when the target is Running (reuse+queue vs
+      never-inject-Running vs always-new). Settle with real use.
 
 ## Validation
 

@@ -269,20 +269,37 @@ Mechanism already exists: `session/prompt` over a target's socket injects a user
 message; the receiving agent executes it inside its own sandbox and its own
 approval gates, so no sandbox is breached ("safe on ACP").
 
-Shape (both levels, per operator intent):
-- Operator-initiated: a keybinding on the board — select an agent, type a
-  message, Enter delivers it via `session/prompt` (optionally spawn-in-dir then
-  send).
-- Agent-initiated: a tool an agent calls to message another agent, gated by a
-  board popup and/or a whitelist.
-
 Why it depends on socket isolation (the "gain"): with flat, mutually-reachable
 sockets, agents can already peer-message directly, so a corral mediator adds no
-safety. Once sockets are isolated per workdir, agents cannot reach each other,
-so corral becomes the sole trusted cross-workdir path — which is where the
-whitelist/approval belongs. Isolation is the precondition that makes mediated
-messaging meaningful.
+safety. Once sockets are isolated per workdir (the Unified Session Registry),
+agents cannot reach each other, so corral becomes the sole trusted cross-workdir
+path — which is where the whitelist/approval belongs. Isolation is the
+precondition that makes mediated messaging meaningful.
 
-Open question: if only the running board can bridge workdirs, cross-agent
-messaging works only while it is up; an always-on broker service would lift
-that, but is likely more than v1 warrants.
+Settled design:
+- Operator-initiated: a board keybinding — select an agent, type a message,
+  Enter delivers via `session/prompt` (optionally spawn-in-dir then send).
+- Agent-initiated transport: **mailbox files**. A's `message_agent` tool writes
+  `~/.corral/outbox/<id>.json` (A can write `~/.corral`). corral watches the
+  outbox and routes when it runs — async and persistent, so messages survive
+  the board being down and no always-on service is required.
+- Addressing: by target **directory (cwd)**. corral delivers to the dir's agent
+  and spawns `pi` there if none exists; a `force_new` flag requests a dedicated
+  fresh agent.
+- Provenance: corral injects with an in-band tag, e.g.
+  `[from agent in ~/projects/foo] <message>`, so the receiving model and the
+  watching human know it is another agent, not the operator. Add `_meta`
+  provenance too if `pi.sendUserMessage` allows; the tag is the floor.
+- Authorization: a whitelist of `(sender-dir -> target-dir)` pairs in
+  `~/.corral`, plus an operator popup for anything not whitelisted. Board-down
+  or non-interactive: the message waits in the mailbox until approved.
+- Reply model: v1 fire-and-forget (resolves on the target's turn-end). A
+  response channel back to A (corral captures the target's final message into
+  A's inbox) is a clean v2.
+
+Open question (deliberately deferred, settle with real use): delivery-target
+policy when the dir's agent is currently Running — reuse and queue as a
+follow-up (serializes, but can intrude on a human-driven session), never
+auto-inject into a Running target (queue or force popup), or always spawn a new
+session (zero intrusion, but concurrent agents can clobber one directory). The
+axis is concurrency-safety vs intrusion.
