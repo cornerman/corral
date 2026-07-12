@@ -430,7 +430,11 @@ export default function (pi: ExtensionAPI) {
 
 	function sessionInfo(ctx: ExtensionContext) {
 		return {
-			sessionId: ctx.sessionManager.getSessionFile() ?? `ephemeral-${process.pid}`,
+			// The stable session UUID, matching the registry filename and the
+			// reply handle stamped by message_agent. Must NOT be the session
+			// file path, or session-addressed routing (live_by_session) would
+			// never match a live agent.
+			sessionId: ctx.sessionManager.getSessionId(),
 			title: sessionTitle(ctx),
 			cwd: ctx.cwd,
 		};
