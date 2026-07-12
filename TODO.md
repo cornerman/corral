@@ -57,6 +57,9 @@ resume.
       mis-map. Add a scroll offset per column and account for it in hit_test.
 - [ ] Consider showing time-in-state (how long an agent has been Requires
       Action / Idle) to sharpen triage.
+- [ ] `f` fuzzy-focus: open the picker over live sessions (filter by
+      label/title/cwd), Enter focuses the chosen session's window. Reuses the
+      Picker widget; faster than arrow nav when many agents are running.
 
 ## Extension (corral-announce)
 
