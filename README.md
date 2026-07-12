@@ -25,8 +25,9 @@ socket talks ACP to that agent.
 - **corral** (`crates/board`) — the attention board TUI. Scans
   `$HOME/.corral/sockets/`, holds a live watch connection per agent, and columns
   each by Requires Action / Idle / Running. Enter focuses the agent's window
-  via sway; `n`
-  spawns a new agent via kitty. Window focus and agent spawn sit behind traits
+  via sway; `n` spawns a new agent via kitty in the selected agent's cwd; `N`
+  opens a fuzzy directory picker (roots from `$CORRAL_PROJECT_ROOTS`, default
+  `~/projects`). Window focus and agent spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them.
 - **corral-announce** (pi extension, `extensions/corral-announce.ts`) —

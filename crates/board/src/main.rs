@@ -3,9 +3,9 @@
 //! Discovers ACP sockets under $HOME/.corral/sockets/ (override with
 //! $CORRAL_ACP_DIR), watches each for its running/idle/requires_action state,
 //! and shows them in three columns. Enter or a mouse click focuses an agent's
-//! window (sway), `n` spawns a new agent (kitty), `q` quits. Up/Down (or
-//! scroll) move within a column; Left/Right switch columns. Corral never
-//! drives an agent; it
+//! window (sway), `n` spawns a new agent (kitty), `N` opens a fuzzy directory
+//! picker to spawn elsewhere, `q` quits. Up/Down (or scroll) move within a
+//! column; Left/Right switch columns. Corral never drives an agent; it
 //! routes the operator's attention.
 //!
 //! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
@@ -26,12 +26,14 @@ mod discovery;
 mod focus;
 mod launch;
 mod model;
+mod picker;
 mod ui;
 mod watch;
 
 use focus::{SwayFocuser, WindowFocuser};
 use launch::{KittyLauncher, Launcher};
 use model::{Board, State, Update};
+use picker::Picker;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
@@ -70,6 +72,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut known: HashSet<PathBuf> = HashSet::new();
     let mut selected: usize = 0;
     let mut status = String::new();
+    // Some(_) while the Shift+N spawn directory picker is open.
+    let mut picker: Option<Picker> = None;
     let mut last_scan = Instant::now() - SCAN_INTERVAL * 2;
 
     loop {
@@ -98,10 +102,57 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             selected = count.saturating_sub(1);
         }
 
-        terminal.draw(|f| ui::render(f, &board, selected, &status))?;
+        terminal.draw(|f| {
+            ui::render(f, &board, selected, &status);
+            if let Some(p) = &picker {
+                ui::render_picker(f, p);
+            }
+        })?;
 
         if event::poll(POLL)? {
-            match event::read()? {
+            let ev = event::read()?;
+            // The picker, when open, captures all input until it closes.
+            if picker.is_some() {
+                if let Event::Key(key) = ev {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Esc => picker = None,
+                            KeyCode::Enter => {
+                                let dir = picker.as_ref().and_then(Picker::selected_dir);
+                                picker = None;
+                                if let Some(dir) = dir {
+                                    if let Err(e) = launcher.spawn(std::path::Path::new(&dir)) {
+                                        status = format!("spawn: {e}");
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                if let Some(p) = picker.as_mut() {
+                                    p.backspace();
+                                }
+                            }
+                            KeyCode::Up => {
+                                if let Some(p) = picker.as_mut() {
+                                    p.up();
+                                }
+                            }
+                            KeyCode::Down => {
+                                if let Some(p) = picker.as_mut() {
+                                    p.down();
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                if let Some(p) = picker.as_mut() {
+                                    p.push(c);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                continue;
+            }
+            match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -123,6 +174,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         if let Err(e) = launcher.spawn(&cwd) {
                             status = format!("spawn: {e}");
                         }
+                    }
+                    KeyCode::Char('N') => {
+                        status.clear();
+                        picker = Some(Picker::new(crate::picker::gather_dirs(&board)));
                     }
                     _ => {}
                 },

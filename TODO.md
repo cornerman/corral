@@ -30,8 +30,6 @@ docs/superpowers/specs/ for the design.
       mis-map. Add a scroll offset per column and account for it in hit_test.
 - [ ] Consider showing time-in-state (how long an agent has been Requires
       Action / Idle) to sharpen triage.
-- [ ] `n` spawn: decide the cwd story (currently selected agent's cwd, else
-      `$HOME`). Maybe prompt for a directory.
 
 ## Extension (corral-announce)
 

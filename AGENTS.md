@@ -60,8 +60,12 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`.
   - `src/ui.rs` — ratatui: three columns (Requires Action, Idle, Running) in
     attention priority, plus a help footer.
+  - `src/picker.rs` — the `N` spawn directory picker: candidate dirs (board
+    cwds + `$CORRAL_PROJECT_ROOTS` subdirs, default ~/projects) and a
+    subsequence fuzzy filter. Unit-tested.
   - `src/main.rs` — orchestration: scan, spawn watchers, drain updates, handle
-    keys (Up/Down select, Enter focus, `n` spawn, `q` quit).
+    keys and mouse (Up/Down within a column, Left/Right across columns, Enter
+    or click focus, `n`/`N` spawn, `q` quit).
 
 ## Extensions
 
@@ -95,8 +99,11 @@ message/tool updates) is ACP v1.
 
 - CLI `corral` — full-screen TUI. Up/Down (or j/k, or scroll) move within a
   column; Left/Right (or h/l) switch columns; Enter or left-click focus the
-  selected agent's window; `n` spawn a new agent; `q`/Esc quit. Requires
-  `$HOME` (or `$CORRAL_ACP_DIR`); uses `swaymsg` and `kitty` for focus and spawn.
+  selected agent's window; `n` spawn in the selected agent's cwd; `N` open a
+  fuzzy directory picker to spawn elsewhere; `q`/Esc quit. Reads `$HOME` (or
+  `$CORRAL_ACP_DIR`) for the socket dir and `$CORRAL_PROJECT_ROOTS`
+  (colon-separated, default `~/projects`) for picker candidates; uses `swaymsg`
+  and `kitty` for focus and spawn.
 - pi extension `corral-announce` — see Extensions above.
 - Unix sockets in `$HOME/.corral/sockets/` (created 0700; override with
   `$CORRAL_ACP_DIR`). No TCP ports, no network exposure. Peer authentication

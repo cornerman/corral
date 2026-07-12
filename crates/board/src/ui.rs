@@ -4,10 +4,11 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::model::{Agent, Board, State};
+use crate::picker::Picker;
 
 /// Map a mouse cell (col,row) to a selectable index, using the same layout as
 /// `render`. Returns None for clicks on borders, headings, empty rows, or the
@@ -38,6 +39,44 @@ pub fn hit_test(area: Rect, board: &Board, col: u16, row: u16) -> Option<usize> 
         offset += counts[i];
     }
     None
+}
+
+/// A Rect centered in `area` at the given width/height percentages.
+fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
+    let v = Layout::vertical([
+        Constraint::Percentage((100 - ph) / 2),
+        Constraint::Percentage(ph),
+        Constraint::Percentage((100 - ph) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - pw) / 2),
+        Constraint::Percentage(pw),
+        Constraint::Percentage((100 - pw) / 2),
+    ])
+    .split(v[1])[1]
+}
+
+/// Draw the Shift+N directory picker as a centered overlay: a query line above
+/// the fuzzy-filtered candidate list.
+pub fn render_picker(frame: &mut Frame, picker: &Picker) {
+    let area = centered(frame.area(), 70, 60);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" spawn agent — type to filter, ⏎ select, esc cancel ")
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    frame.render_widget(Paragraph::new(format!("> {}", picker.query)), rows[0]);
+
+    let matches = picker.matches();
+    let items: Vec<ListItem> = matches.iter().map(|d| ListItem::new(*d)).collect();
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default();
+    state.select((!matches.is_empty()).then_some(picker.selected));
+    frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
 fn basename(path: &str) -> &str {
@@ -104,7 +143,7 @@ pub fn render(frame: &mut Frame, board: &Board, selected: usize, status: &str) {
     column(frame, cols[1], "Idle", &idle, idle_sel);
     column(frame, cols[2], "Running", &running, running_sel);
 
-    let help = "↑/↓ move   ←/→ column   ⏎/click focus   n new   q quit";
+    let help = "↑/↓ move   ←/→ column   ⏎/click focus   n new   N dir   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {
