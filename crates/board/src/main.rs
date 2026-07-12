@@ -1,9 +1,12 @@
 //! corral: an attention board for locally running pi agents.
 //!
-//! Discovers ACP sockets under $XDG_RUNTIME_DIR/acp/, watches each for its
-//! Working/Needs-You state, and shows them in two columns. Enter focuses an
-//! agent's window (sway), `n` spawns a new agent (kitty), `q` quits. Corral
-//! never drives an agent; it routes the operator's attention.
+//! Discovers ACP sockets under $HOME/.corral/sockets/ (override with
+//! $CORRAL_ACP_DIR), watches each for its running/idle/requires_action state,
+//! and shows them in three columns. Enter focuses an agent's window (sway), `n`
+//! spawns a new agent (kitty), `q` quits. Corral never drives an agent; it
+//! routes the operator's attention.
+//!
+//! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -27,11 +30,10 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
 
 fn main() {
-    let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
-        eprintln!("corral: XDG_RUNTIME_DIR is not set");
+    let Some(dir) = acp_dir() else {
+        eprintln!("corral: set $CORRAL_ACP_DIR or $HOME");
         std::process::exit(1);
     };
-    let dir = runtime_dir.join("acp");
 
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &dir);
@@ -40,6 +42,14 @@ fn main() {
         eprintln!("corral: {e}");
         std::process::exit(1);
     }
+}
+
+/// The socket discovery directory: $CORRAL_ACP_DIR, else $HOME/.corral/sockets.
+fn acp_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("CORRAL_ACP_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("sockets"))
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::io::Result<()> {

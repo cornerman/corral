@@ -13,7 +13,7 @@ Discovery works through a filesystem convention, not a registry service. A pi
 extension publishes each session on a unix socket in a well-known directory:
 
 ```
-$XDG_RUNTIME_DIR/acp/pi-<pid>.sock
+$HOME/.corral/sockets/pi-<pid>.sock   # override the dir with $CORRAL_ACP_DIR
 ```
 
 The socket speaks the [Agent Client Protocol](https://agentclientprotocol.com/)
@@ -23,7 +23,7 @@ socket talks ACP to that agent.
 ## Components
 
 - **corral** (`crates/board`) — the attention board TUI. Scans
-  `$XDG_RUNTIME_DIR/acp/`, holds a live watch connection per agent, and columns
+  `$HOME/.corral/sockets/`, holds a live watch connection per agent, and columns
   each by Requires Action / Idle / Running. Enter focuses the agent's window
   via sway; `n`
   spawns a new agent via kitty. Window focus and agent spawn sit behind traits

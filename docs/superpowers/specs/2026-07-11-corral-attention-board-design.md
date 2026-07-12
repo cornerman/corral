@@ -44,7 +44,9 @@ platform-side follow-up in Future.
 
 ## Identity and Focus (Resolved Design Decisions)
 
-- Agent identity key: the socket path (`$XDG_RUNTIME_DIR/acp/pi-<pid>.sock`). The
+- Agent identity key: the socket path (`$HOME/.corral/sockets/pi-<pid>.sock`,
+  override the dir with `$CORRAL_ACP_DIR`; not `$XDG_RUNTIME_DIR`, which
+  sandboxed agents cannot reach). The
   filesystem registry is the identity. One socket is one live agent; a restarted
   pi gets a new socket, correctly a new card. Identity needs no `session/list`.
 - sessionId, title, cwd, state are displayed metadata only. Nothing is persisted
@@ -95,7 +97,7 @@ the useful socket-scan and parse logic from the old crate is carried over.
 
 Modules, each with one clear job:
 
-- `discovery`: scan `$XDG_RUNTIME_DIR/acp/` for `pi-<pid>.sock`, parse
+- `discovery`: scan `$HOME/.corral/sockets/` (or `$CORRAL_ACP_DIR`) for `pi-<pid>.sock`, parse
   `<label>-<pid>`. Carried over from the old corral crate with its tests.
 - `model`: `Agent { socket_path (key), pid, label, session_id, title, cwd,
   state }` and the shared board state (map keyed by socket path).
@@ -127,7 +129,7 @@ rendering and input.
 
 ## Error Handling
 
-- Missing `$XDG_RUNTIME_DIR`: exit with a clear message (unchanged from today).
+- Missing `$HOME` and no `$CORRAL_ACP_DIR`: exit with a clear message.
 - A socket that refuses connection or closes immediately: treat the agent as
   gone, drop the card. No stale rows.
 - Focus with no matching sway window: no-op with a brief status line, never a

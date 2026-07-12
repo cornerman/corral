@@ -18,11 +18,12 @@ them a way to announce (see Future).
 Discovery works through a filesystem convention, not a registry service:
 
 ```
-$XDG_RUNTIME_DIR/acp/pi-<pid>.sock   (directory mode 0700)
+$HOME/.corral/sockets/pi-<pid>.sock   (dir 0700; override $CORRAL_ACP_DIR)
 ```
 
-A pi extension binds a socket there and unlinks it on exit. The filesystem is
-the registry: `ls` enumerates sessions, connecting to a socket talks plain ACP
+A pi extension binds a socket there and unlinks it on exit. Not
+$XDG_RUNTIME_DIR: sandboxed agents cannot reach it. The filesystem is the
+registry: `ls` enumerates sessions, connecting to a socket talks plain ACP
 (JSON-RPC, newline-delimited, as on stdio) to that agent.
 
 ## Data Flow
@@ -30,7 +31,7 @@ the registry: `ls` enumerates sessions, connecting to a socket talks plain ACP
 ```
 your terminal (pi, interactive TUI)              another terminal
   pi -e extensions/corral-announce.ts              corral (attention board)
-    |  binds $XDG_RUNTIME_DIR/acp/pi-<pid>.sock      |  scans $XDG_RUNTIME_DIR/acp/ (1s)
+    |  binds $HOME/.corral/sockets/pi-<pid>.sock     |  scans the same dir (1s)
     |    on session_start                            |  one watch connection per socket:
     |  serves ACP beside the live TUI:               |    initialize + session/list (seed)
     |    initialize, session/list, prompt, cancel    |    streams state_update -> column
@@ -94,10 +95,11 @@ message/tool updates) is ACP v1.
 
 - CLI `corral` — full-screen TUI. Keys: Up/Down (or j/k) select, Enter focus
   the selected agent's window, `n` spawn a new agent, `q`/Esc quit. Requires
-  `$XDG_RUNTIME_DIR`; uses `swaymsg` and `kitty` for focus and spawn.
+  `$HOME` (or `$CORRAL_ACP_DIR`); uses `swaymsg` and `kitty` for focus and spawn.
 - pi extension `corral-announce` — see Extensions above.
-- Unix sockets in `$XDG_RUNTIME_DIR/acp/` (created 0700). No TCP ports, no
-  network exposure. Peer authentication relies on the directory permissions.
+- Unix sockets in `$HOME/.corral/sockets/` (created 0700; override with
+  `$CORRAL_ACP_DIR`). No TCP ports, no network exposure. Peer authentication
+  relies on the directory permissions.
 
 ## Known Limitations (v1, deliberate)
 

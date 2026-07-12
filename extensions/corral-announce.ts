@@ -2,7 +2,8 @@
  * corral-announce: make this pi session discoverable and drivable by ACP
  * clients while the interactive TUI keeps running.
  *
- * Binds an ACP socket at $XDG_RUNTIME_DIR/acp/pi-<pid>.sock. Served surface:
+ * Binds an ACP socket at $HOME/.corral/sockets/pi-<pid>.sock (override the
+ * directory with $CORRAL_ACP_DIR). Served surface:
  *   initialize            identity (agentInfo)
  *   session/list          this session: id, title, cwd
  *   session/prompt        inject a user message (queued as follow-up while
@@ -64,10 +65,12 @@ export default function (pi: ExtensionAPI) {
 		currentCtx = ctx;
 		currentState = "idle";
 		questionCallId = undefined;
-		const runtimeDir = process.env.XDG_RUNTIME_DIR;
-		if (!runtimeDir) return; // no runtime dir, no discovery -- stay silent
+		// Discovery dir: $CORRAL_ACP_DIR, else $HOME/.corral. Not
+		// $XDG_RUNTIME_DIR: sandboxed pi sessions cannot reach it.
+		const home = process.env.HOME;
+		const dir = process.env.CORRAL_ACP_DIR ?? (home ? path.join(home, ".corral", "sockets") : undefined);
+		if (!dir) return; // nowhere to announce -- stay silent
 
-		const dir = path.join(runtimeDir, "acp");
 		// 0700: the socket grants prompt access to this session; directory
 		// permissions are the only peer authentication we rely on.
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
