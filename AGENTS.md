@@ -33,8 +33,8 @@ your terminal (pi, interactive TUI)              another terminal
     |  binds $XDG_RUNTIME_DIR/acp/pi-<pid>.sock      |  scans $XDG_RUNTIME_DIR/acp/ (1s)
     |    on session_start                            |  one watch connection per socket:
     |  serves ACP beside the live TUI:               |    initialize + session/list (seed)
-    |    initialize, session/list, prompt, cancel    |    streams _corral/state -> column
-    |  broadcasts activity + _corral/state           |  Enter -> focus window (sway)
+    |    initialize, session/list, prompt, cancel    |    streams state_update -> column
+    |  broadcasts activity + state_update            |  Enter -> focus window (sway)
     |  unlinks socket on session_shutdown            |  n -> spawn agent (kitty)
 ```
 
@@ -45,10 +45,11 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/discovery.rs` — scan the socket dir, parse `<label>-<pid>.sock`
     (pure, unit-tested).
   - `src/model.rs` — `Agent` (keyed by socket path) and `Board`, the state the
-    UI renders; `State` is Working or NeedsYou. Pure, unit-tested.
+    UI renders; `State` is Running, Idle, or RequiresAction (the ACP v2
+    `state_update` vocabulary). Pure, unit-tested.
   - `src/watch.rs` — one reader thread per socket. Connects (stays fully open,
     never half-closes), seeds from `initialize` + `session/list`, then streams
-    `_corral/state` notifications. Socket EOF reports the agent gone. Pure
+    `state_update` notifications. Socket EOF reports the agent gone. Pure
     parse helpers are unit-tested.
   - `src/focus.rs` — `WindowFocuser` seam. `SwayFocuser` correlates agent to
     window by a `/proc` parent-walk: the socket pid, walked up its PPid chain,
@@ -56,7 +57,8 @@ your terminal (pi, interactive TUI)              another terminal
     does not unshare the PID namespace), then `swaymsg [con_id=..] focus`. The
     tree walk is unit-tested.
   - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`.
-  - `src/ui.rs` — ratatui: two columns (Needs You, Working) plus a help footer.
+  - `src/ui.rs` — ratatui: three columns (Requires Action, Idle, Running) in
+    attention priority, plus a help footer.
   - `src/main.rs` — orchestration: scan, spawn watchers, drain updates, handle
     keys (Up/Down select, Enter focus, `n` spawn, `q` quit).
 
@@ -64,23 +66,29 @@ your terminal (pi, interactive TUI)              another terminal
 
 - `extensions/corral-announce.ts` — pi extension announcing an interactive pi
   session on the socket dir. Serves `initialize`, `session/list` (id, title,
-  cwd; Working/idle under `SessionInfo._meta["corral/state"]`),
-  `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
+  cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
   while busy; responds with stopReason once the message queue drains, coarse,
   documented in-file), `session/cancel` -> abort. Broadcasts to all connected
   clients: `session/update` message and tool events (whole messages on
   `message_end`; token deltas deferred), `session_info_update` on rename; and
-  a vendor `_corral/state` ExtNotification on `turn_start`/`turn_end`. Serves
-  multiple concurrent clients. Install: symlink into `~/.pi/agent/extensions/`.
+  the standard `state_update` (running/idle/requires_action) on
+  `turn_start`/`turn_end` and while the interactive `question` tool blocks on
+  the user. A newly connected client is seeded with the current `state_update`.
+  Serves multiple concurrent clients. Install: symlink into
+  `~/.pi/agent/extensions/`.
 
 ## ACP Conformance
 
-The socket surface stays ACP-conformant. Working/idle is not an ACP concept
-(the `sessionUpdate` union is closed, and ACP signals turn end only to the
-prompt sender via `stopReason`), so corral's passive-observer state rides ACP's
-vendor seams: a `_corral/state` ExtNotification (conformant clients ignore
-unknown notifications) and `SessionInfo._meta`, never a fake `sessionUpdate`
-variant.
+Corral tracks the ACP v2 Prompt Lifecycle RFD
+(agentclientprotocol.com/rfds/v2/prompt), which adds a `state_update`
+session/update with `running` / `idle` / `requires_action`, broadcast by the
+agent to every client (not just the prompt sender). corral-announce emits that
+exact shape and vocabulary now, ahead of stabilization, so there is zero
+migration when v2 lands and any future ACP agent works unchanged. Tradeoff: a
+strict v1-only client that rejects unknown `sessionUpdate` variants would not
+recognize `state_update` until v2; acceptable because corral is the consumer
+here. The rest of the surface (initialize, session/list, prompt, cancel,
+message/tool updates) is ACP v1.
 
 ## Interfaces to the Outside World
 
@@ -93,9 +101,10 @@ variant.
 
 ## Known Limitations (v1, deliberate)
 
-- Attention states are Working and Needs You only. Approval-blocked is not a
-  column: pi's built-in tool-approval prompt is not observable by an extension,
-  so it folds into Working.
+- `requires_action` is emitted today only for the interactive `question` tool
+  (the one user-input gate an extension can observe). pi's built-in
+  tool-approval prompt is not surfaced to extensions, so an approval-blocked
+  agent still shows as Running until pi exposes that gate (see Future).
 - Focus correlation assumes the pi process and its terminal window share the
   host PID namespace (true under the current nono/bwrap sandbox). If a sandbox
   unshares PIDs, the `/proc` parent-walk cannot reach the window pid.
@@ -118,7 +127,13 @@ variant.
   agents (Claude Code, codex, gemini) are a planned direction: each needs a way
   to bind a `<label>-<pid>.sock` (its own extension, or a stdio-to-socket
   wrapper), after which the board discovers it unchanged. Agents that do not
-  emit `_corral/state` simply default to Needs You.
+  emit `state_update` simply default to Idle.
+- Full requires_action coverage. pi core (or a native ACP `state_update`
+  implementation in pi) emitting a signal whenever any `ctx.ui.*` prompt opens
+  (approvals, select, input, elicitation), so the board catches every
+  user-input gate, not just the `question` tool. This is the platform-side
+  companion to corral's display, and the standard end-state per the ACP v2
+  RFD.
 - Agent-to-agent channels: corral brokering a link so two agents can talk.
 - More than sway and kitty. `SwayFocuser` and `KittyLauncher` are the PoC
   implementations for the maintainer's setup; other compositors and terminals

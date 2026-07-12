@@ -16,9 +16,10 @@ board's one job is to point it at the agent that needs it.
 
 - Agent-to-agent communication channel (planned later; the architecture must not
   preclude it, but nothing is built now).
-- An approval-blocked column. Pi's built-in tool-approval prompt is not
-  observable by an extension without pi support, so it is not detectable
-  reliably. Approval-blocked folds into Working for now.
+- Full requires_action coverage. `requires_action` is emitted today only for
+  the interactive `question` tool; pi's built-in tool-approval prompt is not
+  observable by an extension, so an approval-blocked agent shows as Running
+  until pi exposes that gate (the platform-side companion, tracked in Future).
 - Any in-board control of agents (prompt, steer, cancel, spawn-with-prompt).
 
 Proof-of-concept scope, all swappable later behind existing seams: pi is the
@@ -28,12 +29,18 @@ directions, not built now.
 
 ## State Model
 
-Two states per agent, derived from pi turn events:
+Three states per agent, adopting the ACP v2 `state_update` vocabulary
+(agentclientprotocol.com/rfds/v2/prompt):
 
-- Working: a turn is in progress (`turn_start` seen, no `turn_end` yet).
-- Needs You: the agent is idle (last event was `turn_end`), waiting for input.
+- `running`: a turn is in progress (`turn_start` seen, no `turn_end` yet).
+- `idle`: the turn ended, waiting for the next prompt.
+- `requires_action`: blocked, needs user input to continue.
 
-Both are fully detectable today. No pi changes required.
+The board columns run in attention priority: Requires Action, Idle, Running.
+`running`/`idle` come from turn events. `requires_action` is emitted while the
+interactive `question` tool blocks on the user (the one input gate an extension
+can see today); full coverage of pi's approval/elicitation prompts is the
+platform-side follow-up in Future.
 
 ## Identity and Focus (Resolved Design Decisions)
 
@@ -53,30 +60,33 @@ Both are fully detectable today. No pi changes required.
 
 ### Extension Change (corral-announce.ts)
 
-One addition to the existing extension: track Working/Needs-You and expose it.
+One addition to the existing extension: track state and broadcast it.
 
-- On `turn_start` set internal state to working; on `turn_end` set idle.
-- Report state per session in `session/list` under `SessionInfo._meta`
-  (`_meta["corral/state"]`).
-- Broadcast the transition as a vendor ExtNotification `_corral/state` on each
-  change, so a watching client learns transitions without polling.
+- `turn_start` -> `running`; `turn_end` -> `idle`.
+- While the `question` tool runs (`tool_execution_start`/`_end` for that tool),
+  `requires_action`.
+- Broadcast each transition as the standard `state_update` session/update, and
+  seed a newly connected client with the current `state_update` so it can
+  column immediately. `session/list` stays a stock `SessionInfo` (no state
+  field).
 
 Everything else in the extension already exists (socket bind, initialize,
 session/list, prompt, cancel, message and tool broadcasts).
 
 ### ACP Conformance
 
-Working/idle is not part of ACP. The `sessionUpdate` union is closed
-(user_message_chunk, agent_message_chunk, agent_thought_chunk, tool_call,
-tool_call_update, plan/plan_update/plan_removed, available_commands_update,
-current_mode_update, config_option_update, session_info_update, usage_update),
-and ACP signals turn end only via the `PromptResponse` `stopReason` to the
-client that sent the prompt. Corral is a passive observer, so it needs an
-out-of-band signal. Rather than add a bogus `sessionUpdate` variant (which a
-strict client such as Zed would reject), state rides ACP's sanctioned vendor
-seams: a `_corral/state` ExtNotification (unknown notifications are ignored by
-conformant clients) and `SessionInfo._meta` in `session/list`. The rest of the
-socket surface stays ACP-conformant.
+corral tracks the ACP v2 Prompt Lifecycle RFD
+(agentclientprotocol.com/rfds/v2/prompt), which adds a `state_update`
+session/update with `running` / `idle` / `requires_action`, broadcast by the
+agent to every connected client rather than only the prompt sender. That is the
+first ACP mechanism giving a passive observer the turn state, and it converges
+on corral's own model. corral-announce emits that exact shape and vocabulary now,
+ahead of stabilization, so there is zero migration when v2 lands and any future
+ACP agent works unchanged. Tradeoff: a strict v1-only client that rejects
+unknown `sessionUpdate` variants would not recognize `state_update` until v2;
+acceptable because corral is the consumer here. The rest of the surface is ACP
+v1. This supersedes an earlier vendor-notification design (`_corral/state` +
+`_meta`): relying on the emerging standard is preferred over a custom channel.
 
 ### Board Crate (crates/board)
 

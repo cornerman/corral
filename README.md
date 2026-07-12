@@ -3,8 +3,9 @@
 An attention board for coding-agent sessions running on your machine.
 
 You launch pi agents from your own terminals. Corral shows every running agent
-as a card in one of two columns, Working or Needs You, so you can see at a
-glance which agent is idle and waiting for you. Press Enter to focus that
+as a card in one of three columns, Requires Action, Idle, or Running (the ACP
+v2 state vocabulary), so you can see at a glance which agent is blocked waiting
+on you. Press Enter to focus that
 agent's window, `n` to spawn a new agent, `q` to quit. Corral never drives an
 agent; it routes your attention and jumps you to the real window.
 
@@ -23,7 +24,8 @@ socket talks ACP to that agent.
 
 - **corral** (`crates/board`) — the attention board TUI. Scans
   `$XDG_RUNTIME_DIR/acp/`, holds a live watch connection per agent, and columns
-  each by Working or Needs You. Enter focuses the agent's window via sway; `n`
+  each by Requires Action / Idle / Running. Enter focuses the agent's window
+  via sway; `n`
   spawns a new agent via kitty. Window focus and agent spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them.
@@ -31,8 +33,8 @@ socket talks ACP to that agent.
   announces an interactive pi session on the socket dir, no wrapper needed. The
   TUI stays in your terminal while ACP clients discover the session
   (`initialize`, `session/list`), watch its activity (message and tool
-  broadcasts), send prompts, and cancel turns. It reports Working/idle state
-  via a vendor `_corral/state` notification and `SessionInfo._meta`.
+  broadcasts), send prompts, and cancel turns. It reports run state via the
+  standard ACP v2 `state_update` notification (running/idle/requires_action).
 
 ## Usage
 

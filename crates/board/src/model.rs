@@ -5,20 +5,24 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// The two triage states. `NeedsYou` is the whole point of the board: the agent
-/// is idle and waiting for the operator.
+/// Triage states, adopting the ACP v2 `state_update` vocabulary
+/// (agentclientprotocol.com/rfds/v2/prompt): the agent is running, idle (turn
+/// done, awaiting the next prompt), or blocked needing user input to continue.
+/// For the board, RequiresAction is the most urgent call on the operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    Working,
-    NeedsYou,
+    Running,
+    Idle,
+    RequiresAction,
 }
 
 impl State {
-    /// Map the extension's wire word ("working"/"idle") to a state.
+    /// Map the ACP v2 wire word to a state.
     pub fn from_wire(s: &str) -> Option<State> {
         match s {
-            "working" => Some(State::Working),
-            "idle" => Some(State::NeedsYou),
+            "running" => Some(State::Running),
+            "idle" => Some(State::Idle),
+            "requires_action" => Some(State::RequiresAction),
             _ => None,
         }
     }
@@ -70,27 +74,18 @@ impl Board {
         }
     }
 
-    /// Agents needing the operator, in stable order.
-    pub fn needs_you(&self) -> Vec<&Agent> {
-        self.agents
-            .values()
-            .filter(|a| a.state == State::NeedsYou)
-            .collect()
+    /// Agents in a given state, in stable order.
+    pub fn in_state(&self, state: State) -> Vec<&Agent> {
+        self.agents.values().filter(|a| a.state == state).collect()
     }
 
-    /// Agents currently working, in stable order.
-    pub fn working(&self) -> Vec<&Agent> {
-        self.agents
-            .values()
-            .filter(|a| a.state == State::Working)
-            .collect()
-    }
-
-    /// Selectable agents: NeedsYou first (they want attention), then Working.
-    /// The UI's selection index is over this flattened order.
+    /// Selectable agents in attention priority: RequiresAction first (blocked on
+    /// the operator), then Idle (awaiting the next task), then Running (leave
+    /// alone). The UI's selection index is over this flattened order.
     pub fn selectable(&self) -> Vec<&Agent> {
-        let mut v = self.needs_you();
-        v.extend(self.working());
+        let mut v = self.in_state(State::RequiresAction);
+        v.extend(self.in_state(State::Idle));
+        v.extend(self.in_state(State::Running));
         v
     }
 }
@@ -113,22 +108,23 @@ mod tests {
 
     #[test]
     fn state_wire_mapping() {
-        assert_eq!(State::from_wire("working"), Some(State::Working));
-        assert_eq!(State::from_wire("idle"), Some(State::NeedsYou));
+        assert_eq!(State::from_wire("running"), Some(State::Running));
+        assert_eq!(State::from_wire("idle"), Some(State::Idle));
+        assert_eq!(
+            State::from_wire("requires_action"),
+            Some(State::RequiresAction)
+        );
         assert_eq!(State::from_wire("bogus"), None);
     }
 
     #[test]
     fn upsert_then_set_state() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Working)));
-        assert_eq!(b.working().len(), 1);
-        b.apply(Update::SetState(
-            PathBuf::from("/s/pi-1.sock"),
-            State::NeedsYou,
-        ));
-        assert_eq!(b.working().len(), 0);
-        assert_eq!(b.needs_you().len(), 1);
+        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
+        assert_eq!(b.in_state(State::Running).len(), 1);
+        b.apply(Update::SetState(PathBuf::from("/s/pi-1.sock"), State::Idle));
+        assert_eq!(b.in_state(State::Running).len(), 0);
+        assert_eq!(b.in_state(State::Idle).len(), 1);
     }
 
     #[test]
@@ -136,7 +132,7 @@ mod tests {
         let mut b = Board::default();
         b.apply(Update::SetState(
             PathBuf::from("/s/ghost.sock"),
-            State::Working,
+            State::Running,
         ));
         assert!(b.selectable().is_empty());
     }
@@ -144,18 +140,20 @@ mod tests {
     #[test]
     fn gone_removes_agent() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Working)));
+        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
         b.apply(Update::Gone(PathBuf::from("/s/pi-1.sock")));
         assert!(b.selectable().is_empty());
     }
 
     #[test]
-    fn selectable_orders_needs_you_first() {
+    fn selectable_orders_by_attention_priority() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Working)));
-        b.apply(Update::Upsert(agent("/s/pi-2.sock", State::NeedsYou)));
+        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
+        b.apply(Update::Upsert(agent("/s/pi-2.sock", State::Idle)));
+        b.apply(Update::Upsert(agent("/s/pi-3.sock", State::RequiresAction)));
         let sel = b.selectable();
-        assert_eq!(sel[0].state, State::NeedsYou);
-        assert_eq!(sel[1].state, State::Working);
+        assert_eq!(sel[0].state, State::RequiresAction);
+        assert_eq!(sel[1].state, State::Idle);
+        assert_eq!(sel[2].state, State::Running);
     }
 }

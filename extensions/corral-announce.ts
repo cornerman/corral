@@ -4,8 +4,7 @@
  *
  * Binds an ACP socket at $XDG_RUNTIME_DIR/acp/pi-<pid>.sock. Served surface:
  *   initialize            identity (agentInfo)
- *   session/list          this session: id, title, cwd; working/idle under
- *                         SessionInfo._meta["corral/state"]
+ *   session/list          this session: id, title, cwd
  *   session/prompt        inject a user message (queued as follow-up while
  *                         the agent is busy); responds on turn completion
  *   session/cancel        abort the current turn (notification)
@@ -16,8 +15,9 @@
  *                         stream shape is not part of pi's documented API)
  *   tool_call / tool_call_update
  *   session_info_update   session renames
- * Plus a vendor ExtNotification outside the ACP session/update union:
- *   _corral/state         working/idle transitions (turn_start/turn_end)
+ *   state_update          running/idle/requires_action (ACP v2 vocabulary):
+ *                         turn_start/turn_end, and requires_action while the
+ *                         interactive `question` tool blocks on the user
  *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
  *   pi -e /path/to/corral-announce.ts
@@ -35,10 +35,13 @@ export default function (pi: ExtensionAPI) {
 	let server: net.Server | undefined;
 	let socketPath: string | undefined;
 	let currentCtx: ExtensionContext | undefined;
-	// Working/idle triage state, driven by turn_start/turn_end. Reported in
-	// session/list and broadcast on every transition so corral can column the
-	// agent without polling.
-	let currentState: "working" | "idle" = "idle";
+	// Triage state in ACP v2 vocabulary (running/idle/requires_action), broadcast
+	// as the standard state_update session/update so corral (and any ACP client)
+	// can column the agent without polling.
+	let currentState: "running" | "idle" | "requires_action" = "idle";
+	// toolCallId of an in-flight `question` tool: while it runs, the agent is
+	// blocked on the user, which is requires_action.
+	let questionCallId: string | undefined;
 	const clients = new Set<net.Socket>();
 	// session/prompt requests waiting for the turn that consumes them to end.
 	const pendingPrompts: Array<{ conn: net.Socket; id: number | string }> = [];
@@ -60,6 +63,7 @@ export default function (pi: ExtensionAPI) {
 		stop();
 		currentCtx = ctx;
 		currentState = "idle";
+		questionCallId = undefined;
 		const runtimeDir = process.env.XDG_RUNTIME_DIR;
 		if (!runtimeDir) return; // no runtime dir, no discovery -- stay silent
 
@@ -72,6 +76,10 @@ export default function (pi: ExtensionAPI) {
 
 		server = net.createServer((conn) => {
 			clients.add(conn);
+			// Seed the new client with the current state so it can column us at once.
+			if (currentCtx && !conn.destroyed) {
+				conn.write(sessionUpdateLine({ sessionUpdate: "state_update", state: currentState }));
+			}
 			let buf = "";
 			conn.on("data", (chunk) => {
 				buf += chunk.toString("utf8");
@@ -98,7 +106,7 @@ export default function (pi: ExtensionAPI) {
 	// --- outgoing: agent activity -> session/update broadcasts ---
 
 	pi.on("turn_start", async () => {
-		currentState = "working";
+		currentState = "running";
 		broadcastState();
 	});
 
@@ -126,6 +134,14 @@ export default function (pi: ExtensionAPI) {
 			status: "in_progress",
 			rawInput: event.args,
 		});
+		// The `question` tool blocks on the user: that is requires_action. This is
+		// the only user-input gate an extension can observe today; pi's built-in
+		// tool-approval prompt is not surfaced (see AGENTS.md Future).
+		if (event.toolName === "question") {
+			questionCallId = event.toolCallId;
+			currentState = "requires_action";
+			broadcastState();
+		}
 	});
 
 	pi.on("tool_execution_end", async (event) => {
@@ -134,6 +150,11 @@ export default function (pi: ExtensionAPI) {
 			toolCallId: event.toolCallId,
 			status: event.isError ? "failed" : "completed",
 		});
+		if (event.toolCallId === questionCallId) {
+			questionCallId = undefined;
+			currentState = "running"; // answered; the turn continues
+			broadcastState();
+		}
 	});
 
 	pi.on("session_info_changed", async () => {
@@ -157,17 +178,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// Working/idle is not part of ACP's session/update union, so it rides a
-	// vendor-namespaced ExtNotification (`_corral/state`). Conformant clients
-	// ignore unknown notifications; corral listens for this method.
-	function broadcastState() {
-		if (clients.size === 0 || !currentCtx) return;
-		const line =
+	// Every outgoing session/update shares this envelope.
+	function sessionUpdateLine(update: Record<string, unknown>): string {
+		return (
 			JSON.stringify({
 				jsonrpc: "2.0",
-				method: "_corral/state",
-				params: { sessionId: sessionInfo(currentCtx).sessionId, state: currentState },
-			}) + "\n";
+				method: "session/update",
+				params: { sessionId: sessionInfo(currentCtx!).sessionId, update },
+			}) + "\n"
+		);
+	}
+
+	// State transitions ride the standard ACP v2 state_update session/update
+	// (agentclientprotocol.com/rfds/v2/prompt): running / idle / requires_action.
+	function broadcastState() {
+		if (clients.size === 0 || !currentCtx) return;
+		const line = sessionUpdateLine({ sessionUpdate: "state_update", state: currentState });
 		for (const c of clients) {
 			if (!c.destroyed) c.write(line);
 		}
@@ -175,13 +201,9 @@ export default function (pi: ExtensionAPI) {
 
 	function broadcast(update: Record<string, unknown>) {
 		if (clients.size === 0 || !currentCtx) return;
-		const notification = JSON.stringify({
-			jsonrpc: "2.0",
-			method: "session/update",
-			params: { sessionId: sessionInfo(currentCtx).sessionId, update },
-		});
+		const line = sessionUpdateLine(update);
 		for (const c of clients) {
-			if (!c.destroyed) c.write(notification + "\n");
+			if (!c.destroyed) c.write(line);
 		}
 	}
 
@@ -252,8 +274,6 @@ export default function (pi: ExtensionAPI) {
 			sessionId: ctx.sessionManager.getSessionFile() ?? `ephemeral-${process.pid}`,
 			title: pi.getSessionName() ?? null,
 			cwd: ctx.cwd,
-			// Vendor state under _meta; SessionInfo has no standard run-state field.
-			_meta: { "corral/state": currentState },
 		};
 	}
 }
