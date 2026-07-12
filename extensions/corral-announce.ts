@@ -36,6 +36,7 @@
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
+import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
@@ -259,7 +260,7 @@ export default function (pi: ExtensionAPI) {
 				reply({
 					protocolVersion: 1,
 					agentCapabilities: { loadSession: false },
-					agentInfo: { name: "pi", version: piVersion() },
+					agentInfo: { name: "pi", version: VERSION },
 					authMethods: [],
 				});
 				break;
@@ -364,15 +365,4 @@ function messageText(message: { content?: unknown }): string {
 			.join("\n");
 	}
 	return "";
-}
-
-/** pi does not expose its own version to extensions; best-effort lookup. */
-function piVersion(): string {
-	try {
-		// require() is available to extensions (they run in pi's Node process).
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		return require("@earendil-works/pi-coding-agent/package.json").version;
-	} catch {
-		return "?";
-	}
 }

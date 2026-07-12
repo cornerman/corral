@@ -94,12 +94,15 @@ One per-session file drives discovery, isolation, and resume.
 
 ## Extension (corral-announce)
 
-- [ ] `agentInfo.version` is `"?"`: `require("@earendil-works/pi-coding-agent/
-      package.json")` does not resolve. Find a supported way to read pi's
-      version, or drop the field.
+- [x] `agentInfo.version`: now imports the exported `VERSION` constant from
+      `@earendil-works/pi-coding-agent` (the old `require(package.json)` did
+      not resolve).
 - [ ] `session/prompt` responses resolve for all waiting clients at once when
-      the queue drains (no per-message turn attribution). Fine for now;
-      revisit if multiple drivers need accurate stopReason routing.
+      the queue drains (no per-message turn attribution). Left as-is: pi does
+      not expose which turn consumed which injected message, so precise
+      stopReason routing needs a platform change. Correct in aggregate (every
+      injected message has had its turn) and fine for fire-and-forget
+      messaging.
 
 ## Future Features
 
