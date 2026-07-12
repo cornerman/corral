@@ -2,8 +2,9 @@
 //!
 //! Discovers ACP sockets under $HOME/.corral/sockets/ (override with
 //! $CORRAL_ACP_DIR), watches each for its running/idle/requires_action state,
-//! and shows them in three columns. Enter focuses an agent's window (sway), `n`
-//! spawns a new agent (kitty), `q` quits. Corral never drives an agent; it
+//! and shows them in three columns. Enter or a mouse click focuses an agent's
+//! window (sway), `n` spawns a new agent (kitty), `q` quits. Scroll or arrows
+//! move the selection. Corral never drives an agent; it
 //! routes the operator's attention.
 //!
 //! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
@@ -13,7 +14,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
+};
+use crossterm::execute;
+use ratatui::layout::Rect;
 
 mod discovery;
 mod focus;
@@ -36,7 +42,9 @@ fn main() {
     };
 
     let mut terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &dir);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     if let Err(e) = result {
         eprintln!("corral: {e}");
@@ -91,28 +99,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         terminal.draw(|f| ui::render(f, &board, selected, &status))?;
 
         if event::poll(POLL)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if count > 0 {
-                            selected = (selected + 1).min(count - 1);
-                        }
+                    KeyCode::Down | KeyCode::Char('j') if count > 0 => {
+                        selected = (selected + 1).min(count - 1);
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
                     }
-                    KeyCode::Enter => {
-                        status.clear();
-                        if let Some(agent) = board.selectable().get(selected) {
-                            if let Err(e) = focuser.focus(agent) {
-                                status = format!("focus: {e}");
-                            }
-                        }
-                    }
+                    KeyCode::Enter => focus_selected(&focuser, &board, selected, &mut status),
                     KeyCode::Char('n') => {
                         status.clear();
                         let cwd = launch::default_cwd(board.selectable().get(selected).copied());
@@ -121,9 +117,41 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         }
                     }
                     _ => {}
-                }
+                },
+                Event::Mouse(m) => match m.kind {
+                    MouseEventKind::ScrollDown if count > 0 => {
+                        selected = (selected + 1).min(count - 1);
+                    }
+                    MouseEventKind::ScrollUp => selected = selected.saturating_sub(1),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let s = terminal.size()?;
+                        let area = Rect::new(0, 0, s.width, s.height);
+                        if let Some(idx) = ui::hit_test(area, &board, m.column, m.row) {
+                            selected = idx;
+                            focus_selected(&focuser, &board, selected, &mut status);
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }
     Ok(())
+}
+
+/// Focus the selected agent's window, recording any error in the status line.
+/// Shared by the Enter key and a left click.
+fn focus_selected(
+    focuser: &dyn WindowFocuser,
+    board: &Board,
+    selected: usize,
+    status: &mut String,
+) {
+    status.clear();
+    if let Some(agent) = board.selectable().get(selected) {
+        if let Err(e) = focuser.focus(agent) {
+            *status = format!("focus: {e}");
+        }
+    }
 }
