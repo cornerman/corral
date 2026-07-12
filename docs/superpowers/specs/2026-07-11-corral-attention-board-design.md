@@ -160,6 +160,10 @@ read-only.
 
 ## History and Resume (Dormant Sessions)
 
+> Realized by the Unified Session Registry (below): the resume recipe and the
+> live-discovery record are the same per-session file.
+
+
 Problem: after a reboot nothing is running, so socket discovery finds nothing,
 yet the operator wants to resume where they left off. Dormant sessions have no
 socket, so the socket path no longer identifies them; `sessionId` is the
@@ -197,7 +201,12 @@ Model impact. `Agent` gains `origin: Live { socket } | Dormant { resume }`;
 dormant agents are `Idle` and dimmed. `focus_selected` branches: Live focuses
 the window, Dormant runs the resume recipe.
 
-## Socket Isolation (Security) — mechanism TBD, requirement firm
+## Socket Isolation (Security) — realized by the Unified Session Registry
+
+> Superseded: the isolation mechanism is now the workdir-local socket of the
+> Unified Session Registry (below), verified against nono. The per-launch
+> `--allow` idea is no longer needed.
+
 
 Requirement: an agent must not be able to reach another workdir's agent socket.
 This has to be enforced by the sandbox (a denied `open()`), not merely by
@@ -219,6 +228,40 @@ nono adds `--allow "$HOME/.corral/sockets$PWD"` — the shell composes the liter
 path, so no nono variable composition is needed; corral spawns agents the same
 way. Rejected as insufficient for "must be secure": flat sockets + capability
 control (no FS enforcement).
+
+## Unified Session Registry (Agreed; Supersedes Flat Sockets Dir + Separate History Store)
+
+One per-session file is the single source for discovery, isolation, and resume.
+
+Layout. Each announcing agent:
+- binds its socket inside its own workdir, `$WORKDIR/.corral/pi-<pid>.sock`, so
+  the sandbox's existing `$WORKDIR` grant is the only capability needed and no
+  other workdir's agent can reach it;
+- writes a registry file `~/.corral/registry/<sessionId>.json` =
+  `{ sessionId, cwd, label, socket, resume, lastSeen }`, where `socket` is the
+  absolute path above while live. On clean shutdown it unlinks the socket and
+  clears `socket` (the entry stays as a dormant resume recipe).
+
+Isolation (verified, nono 0.61.1 via `nono why`). A symlink or path that
+resolves into a foreign workdir is DENIED; the real socket in `$WORKDIR` is
+reachable only by that session and by corral (broad `~/.corral` + read access).
+Agent A can read B's registry JSON but connecting to B's `socket` resolves into
+B's workdir and is denied. corral is the only cross-workdir bridge, which is
+where inter-agent messaging policy (whitelist/popup) belongs.
+
+Discovery. corral scans `~/.corral/registry/*.json`. For each: `socket` present
+and connectable → live (open the persistent watch as today); else → dormant
+(dimmed in Idle, resume via recipe). Identity is `sessionId` (the filename), not
+the socket path; this is what lets a live agent and its own dormant record be
+one entry rather than two.
+
+Pruning. Dismiss (`d`), dead resume target (`stat` fails), and lastSeen older
+than 14 days. Resume re-announces and the entry flips live.
+
+Notes. The socket sits in a hidden `$WORKDIR/.corral/` dir (add to global
+gitignore); a crashed agent leaves a stale socket + registry entry that corral
+prunes when the socket is unconnectable. A read-only workdir cannot announce
+(cannot bind there) — acceptable, rare.
 
 ## Inter-Agent Messaging — design, not built
 

@@ -3,28 +3,32 @@
 Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design.
 
-## History / Resume (designed, not built — see spec)
+## Unified Session Registry (designed, not built — see spec)
 
-- [ ] corral-announce: write `~/.corral/history/<uuid>.json` recipe
-      `{ sessionId, cwd, label, resume, lastSeen }` on session_start; refresh
-      on session_info_changed + turn_end; skip ephemeral (no session file).
-- [ ] board: read recipes, dedup against live `sessionId`, prune dead-file /
-      >14-day / dismissed; show latest-per-cwd dimmed in the Idle column.
-- [ ] board: `Agent.origin` Live|Dormant; Enter/click resumes a dormant ghost
-      via the Launcher seam (`resume`); `d` dismisses (deletes the recipe).
+Supersedes the current flat `~/.corral/sockets` discovery and the idea of a
+separate history store: one per-session file drives discovery, isolation, and
+resume.
 
-## Socket Isolation + Inter-Agent Messaging (designed, not built — see spec)
+- [ ] corral-announce: bind the socket at `$WORKDIR/.corral/pi-<pid>.sock`
+      (workdir-local = sandbox-isolated, verified); write
+      `~/.corral/registry/<sessionId>.json`
+      `{ sessionId, cwd, label, socket, resume, lastSeen }` on session_start;
+      refresh on rename + turn_end; on clean shutdown unlink socket + clear
+      `socket`. Skip ephemeral (no session file).
+- [ ] board discovery: scan `~/.corral/registry/*.json`; `socket` connectable
+      → live (persistent watch), else dormant. Identity = `sessionId`.
+- [ ] board: dormant sessions dimmed in Idle (latest-per-cwd); `Agent.origin`
+      Live|Dormant; Enter/click resumes via the Launcher seam (`resume`); `d`
+      dismisses. Prune dead-target / >14-day / dismissed.
 
-- [ ] Socket isolation (MUST be sandbox-enforced): move sockets to
-      `~/.corral/sockets<abs-cwd>/pi-<pid>.sock`; grant each agent only its own
-      subtree (leading mechanism: pi-under-nono launcher adds
-      `--allow "$HOME/.corral/sockets$PWD"`; nono can't compose `$WORKDIR`
-      statically — verified). corral scans recursively, keeps broad read.
-- [ ] Operator-initiated messaging: board keybinding to send a `session/prompt`
-      to the selected agent (optionally spawn-in-dir then send).
-- [ ] Agent-initiated messaging: a tool routing through corral to a target
-      agent, gated by popup and/or whitelist. Needs the board (or a broker)
-      running to bridge isolated workdirs.
+## Inter-Agent Messaging (designed, not built — see spec)
+
+- [ ] Operator-initiated: board keybinding to send a `session/prompt` to the
+      selected agent (optionally spawn-in-dir then send).
+- [ ] Agent-initiated: a tool routing through corral to a target agent, gated
+      by popup and/or whitelist. corral is the only cross-workdir bridge
+      (sockets are workdir-isolated), so it needs the board (or a broker)
+      running.
 
 ## Validation
 
