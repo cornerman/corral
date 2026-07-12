@@ -3,19 +3,14 @@
 Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design.
 
-## Deploy / Integration (nixos)
+## Validation
 
-- [x] `$HOME/.corral` is in the sandbox allow list (sandboxed pi sessions can
-      announce there).
-- [ ] (Dev, optional) make `$HOME/projects/corral/crates/board` writable
-      in-sandbox to edit the crate under the sandbox; rest of the repo stays
-      read-only. See `docs/nixos-changes-handoff.md`.
-- [ ] (Optional) `nix flake update corral` + switch to install the `corral`
-      binary on PATH. Not needed while running from `cargo run` / `just board`.
-- [ ] Live end-to-end validation: real sandboxed pi sessions appear, focus
-      jumps to the right window, the `question` tool flips the card to Requires
-      Action. (A fresh pi session is needed; ones started before `.corral` was
-      allowed still bind the old path.)
+- [x] `$HOME/.corral` is in the pi sandbox allow list (sandboxed sessions can
+      announce there). Run corral itself with `cargo run` / `just board`.
+- [ ] Live end-to-end run: real sandboxed pi sessions appear, focus jumps to
+      the right window, the `question` tool flips the card to Requires Action.
+      (Needs a fresh pi session; ones started before `.corral` was allowed
+      still bind the old path.)
 
 ## Platform (pi) — the requires_action follow-up (C)
 
