@@ -21,7 +21,7 @@ registry service. One record per session names a workdir-local socket:
 
 ```
 $HOME/.corral/registry/<sessionId>.json   (dir 0700; override $CORRAL_REGISTRY_DIR)
-  { sessionId, cwd, title, socket, resume, lastSeen }
+  { sessionId, cwd, title, label, socket, resume, lastSeen }
 <cwd>/.corral/<label>-<pid>.sock           (dir 0700; override $CORRAL_SOCKET_DIR)
 ```
 
@@ -206,18 +206,21 @@ message/tool updates) is ACP v1.
 
 ## Future
 
-- More than pi. Today only pi announces, via `corral-announce`. Other ACP
-  agents (Claude Code, codex, gemini) are a planned direction: each needs a way
-  to bind a `<label>-<pid>.sock` (its own extension, or a stdio-to-socket
-  wrapper), after which the board discovers it unchanged. Agents that do not
-  emit `state_update` simply default to Idle.
+- More than pi. The board core is agent-agnostic; the only pi-specific piece is
+  the `corral-announce` adapter. The stable contract any ACP agent joins by:
+  (1) write `~/.corral/registry/<sessionId>.json` with `label` set to the agent
+  kind and `socket` pointing at (2) a workdir-local `<label>-<pid>.sock`
+  speaking ACP (initialize, session/list, session/prompt), and (3) broadcast
+  `state_update`. A non-cooperating agent can be wrapped by a generic
+  stdio-to-socket-plus-registry shim instead of a bespoke extension. Missing
+  `state_update` just defaults the card to Idle; missing `label` defaults it to
+  `pi`.
 - Full requires_action coverage. pi core (or a native ACP `state_update`
   implementation in pi) emitting a signal whenever any `ctx.ui.*` prompt opens
   (approvals, select, input, elicitation), so the board catches every
   user-input gate, not just the `question` tool. This is the platform-side
   companion to corral's display, and the standard end-state per the ACP v2
   RFD.
-- Agent-to-agent channels: corral brokering a link so two agents can talk.
 - More than sway and kitty. `SwayFocuser` and `KittyLauncher` are the PoC
   implementations for the maintainer's setup; other compositors and terminals
   drop in as new `WindowFocuser` / `Launcher` implementations behind the same

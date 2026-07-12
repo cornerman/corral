@@ -394,6 +394,8 @@ export default function (pi: ExtensionAPI) {
 			sessionId,
 			cwd: ctx.cwd,
 			title: sessionTitle(ctx),
+			// Agent kind, so corral can label a dormant card (no socket to parse).
+			label: "pi",
 			socket,
 			// The session file path is what `pi --session <path>` resumes; null
 			// for an ephemeral (--no-session) session, which is not resumable.

@@ -25,6 +25,10 @@ pub struct RegistryEntry {
     pub title: Option<String>,
     pub socket: Option<PathBuf>,
     pub resume: Option<String>,
+    /// The agent kind (e.g. `pi`). Live cards read this from the socket
+    /// filename; dormant cards (no socket) rely on this field, so the board
+    /// stays agent-agnostic. Absent means an older/unknown producer.
+    pub label: Option<String>,
     /// ISO-8601 timestamp of the last observed activity. ISO-8601 sorts
     /// correctly as a plain string, so it doubles as the latest-per-cwd key.
     pub last_seen: Option<String>,
@@ -41,6 +45,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         title: str_field("title"),
         socket: str_field("socket").map(PathBuf::from),
         resume: str_field("resume"),
+        label: str_field("label"),
         last_seen: str_field("lastSeen"),
     })
 }

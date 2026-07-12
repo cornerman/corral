@@ -146,7 +146,8 @@ impl Board {
             .map(|e| Agent {
                 socket_path: PathBuf::new(),
                 pid: 0,
-                label: "pi".into(),
+                // Agent kind from the record; the board stays agent-agnostic.
+                label: e.label.clone().unwrap_or_else(|| "pi".into()),
                 session_id: Some(e.session_id.clone()),
                 title: e.title.clone(),
                 cwd: e.cwd.clone(),
@@ -216,6 +217,7 @@ mod tests {
             title: Some(id.into()),
             socket: None,
             resume: Some(format!("/s/{id}.jsonl")),
+            label: Some("pi".into()),
             last_seen: Some(last_seen.into()),
         }
     }
