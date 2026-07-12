@@ -71,7 +71,7 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
     .split(v[1])[1]
 }
 
-/// Draw the Shift+N directory picker as a centered overlay: a query line above
+/// Draw the `c` directory picker as a centered overlay: a query line above
 /// the fuzzy-filtered candidate list.
 pub fn render_picker(frame: &mut Frame, picker: &Picker, verb: &str) {
     let area = centered(frame.area(), 70, 60);
@@ -189,7 +189,8 @@ pub fn render(
     column(frame, cols[2], "Running", &running, running_sel, s2, ages);
     column(frame, cols[3], "Dormant", &dormant, dormant_sel, s3, ages);
 
-    let help = "↑/↓ move   ←/→ col   ⏎ focus/resume   f find   n new   N dir   d dismiss   q quit";
+    let help =
+        "↑/↓ move   ←/→ col   ⏎ focus/resume   f find   n new   c create   d dismiss   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {

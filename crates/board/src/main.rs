@@ -5,8 +5,9 @@
 //! workdir-local ACP socket. Corral watches each live socket for its
 //! running/idle/requires_action state,
 //! and shows them in three columns. Enter or a mouse click focuses an agent's
-//! window (sway), `n` spawns a new agent (kitty), `N` opens a fuzzy directory
-//! picker to spawn elsewhere, `q` quits. Up/Down (or scroll) move within a
+//! window (sway), `n` spawns a new agent (kitty) in the selected agent's dir,
+//! `c` opens a fuzzy picker to create one in another directory, `q` quits.
+//! Up/Down (or scroll) move within a
 //! column; Left/Right switch columns. Corral never drives an agent; it
 //! routes the operator's attention.
 //!
@@ -84,7 +85,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut dead_sockets: HashSet<PathBuf> = HashSet::new();
     let mut selected: usize = 0;
     let mut status = String::new();
-    // Some(_) while a picker overlay is open (Shift+N spawn dir, or `f`
+    // Some(_) while a picker overlay is open (`c` spawn dir, or `f`
     // focus). `picker_focus` holds the live agents behind the labels when the
     // picker is a focus picker; None means it is the spawn-dir picker.
     let mut picker: Option<Picker> = None;
@@ -257,7 +258,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                             status = format!("spawn: {e}");
                         }
                     }
-                    KeyCode::Char('N') => {
+                    KeyCode::Char('c') => {
                         status.clear();
                         picker = Some(Picker::new(crate::picker::gather_dirs(&board)));
                     }

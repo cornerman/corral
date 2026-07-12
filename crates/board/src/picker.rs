@@ -1,4 +1,4 @@
-//! Directory picker for `N` (Shift+N) spawn. Candidates are the cwds of agents
+//! Directory picker for `c` (create-elsewhere) spawn. Candidates are the cwds of agents
 //! already on the board plus the immediate subdirectories of configurable
 //! roots (`$CORRAL_PROJECT_ROOTS`, colon-separated; default `$HOME/projects`).
 //! A subsequence fuzzy filter narrows the list as the operator types.

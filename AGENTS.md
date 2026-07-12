@@ -73,13 +73,13 @@ your terminal (pi, interactive TUI)              another terminal
     (spawn) or `kitty -e pi --session <path>` (resume a dormant session).
   - `src/ui.rs` — ratatui: four columns (Requires Action, Idle, Running,
     Dormant) in attention priority, plus a help footer. Dormant cards dimmed.
-  - `src/picker.rs` — the `N` spawn directory picker: candidate dirs (board
+  - `src/picker.rs` — the `c` spawn directory picker: candidate dirs (board
     cwds + `$CORRAL_PROJECT_ROOTS` subdirs, default ~/projects) and a
     subsequence fuzzy filter. Unit-tested.
   - `src/main.rs` — orchestration: scan + prune the registry, spawn watchers,
     rebuild the dormant view, drain updates, handle keys and mouse (Up/Down
     within a column, Left/Right across columns, Enter or click focus/resume,
-    `n`/`N` spawn, `d` dismiss dormant, `q` quit).
+    `n`/`c` spawn, `d` dismiss dormant, `q` quit).
 
 ## Extensions
 
@@ -118,7 +118,7 @@ message/tool updates) is ACP v1.
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
   h/l) switch columns; Enter or left-click focuses a live agent's window or
   resumes a dormant session (`pi --session`); `n` spawn in the selected agent's
-  cwd; `N` open a fuzzy directory picker to spawn elsewhere; `f` fuzzy-focus a
+  cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy-focus a
   live agent by title/cwd; `d` dismiss the selected dormant record; `q`/Esc
   quit. Long columns scroll to keep the selection visible; live cards show
   time-in-state. Reads `$HOME` (or
