@@ -17,28 +17,47 @@ pub trait Launcher {
 
 pub struct KittyLauncher;
 
-impl Launcher for KittyLauncher {
-    fn spawn(&self, cwd: &Path) -> Result<(), String> {
-        // `kitty -e pi` gives one OS window per agent; --directory roots it.
-        Command::new("kitty")
+impl KittyLauncher {
+    /// Launch `kitty --directory <cwd> -e pi <pi_args...>`, detached from the
+    /// board.
+    ///
+    /// `setsid --fork` reparents kitty to init, which matters twice over: the
+    /// window outlives the board and leaves no zombie child, and — critically —
+    /// the window is no longer a descendant of corral. The focus seam finds a
+    /// window by walking up pi's `/proc` parent chain; if the spawned kitty
+    /// were a child of corral, that walk would continue past it into corral's
+    /// own terminal and could focus or close the board itself. Detaching stops
+    /// the walk at `pi -> kitty -> init`. `setsid` exits immediately after
+    /// forking, so waiting on it reaps at once.
+    fn launch(&self, cwd: &Path, pi_args: &[&str]) -> Result<(), String> {
+        let ok = Command::new("setsid")
+            .arg("--fork")
+            .arg("kitty")
             .arg("--directory")
             .arg(cwd)
             .args(["-e", "pi"])
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("kitty spawn failed: {e}"))
+            .args(pi_args)
+            .status()
+            .map_err(|e| format!("kitty launch failed: {e}"))?
+            .success();
+        if ok {
+            Ok(())
+        } else {
+            Err("kitty launch returned non-zero".into())
+        }
+    }
+}
+
+impl Launcher for KittyLauncher {
+    // One OS window per agent; --directory roots it.
+    fn spawn(&self, cwd: &Path) -> Result<(), String> {
+        self.launch(cwd, &[])
     }
 
+    // `pi --session <path|id>` reloads that session, keeping its sessionId, so
+    // the resumed process reconnects live under the same identity.
     fn resume(&self, cwd: &Path, resume: &str) -> Result<(), String> {
-        // `pi --session <path|id>` reloads that session, keeping its sessionId,
-        // so the resumed process reconnects live under the same identity.
-        Command::new("kitty")
-            .arg("--directory")
-            .arg(cwd)
-            .args(["-e", "pi", "--session", resume])
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("kitty resume failed: {e}"))
+        self.launch(cwd, &["--session", resume])
     }
 }
 

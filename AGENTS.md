@@ -82,7 +82,10 @@ your terminal (pi, interactive TUI)              another terminal
     that terminal pid (not a window-close request, which kitty's
     `confirm_os_window_close` would block). The tree walk is unit-tested.
   - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
-    (spawn) or `kitty -e pi --session <path>` (resume a dormant session).
+    (spawn) or `kitty -e pi --session <path>` (resume a dormant session),
+    always via `setsid --fork` so the window is detached from corral (survives
+    the board exiting, no zombie, and — since it is not a descendant of corral
+    — the focus parent-walk cannot climb into the board's own window).
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Unit-tested against a throwaway listener.
@@ -194,6 +197,8 @@ message/tool updates) is ACP v1.
 - Focus correlation assumes the pi process and its terminal window share the
   host PID namespace (true under the current nono/bwrap sandbox). If a sandbox
   unshares PIDs, the `/proc` parent-walk cannot reach the window pid.
+  Board-spawned windows are detached (`setsid --fork`) so the walk terminates
+  at the agent's own terminal rather than climbing into corral's window.
 - A transient watch read error reports the agent gone; the next 1s scan
   reconnects. A genuinely dead socket (crashed pi) reconnects-and-drops cheaply
   once per second until its file disappears.

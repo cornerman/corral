@@ -1,10 +1,15 @@
 //! Window focus seam. The triage core calls `WindowFocuser::focus`; the sway
 //! implementation is the only place that knows about the compositor.
 //!
-//! Correlation: sway knows the *kitty* process, not the pi session. Bridge by a
-//! `/proc` parent-walk: the socket's pid, walked up its `PPid` chain, hits the
-//! kitty process whose pid sway reports for the window. This holds because the
-//! pi sandbox (nono/bwrap) does not unshare the PID namespace.
+//! Correlation: sway knows the *terminal* process, not the pi session. Bridge
+//! by a `/proc` parent-walk: the socket's pid, walked up its `PPid` chain, hits
+//! the terminal process whose pid sway reports for the window. This holds
+//! because the pi sandbox (nono/bwrap) does not unshare the PID namespace.
+//!
+//! The walk must not reach corral's own terminal, or it could focus/close the
+//! board itself. Board-spawned windows are detached from corral (see
+//! `launch.rs`, `setsid --fork`), so the chain terminates at `pi -> kitty ->
+//! init`; manually launched agents were never corral's descendants.
 
 use std::collections::HashSet;
 use std::process::Command;
