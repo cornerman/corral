@@ -282,8 +282,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
     // When each live agent entered its current state, keyed by socket path, so
-    // the cards can show time-in-state.
+    // Requires Action cards can show how long it has been blocked.
     let mut state_since: HashMap<PathBuf, Instant> = HashMap::new();
+    // When each live agent last produced a tool activity or transition, so
+    // Running cards show time-since-activity (a stuck hint) not raw run time.
+    let mut last_event: HashMap<PathBuf, Instant> = HashMap::new();
+    // Age of each dormant session's registry record (by session id), from its
+    // file mtime; refreshed each scan.
+    let mut dormant_ages: HashMap<String, String> = HashMap::new();
     let mut last_scan = Instant::now() - SCAN_INTERVAL * 2;
 
     loop {
@@ -307,6 +313,20 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 }
             }
             board.sync_registry(&entries, &dead_sockets);
+            // Record age (by session id) for the dormant column, from each
+            // record's file mtime.
+            dormant_ages.clear();
+            for e in &entries {
+                let file = dir.join(format!("{}.json", e.session_id));
+                if let Some(age) = std::fs::metadata(&file)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .map(ui::age_label)
+                {
+                    dormant_ages.insert(e.session_id.clone(), age);
+                }
+            }
             last_scan = Instant::now();
         }
 
@@ -318,17 +338,25 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 Update::Gone(path) => {
                     known.remove(path);
                     state_since.remove(path);
+                    last_event.remove(path);
                     dead_sockets.insert(path.clone());
                 }
                 // Each SetState is a real transition (the extension only
-                // broadcasts on change): restart the timer.
+                // broadcasts on change): restart the state timer, and count it
+                // as activity for the stuck-hint timer.
                 Update::SetState(path, _) => {
-                    state_since.insert(path.clone(), Instant::now());
+                    let now = Instant::now();
+                    state_since.insert(path.clone(), now);
+                    last_event.insert(path.clone(), now);
+                }
+                // A tool call is fresh activity: reset the stuck-hint timer.
+                Update::SetActivity(path, _) => {
+                    last_event.insert(path.clone(), Instant::now());
                 }
                 Update::Upsert(a) => {
-                    state_since
-                        .entry(a.socket_path.clone())
-                        .or_insert_with(Instant::now);
+                    let now = Instant::now();
+                    state_since.entry(a.socket_path.clone()).or_insert(now);
+                    last_event.entry(a.socket_path.clone()).or_insert(now);
                     dead_sockets.remove(&a.socket_path);
                 }
                 Update::SetTitle(..) => {}
@@ -378,12 +406,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             selected = count.saturating_sub(1);
         }
 
-        let ages: HashMap<PathBuf, String> = state_since
+        let in_state: HashMap<PathBuf, String> = state_since
             .iter()
             .map(|(p, t)| (p.clone(), ui::age_label(t.elapsed())))
             .collect();
+        let quiet: HashMap<PathBuf, String> = last_event
+            .iter()
+            .map(|(p, t)| (p.clone(), ui::age_label(t.elapsed())))
+            .collect();
+        let meta = ui::CardMeta {
+            in_state: &in_state,
+            quiet: &quiet,
+            dormant_age: &dormant_ages,
+        };
         terminal.draw(|f| {
-            ui::render(f, &board, selected, &status, &mut list_states, &ages);
+            ui::render(f, &board, selected, &status, &mut list_states, &meta);
             match &overlay {
                 Some(Overlay::Jump(p, _)) => ui::render_picker(f, p),
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),

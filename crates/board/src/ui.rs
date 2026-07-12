@@ -322,34 +322,71 @@ pub fn focus_label(agent: &Agent) -> String {
     format!("{title} · {}", basename(cwd))
 }
 
-fn card(agent: &Agent, age: Option<&str>, width: usize) -> ListItem<'static> {
-    let title = truncate(agent.title.as_deref().unwrap_or("(unnamed)"), width);
-    let cwd = agent
-        .cwd
-        .as_deref()
-        .map(basename)
-        .unwrap_or("?")
-        .to_string();
+/// Per-card timing inputs the columns format into a meta line. `in_state` and
+/// `quiet` are keyed by socket path (live agents); `dormant_age` by session id.
+/// The meta line means something different per column, because the triage
+/// question differs: time-blocked when it needs you, time-since-activity while
+/// running, the last action when idle, and record age when dormant.
+pub struct CardMeta<'a> {
+    /// Time in the current state, by socket path (for Requires Action).
+    pub in_state: &'a HashMap<PathBuf, String>,
+    /// Time since the last tool activity, by socket path (for Running).
+    pub quiet: &'a HashMap<PathBuf, String>,
+    /// Age of the session record, by session id (for Dormant).
+    pub dormant_age: &'a HashMap<String, String>,
+}
+
+/// The card's secondary line: what the agent is doing (or last did, or is
+/// asking) and a column-specific age. The directory lives on the title line, so
+/// it is not repeated here. The age differs per column because the triage
+/// question does: time blocked when it needs you, time since the last activity
+/// while running, none when idle (a timer there is noise), and record age when
+/// dormant.
+fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    // What it is doing (Running) or last did (Idle), or asking (Requires
+    // Action, where the activity is often the question).
+    if let Some(a) = agent.activity.as_deref() {
+        parts.push(a);
+    }
+    let age = match col {
+        Column::RequiresAction => meta.in_state.get(&agent.socket_path),
+        Column::Running => meta.quiet.get(&agent.socket_path),
+        Column::Idle => None,
+        Column::Dormant => agent
+            .session_id
+            .as_deref()
+            .and_then(|id| meta.dormant_age.get(id)),
+    };
+    if let Some(age) = age {
+        parts.push(age);
+    }
+    parts.join(" · ")
+}
+
+fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {
     // Dormant cards are dimmed whole: they are context, not a call to act.
     let title_style = match agent.origin {
         Origin::Dormant => Style::default().add_modifier(Modifier::DIM),
         Origin::Live => Style::default(),
     };
-    // Time in the current state sharpens triage ("blocked for 8m"). Only live
-    // agents have a running timer.
-    let meta = truncate(
-        &match age {
-            Some(a) => format!("{} · {} · {}", agent.label, cwd, a),
-            None => format!("{} · {}", agent.label, cwd),
-        },
-        width,
-    );
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let name = agent.title.as_deref().unwrap_or("(unnamed)");
+    // Title line: the name, then the directory as a dim (never bold) suffix,
+    // so the card shows what and where on one line. The name shrinks first so
+    // the directory stays visible; too narrow to fit both drops the directory.
+    let dir = agent.cwd.as_deref().map(basename);
+    let title_line = match dir {
+        Some(d) if width > d.chars().count() + 4 => Line::from(vec![
+            Span::styled(truncate(name, width - d.chars().count() - 2), title_style),
+            Span::styled(format!("  {d}"), dim),
+        ]),
+        _ => Line::from(Span::styled(truncate(name, width), title_style)),
+    };
+    let meta_line = truncate(&card_meta_line(agent, col, meta), width);
     ListItem::new(vec![
-        Line::from(Span::styled(title, title_style)),
-        Line::from(Span::styled(
-            meta,
-            Style::default().add_modifier(Modifier::DIM),
-        )),
+        title_line,
+        Line::from(Span::styled(meta_line, dim)),
         Line::from(""), // blank spacer: air between cards
     ])
 }
@@ -361,7 +398,7 @@ fn column(
     agents: &[&Agent],
     selected_row: Option<usize>,
     state: &mut ListState,
-    ages: &HashMap<PathBuf, String>,
+    meta: &CardMeta,
 ) {
     let secondary = matches!(col, Column::Dormant);
     let dim_gray = Style::default()
@@ -417,10 +454,7 @@ fn column(
     // `hit_test`; the left bar marks the selection.
     // Card text width, minus the 1-col selection bar the list reserves.
     let card_w = rows[2].width.saturating_sub(1) as usize;
-    let items: Vec<ListItem> = agents
-        .iter()
-        .map(|a| card(a, ages.get(&a.socket_path).map(String::as_str), card_w))
-        .collect();
+    let items: Vec<ListItem> = agents.iter().map(|a| card(a, col, meta, card_w)).collect();
     let list = List::new(items)
         .highlight_symbol("▍")
         // Always reserve the bar column so selecting never shifts the text
@@ -440,7 +474,7 @@ pub fn render(
     selected: usize,
     status: &str,
     states: &mut [ListState; 4],
-    ages: &HashMap<PathBuf, String>,
+    meta: &CardMeta,
 ) {
     let footer_area = footer_rect(frame.area());
     let cols = column_layout(frame.area());
@@ -452,7 +486,7 @@ pub fn render(
     for (i, col) in Column::ALL.into_iter().enumerate() {
         let agents = board.column(col);
         let sel = selected.checked_sub(start).filter(|&r| r < agents.len());
-        column(frame, cols[i], col, &agents, sel, &mut states[i], ages);
+        column(frame, cols[i], col, &agents, sel, &mut states[i], meta);
         start += agents.len();
     }
 
@@ -517,6 +551,7 @@ mod tests {
             state,
             origin: crate::model::Origin::Live,
             resume: None,
+            activity: None,
         }));
     }
 

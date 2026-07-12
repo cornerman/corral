@@ -440,6 +440,7 @@ mod tests {
             state: State::Idle,
             origin: Origin::Live,
             resume: None,
+            activity: None,
         }));
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();

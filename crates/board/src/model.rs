@@ -74,6 +74,10 @@ pub struct Agent {
     /// The session-file path to resume a dormant session (`pi --session`).
     /// `None` for live agents and ephemeral sessions.
     pub resume: Option<String>,
+    /// The current or most recent tool activity (from a `tool_call`
+    /// broadcast), e.g. "edit model.rs". Shows what a running agent is doing
+    /// and what an idle one just finished. `None` until the first tool runs.
+    pub activity: Option<String>,
 }
 
 /// A change pushed from a watcher thread to the UI thread.
@@ -85,6 +89,9 @@ pub enum Update {
     SetState(PathBuf, State),
     /// A title change (from a session_info_update broadcast on rename).
     SetTitle(PathBuf, Option<String>),
+    /// The current tool activity (from a `tool_call` broadcast): a short
+    /// summary like "edit model.rs" shown on the card.
+    SetActivity(PathBuf, String),
     /// The socket closed or refused: the agent is gone.
     Gone(PathBuf),
 }
@@ -112,6 +119,11 @@ impl Board {
             Update::SetTitle(path, title) => {
                 if let Some(a) = self.live.get_mut(&path) {
                     a.title = title;
+                }
+            }
+            Update::SetActivity(path, activity) => {
+                if let Some(a) = self.live.get_mut(&path) {
+                    a.activity = Some(activity);
                 }
             }
             Update::Gone(path) => {
@@ -170,6 +182,8 @@ impl Board {
                 state: State::Idle,
                 origin: Origin::Dormant,
                 resume: e.resume.clone(),
+                // Dormant records carry no live activity.
+                activity: None,
             })
             .collect();
     }
@@ -257,6 +271,7 @@ mod tests {
             state,
             origin: Origin::Live,
             resume: None,
+            activity: None,
         }
     }
 

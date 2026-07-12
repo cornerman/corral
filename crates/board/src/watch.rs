@@ -50,6 +50,66 @@ pub fn parse_title_notification(line: &str) -> Option<Option<String>> {
     )
 }
 
+/// Argument names, in priority order, whose value best summarizes a tool call.
+/// Keyed on the argument name rather than the tool name, to stay loosely
+/// coupled to any one agent's tool set; an unrecognized tool still shows its
+/// name. `question` leads so a blocked agent surfaces what it is asking.
+const ARG_KEYS: [&str; 10] = [
+    "question",
+    "path",
+    "file",
+    "file_path",
+    "filename",
+    "command",
+    "cmd",
+    "pattern",
+    "query",
+    "message",
+];
+
+/// A short summary of a tool call's most salient argument, if one of the known
+/// argument names is present. Paths collapse to their last segment; other
+/// values (commands, patterns, questions) take their first line. Pure.
+fn tool_arg(raw: &serde_json::Value) -> Option<String> {
+    for key in ARG_KEYS {
+        let Some(s) = raw.get(key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let s = s.trim();
+        if s.is_empty() {
+            continue;
+        }
+        let short = if matches!(key, "path" | "file" | "file_path" | "filename") {
+            s.rsplit('/').next().unwrap_or(s)
+        } else {
+            s.lines().next().unwrap_or(s)
+        };
+        return Some(short.to_string());
+    }
+    None
+}
+
+/// Summarize a `tool_call` session/update into a card activity string like
+/// "edit model.rs" or "bash cargo test". Returns `None` for other lines. Pure.
+pub fn parse_tool_call(line: &str) -> Option<String> {
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("method")? != "session/update" {
+        return None;
+    }
+    let update = msg.get("params")?.get("update")?;
+    if update.get("sessionUpdate")? != "tool_call" {
+        return None;
+    }
+    let tool = update
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("tool");
+    match update.get("rawInput").and_then(tool_arg) {
+        Some(arg) => Some(format!("{tool} {arg}")),
+        None => Some(tool.to_string()),
+    }
+}
+
 /// Parse the `session/list` reply into (session_id, title, cwd) for the first
 /// session. State is not carried here; it arrives via the `state_update`
 /// notification the extension sends on connect. Pure helper for testing.
@@ -115,6 +175,7 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 state: DEFAULT_STATE,
                 origin: Origin::Live,
                 resume: None,
+                activity: None,
             }));
             seeded = true;
             continue;
@@ -127,6 +188,10 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
         // Rename: keep the displayed title current without a reconnect.
         if let Some(title) = parse_title_notification(&line) {
             let _ = tx.send(Update::SetTitle(entry.path.clone(), title));
+        }
+        // Current tool activity: what the agent is doing right now.
+        if let Some(activity) = parse_tool_call(&line) {
+            let _ = tx.send(Update::SetActivity(entry.path.clone(), activity));
         }
     }
 }
@@ -168,6 +233,26 @@ mod tests {
         assert_eq!(parse_title_notification(cleared), Some(None));
         let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
         assert_eq!(parse_title_notification(state), None);
+    }
+
+    #[test]
+    fn parses_tool_call_activity() {
+        let edit = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"1","title":"edit","status":"in_progress","rawInput":{"path":"/home/u/p/src/model.rs"}}}}"#;
+        assert_eq!(parse_tool_call(edit).as_deref(), Some("edit model.rs"));
+        let bash = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"bash","rawInput":{"command":"cargo test --all"}}}}"#;
+        assert_eq!(
+            parse_tool_call(bash).as_deref(),
+            Some("bash cargo test --all")
+        );
+        // A blocked agent surfaces its question text.
+        let q = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"question","rawInput":{"question":"which db?"}}}}"#;
+        assert_eq!(parse_tool_call(q).as_deref(), Some("question which db?"));
+        // No known arg: just the tool name.
+        let noarg = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"think","rawInput":{}}}}"#;
+        assert_eq!(parse_tool_call(noarg).as_deref(), Some("think"));
+        // Not a tool_call.
+        let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
+        assert_eq!(parse_tool_call(state), None);
     }
 
     #[test]

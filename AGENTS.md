@@ -73,8 +73,10 @@ your terminal (pi, interactive TUI)              another terminal
     all derive from it. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per socket. Connects (stays fully open,
     never half-closes), seeds from `initialize` + `session/list`, then streams
-    `state_update` notifications. Socket EOF reports the agent gone. Pure
-    parse helpers are unit-tested.
+    `state_update` notifications, plus `session_info_update` (title) and
+    `tool_call` broadcasts, the latter summarized into a short card activity
+    string ("edit model.rs"). Socket EOF reports the agent gone. Pure parse
+    helpers are unit-tested.
   - `src/focus.rs` — `WindowFocuser` seam (focus and close a window).
     `SwayFocuser` correlates agent to window by a `/proc` parent-walk: the
     socket pid, walked up its PPid chain, hits the terminal process whose pid
@@ -111,8 +113,12 @@ your terminal (pi, interactive TUI)              another terminal
     counts. Unit-tested.
   - `src/ui.rs` — ratatui: four equal columns (from `Column::ALL`) divided by
     dim vertical rules, each with a bold heading over an underline and padded
-    cards spaced for air (title + dim meta, ellipsis-truncated), a `▍`
-    selection bar. Three live triage columns (Requires Action, Idle, Running)
+    cards spaced for air, a `▍` selection bar. Each card is a title with the
+    working directory as a dim suffix, over a column-specific meta line: what
+    the agent is doing (from `tool_call`) or last did, plus an age whose
+    meaning follows the column (time blocked in Requires Action, time since
+    the last activity in Running, none in Idle, record age in Dormant). Three
+    live triage columns (Requires Action, Idle, Running)
     then a dim-gray Dormant column (resumable history). Plus a footer of
     clickable key-hint buttons (`footer_hit_test`, same pattern as the approval
     dialog) with any status on the spacer row above it. Owns the card, heading,
@@ -143,7 +149,9 @@ your terminal (pi, interactive TUI)              another terminal
   session: on `session_start` it writes the registry record and binds the
   workdir-local socket; on `session_shutdown` it clears the record's `socket`
   and unlinks. The record's `lastSeen` refreshes on `turn_end` and its `title`
-  on rename. Serves `initialize`, `session/list` (id, title,
+  on rename. The title broadcasts whenever it changes, on rename and on
+  `turn_end` (so the first-user-message fallback title reaches clients that
+  connected before it existed, not only explicit renames). Serves `initialize`, `session/list` (id, title,
   cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
   while busy; responds with stopReason once the message queue drains, coarse,
   documented in-file), `session/cancel` -> abort. Broadcasts to all connected
