@@ -113,8 +113,10 @@ your terminal (pi, interactive TUI)              another terminal
     dim vertical rules, each with a bold heading over an underline and padded
     cards spaced for air (title + dim meta, ellipsis-truncated), a `▍`
     selection bar. Three live triage columns (Requires Action, Idle, Running)
-    then a dim-gray Dormant column (resumable history). Plus a help footer.
-    Owns the card, heading, separator, and age/focus-label formatting.
+    then a dim-gray Dormant column (resumable history). Plus a footer of
+    clickable key-hint buttons (`footer_hit_test`, same pattern as the approval
+    dialog) with any status on the spacer row above it. Owns the card, heading,
+    separator, footer, and age/focus-label formatting.
   - `src/picker.rs` — the `/` jump picker: fuzzy-filter the board's agents
     (`board.selectable()`); Enter goes to one, Shift+Enter spawns a fresh agent
     in its dir. Subsequence fuzzy filter; `selected_original` maps the chosen
@@ -130,8 +132,10 @@ your terminal (pi, interactive TUI)              another terminal
     message an agent (resume a dormant one to deliver), `d` close a live
     agent's window or forget a dormant record, `q` quit. A left click is
     two-stage (`click_action`): first click selects, a click on the
-    already-selected card goes. Shift+Enter needs the kitty keyboard protocol
-    (`main` pushes `DISAMBIGUATE_ESCAPE_CODES` where supported).
+    already-selected card goes; the footer key-hints are also clickable buttons
+    (go / new / jump / msg / delete / quit), sharing the key dispatch via
+    `open_jump`/`open_compose`/`spawn_new`. Shift+Enter needs the kitty keyboard
+    protocol (`main` pushes `DISAMBIGUATE_ESCAPE_CODES` where supported).
 
 ## Extensions
 
