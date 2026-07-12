@@ -226,6 +226,64 @@ pub fn approval_hit_test(area: Rect, col: u16, row: u16) -> Option<ApprovalActio
     None
 }
 
+/// A footer action the operator can click (the key hints double as buttons).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FooterAction {
+    Go,
+    New,
+    Jump,
+    Msg,
+    Delete,
+    Quit,
+}
+
+/// Blank cells between footer entries.
+const FOOTER_GAP: u16 = 3;
+
+/// Footer entries left to right: label, and the action a click triggers
+/// (`None` for the non-clickable movement hint).
+fn footer_items() -> [(Option<FooterAction>, &'static str); 7] {
+    [
+        (None, "↑↓←→ move"),
+        (Some(FooterAction::Go), "⏎ go"),
+        (Some(FooterAction::New), "⇧⏎ new"),
+        (Some(FooterAction::Jump), "/ jump"),
+        (Some(FooterAction::Msg), "m msg"),
+        (Some(FooterAction::Delete), "d delete"),
+        (Some(FooterAction::Quit), "q quit"),
+    ]
+}
+
+/// The footer row: the bottom-most row, inset by PAD to align with the columns
+/// (the row above is a blank spacer, or the status line). Shared by `render`
+/// and `footer_hit_test` so their geometry cannot drift.
+fn footer_rect(area: Rect) -> Rect {
+    let bottom = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area)[1];
+    Rect {
+        x: bottom.x + PAD,
+        y: bottom.y + 1,
+        width: bottom.width.saturating_sub(2 * PAD),
+        height: 1,
+    }
+}
+
+/// Map a click to a footer action, using the same geometry `render` draws.
+pub fn footer_hit_test(area: Rect, col: u16, row: u16) -> Option<FooterAction> {
+    let f = footer_rect(area);
+    if row != f.y {
+        return None;
+    }
+    let mut x = f.x;
+    for (action, label) in footer_items() {
+        let w = label.chars().count() as u16;
+        if col >= x && col < x + w {
+            return action;
+        }
+        x += w + FOOTER_GAP;
+    }
+    None
+}
+
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -384,17 +442,7 @@ pub fn render(
     states: &mut [ListState; 4],
     ages: &HashMap<PathBuf, String>,
 ) {
-    // Two rows at the bottom: a blank spacer (breathing room under the cards
-    // and separators), then the footer in the last row, inset by PAD so it
-    // aligns with the columns.
-    let bottom =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(frame.area())[1];
-    let footer_area = Rect {
-        x: bottom.x + PAD,
-        y: bottom.y + 1,
-        width: bottom.width.saturating_sub(2 * PAD),
-        height: 1,
-    };
+    let footer_area = footer_rect(frame.area());
     let cols = column_layout(frame.area());
 
     // One flat column per `Column::ALL` entry (matching navigation and
@@ -423,13 +471,25 @@ pub fn render(
         );
     }
 
-    let help = "↑↓←→ move   ⏎ go   ⇧⏎ new   / jump   m msg   d close/forget   q quit";
-    let footer = if status.is_empty() {
-        Line::from(help.dim())
-    } else {
-        Line::from(vec![Span::raw(status), Span::raw("   "), help.dim()])
-    };
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    // Status (if any) on the spacer row above; the footer row holds the
+    // clickable key hints at a fixed position (so clicks map, and a status
+    // message never shifts them).
+    if !status.is_empty() {
+        let spacer = Rect {
+            y: footer_area.y.saturating_sub(1),
+            ..footer_area
+        };
+        frame.render_widget(Paragraph::new(Line::from(status.dim())), spacer);
+    }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut spans = Vec::new();
+    for (i, (_, label)) in footer_items().iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".repeat(FOOTER_GAP as usize)));
+        }
+        spans.push(Span::styled(*label, dim));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), footer_area);
 }
 
 #[cfg(test)]

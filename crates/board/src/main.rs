@@ -460,12 +460,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         selected = nav::move_col(selected, &counts, true);
                     }
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                        // Shift+Enter: spawn a new agent in the selected dir.
-                        status.clear();
-                        let cwd = launch::default_cwd(board.selectable().get(selected).copied());
-                        if let Err(e) = launcher.spawn(&cwd) {
-                            status = format!("spawn: {e}");
-                        }
+                        spawn_new(&launcher, &board, selected, &mut status);
                     }
                     KeyCode::Enter => {
                         activate_selected(&focuser, &launcher, &board, selected, &mut status)
@@ -477,30 +472,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         // Fuzzy-pick any agent: Enter goes to it, Shift+Enter
                         // spawns a fresh agent in its dir.
                         status.clear();
-                        let targets: Vec<model::Agent> =
-                            board.selectable().into_iter().cloned().collect();
-                        if !targets.is_empty() {
-                            let labels = targets.iter().map(goto_label).collect();
-                            overlay = Some(Overlay::Jump(Picker::new(labels), targets));
-                        }
+                        overlay = open_jump(&board);
                     }
                     KeyCode::Char('m') => {
                         // Message any agent: a live one over its socket, a
                         // dormant one by resuming it first (via the router).
                         status.clear();
-                        if let Some(a) = board.selectable().get(selected).copied() {
-                            let target = match a.origin {
-                                Origin::Live => Some(ComposeTarget::Live(a.socket_path.clone())),
-                                Origin::Dormant => a.session_id.clone().map(ComposeTarget::Dormant),
-                            };
-                            if let Some(target) = target {
-                                overlay = Some(Overlay::Compose(Compose {
-                                    target,
-                                    label: ui::focus_label(a),
-                                    buf: String::new(),
-                                }));
-                            }
-                        }
+                        overlay = open_compose(&board, selected);
                     }
                     _ => {}
                 },
@@ -510,19 +488,47 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     MouseEventKind::Down(MouseButton::Left) => {
                         let s = terminal.size()?;
                         let area = Rect::new(0, 0, s.width, s.height);
-                        let scroll = std::array::from_fn(|i| list_states[i].offset());
-                        if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
-                            match click_action(idx, selected) {
-                                Click::Select => selected = idx,
-                                Click::Go => {
-                                    selected = idx;
-                                    activate_selected(
-                                        &focuser,
-                                        &launcher,
-                                        &board,
-                                        selected,
-                                        &mut status,
-                                    );
+                        // Footer buttons first (their own row), else a card.
+                        if let Some(fa) = ui::footer_hit_test(area, m.column, m.row) {
+                            match fa {
+                                ui::FooterAction::Go => activate_selected(
+                                    &focuser,
+                                    &launcher,
+                                    &board,
+                                    selected,
+                                    &mut status,
+                                ),
+                                ui::FooterAction::New => {
+                                    spawn_new(&launcher, &board, selected, &mut status)
+                                }
+                                ui::FooterAction::Jump => {
+                                    status.clear();
+                                    overlay = open_jump(&board);
+                                }
+                                ui::FooterAction::Msg => {
+                                    status.clear();
+                                    overlay = open_compose(&board, selected);
+                                }
+                                ui::FooterAction::Delete => {
+                                    dismiss_selected(dir, &focuser, &board, selected, &mut status)
+                                }
+                                ui::FooterAction::Quit => break,
+                            }
+                        } else {
+                            let scroll = std::array::from_fn(|i| list_states[i].offset());
+                            if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
+                                match click_action(idx, selected) {
+                                    Click::Select => selected = idx,
+                                    Click::Go => {
+                                        selected = idx;
+                                        activate_selected(
+                                            &focuser,
+                                            &launcher,
+                                            &board,
+                                            selected,
+                                            &mut status,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -607,6 +613,38 @@ fn apply_approval(router: &mut Router, action: ui::ApprovalAction, status: &mut 
             }
         }
         ui::ApprovalAction::Deny => router.deny(),
+    }
+}
+
+/// Open the `/` jump picker over all agents (Enter goes, Shift+Enter spawns).
+fn open_jump(board: &Board) -> Option<Overlay> {
+    let targets: Vec<model::Agent> = board.selectable().into_iter().cloned().collect();
+    (!targets.is_empty()).then(|| {
+        let labels = targets.iter().map(goto_label).collect();
+        Overlay::Jump(Picker::new(labels), targets)
+    })
+}
+
+/// Open the compose overlay to message the selected agent, if any.
+fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
+    let a = board.selectable().get(selected).copied()?;
+    let target = match a.origin {
+        Origin::Live => Some(ComposeTarget::Live(a.socket_path.clone())),
+        Origin::Dormant => a.session_id.clone().map(ComposeTarget::Dormant),
+    }?;
+    Some(Overlay::Compose(Compose {
+        target,
+        label: ui::focus_label(a),
+        buf: String::new(),
+    }))
+}
+
+/// Spawn a new agent in the selected agent's dir (or $HOME).
+fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &mut String) {
+    status.clear();
+    let cwd = launch::default_cwd(board.selectable().get(selected).copied());
+    if let Err(e) = launcher.spawn(&cwd) {
+        *status = format!("spawn: {e}");
     }
 }
 
