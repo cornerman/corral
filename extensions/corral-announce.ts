@@ -53,6 +53,15 @@ export default function (pi: ExtensionAPI) {
 	let socketPath: string | undefined;
 	let registryFile: string | undefined;
 	let currentCtx: ExtensionContext | undefined;
+	// Last title pushed to clients, so we broadcast a session_info_update only
+	// when it actually changes. pi fires session_info_changed on an explicit
+	// rename, but not when the first user message becomes the fallback title, so
+	// we also re-check on turn_end. `undefined` forces the first comparison.
+	let lastTitle: string | null | undefined;
+	// First non-empty user message this run, from message_end (authoritative,
+	// unlike scanning getEntries mid-turn where a fresh session has no entry
+	// yet). The fallback title when the session is unnamed.
+	let firstUserText: string | undefined;
 	// Triage state in ACP v2 vocabulary (running/idle/requires_action), broadcast
 	// as the standard state_update session/update so corral (and any ACP client)
 	// can column the agent without polling.
@@ -157,6 +166,8 @@ export default function (pi: ExtensionAPI) {
 		currentCtx = ctx;
 		currentState = "idle";
 		questionCallId = undefined;
+		lastTitle = undefined;
+		firstUserText = undefined;
 		// Socket lives inside this session's own workdir: only this session
 		// (and unsandboxed tools like corral) can reach it. Not
 		// $XDG_RUNTIME_DIR: sandboxed pi sessions cannot reach that.
@@ -208,6 +219,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async () => {
 		currentState = "idle";
 		broadcastState();
+		// The title may have become available this turn (the first user message
+		// becomes the fallback title); push it to clients if it changed.
+		broadcastTitleIfChanged();
 		// Refresh lastSeen so age-based pruning of dormant records is accurate.
 		if (currentCtx) writeRegistry(currentCtx, socketPath ?? null);
 	});
@@ -221,6 +235,12 @@ export default function (pi: ExtensionAPI) {
 			sessionUpdate: role === "user" ? "user_message_chunk" : "agent_message_chunk",
 			content: { type: "text", text },
 		});
+		// The first user message is the fallback title: capture it and push the
+		// title as soon as it arrives, so a card stops showing "(unnamed)".
+		if (role === "user" && firstUserText === undefined) {
+			firstUserText = text;
+			broadcastTitleIfChanged();
+		}
 	});
 
 	pi.on("tool_execution_start", async (event) => {
@@ -255,10 +275,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_info_changed", async () => {
-		broadcast({
-			sessionUpdate: "session_info_update",
-			title: currentCtx ? sessionTitle(currentCtx) : null,
-		});
+		broadcastTitleIfChanged();
 		// Persist the new title so dormant records show the current name.
 		if (currentCtx) writeRegistry(currentCtx, socketPath ?? null);
 	});
@@ -299,6 +316,17 @@ export default function (pi: ExtensionAPI) {
 		for (const c of clients) {
 			if (!c.destroyed) c.write(line);
 		}
+	}
+
+	// Push a session_info_update only when the computed title changed, so an
+	// already-connected client sees the name appear without a reconnect. New
+	// clients still get the current title from their session/list seed.
+	function broadcastTitleIfChanged() {
+		if (!currentCtx) return;
+		const title = sessionTitle(currentCtx);
+		if (title === lastTitle) return;
+		lastTitle = title;
+		broadcast({ sessionUpdate: "session_info_update", title });
 	}
 
 	function broadcast(update: Record<string, unknown>) {
@@ -378,7 +406,10 @@ export default function (pi: ExtensionAPI) {
 	// the session name if the model set it, else the first user message. pi never
 	// auto-names sessions, so without this corral would show "(unnamed)".
 	function sessionTitle(ctx: ExtensionContext): string | null {
-		let raw = pi.getSessionName() ?? undefined;
+		// Name if set, else the first user message this run, else scan history
+		// (for a resumed session, whose first message predates this run and so
+		// never fired message_end here).
+		let raw = pi.getSessionName() ?? firstUserText ?? undefined;
 		if (!raw) {
 			for (const e of ctx.sessionManager.getEntries() as Array<{ type?: string; message?: unknown }>) {
 				if (e.type === "message" && (e.message as { role?: string })?.role === "user") {
