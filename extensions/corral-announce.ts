@@ -272,10 +272,34 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// Longest title corral should receive; a raw first user message can be huge.
+	const MAX_TITLE = 60;
+
+	// Title precedence mirrors window-title.ts so corral and the window agree:
+	// the session name if the model set it, else the first user message. pi never
+	// auto-names sessions, so without this corral would show "(unnamed)".
+	function sessionTitle(ctx: ExtensionContext): string | null {
+		let raw = pi.getSessionName() ?? undefined;
+		if (!raw) {
+			for (const e of ctx.sessionManager.getEntries() as Array<{ type?: string; message?: unknown }>) {
+				if (e.type === "message" && (e.message as { role?: string })?.role === "user") {
+					const t = messageText(e.message as { content?: unknown });
+					if (t) {
+						raw = t;
+						break;
+					}
+				}
+			}
+		}
+		if (!raw) return null;
+		const clean = raw.replace(/\s+/g, " ").trim();
+		return clean.length > MAX_TITLE ? `${clean.slice(0, MAX_TITLE - 1)}…` : clean;
+	}
+
 	function sessionInfo(ctx: ExtensionContext) {
 		return {
 			sessionId: ctx.sessionManager.getSessionFile() ?? `ephemeral-${process.pid}`,
-			title: pi.getSessionName() ?? null,
+			title: sessionTitle(ctx),
 			cwd: ctx.cwd,
 		};
 	}

@@ -72,8 +72,7 @@ fn column(
     let title = format!(" {heading} ({}) ", agents.len());
     let list = List::new(items)
         .block(Block::default().title(title).borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("▌");
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default();
     state.select(selected_row);
     frame.render_stateful_widget(list, area, &mut state);
