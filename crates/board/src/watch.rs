@@ -7,12 +7,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::Sender;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use crate::discovery::SocketEntry;
 use crate::model::{Agent, Origin, State, Update};
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// State a fresh, unclassified agent shows as: visible and flagged for the
 /// operator rather than silently hidden.
@@ -133,11 +130,6 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
         }
     }
 }
-
-// CONNECT_TIMEOUT is reserved for a future non-blocking connect; documented to
-// avoid an unused warning while the blocking connect is used.
-#[allow(dead_code)]
-const _: Duration = CONNECT_TIMEOUT;
 
 #[cfg(test)]
 mod tests {

@@ -332,10 +332,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             // The approval overlay captures all input until the operator
             // decides on the pending inter-agent message: a=allow once,
             // A=allow always (persist), d=deny, esc=decide later.
-            if router.as_ref().is_some_and(|r| r.pending().is_some()) {
+            if let Some(r) = router.as_mut().filter(|r| r.pending().is_some()) {
                 if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
-                        let r = router.as_mut().unwrap();
                         match key.code {
                             KeyCode::Char('a') => r.allow_once(),
                             KeyCode::Char('A') => {
