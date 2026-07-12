@@ -520,8 +520,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         let area = Rect::new(0, 0, s.width, s.height);
                         let scroll = std::array::from_fn(|i| list_states[i].offset());
                         if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
-                            selected = idx;
-                            activate_selected(&focuser, &launcher, &board, selected, &mut status);
+                            match click_action(idx, selected) {
+                                Click::Select => selected = idx,
+                                Click::Go => {
+                                    selected = idx;
+                                    activate_selected(
+                                        &focuser, &launcher, &board, selected, &mut status,
+                                    );
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -531,6 +538,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         }
     }
     Ok(())
+}
+
+/// A left click first selects a card; only a click on the already-selected
+/// card goes to it. Keeps a stray click from teleporting the operator's
+/// window. Extracted pure so the rule is unit-tested.
+enum Click {
+    Select,
+    Go,
+}
+
+fn click_action(clicked: usize, selected: usize) -> Click {
+    if clicked == selected {
+        Click::Go
+    } else {
+        Click::Select
+    }
 }
 
 /// Enter/click on the selected agent: focus a live window, or resume a dormant
@@ -649,4 +672,16 @@ fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
             true
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn click_goes_only_on_the_already_selected_card() {
+        assert!(matches!(click_action(3, 3), Click::Go));
+        assert!(matches!(click_action(3, 1), Click::Select));
+        assert!(matches!(click_action(0, 5), Click::Select));
+    }
 }
