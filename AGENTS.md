@@ -93,9 +93,9 @@ message/tool updates) is ACP v1.
 
 ## Interfaces to the Outside World
 
-- CLI `corral` — full-screen TUI. Up/Down (or j/k) or scroll wheel select,
-  Enter or left-click focus the selected agent's window, `n` spawn a new agent,
-  `q`/Esc quit. Requires
+- CLI `corral` — full-screen TUI. Up/Down (or j/k, or scroll) move within a
+  column; Left/Right (or h/l) switch columns; Enter or left-click focus the
+  selected agent's window; `n` spawn a new agent; `q`/Esc quit. Requires
   `$HOME` (or `$CORRAL_ACP_DIR`); uses `swaymsg` and `kitty` for focus and spawn.
 - pi extension `corral-announce` — see Extensions above.
 - Unix sockets in `$HOME/.corral/sockets/` (created 0700; override with

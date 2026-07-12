@@ -104,7 +104,7 @@ pub fn render(frame: &mut Frame, board: &Board, selected: usize, status: &str) {
     column(frame, cols[1], "Idle", &idle, idle_sel);
     column(frame, cols[2], "Running", &running, running_sel);
 
-    let help = "↑/↓ or scroll select   ⏎ or click focus   n new   q quit";
+    let help = "↑/↓ move   ←/→ column   ⏎/click focus   n new   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {
