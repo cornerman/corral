@@ -67,7 +67,7 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/model.rs` — `Agent` (`Origin` Live or Dormant) and `Board`. Live
     agents are keyed by socket path (driven by watchers); dormant agents are a
     derived view of the registry (cleanly shut-down, resumable, not-live
-    records, latest-per-cwd). `State` is Running, Idle, or RequiresAction (the
+    records, one card per session, newest first). `State` is Running, Idle, or RequiresAction (the
     ACP v2 `state_update` vocabulary). `Column::ALL` is the single source of
     truth for the column set and order; navigation, hit-testing, and rendering
     all derive from it. Pure, unit-tested.
@@ -240,7 +240,8 @@ message/tool updates) is ACP v1.
 - Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
   socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
   to a global gitignore if the stray dir bothers you.
-- Dormant sessions render as dormant (latest-per-cwd), resume on Enter, dismiss
+- Dormant sessions render as dormant (one card per resumable session, newest
+  first), resume on Enter, dismiss
   on `d`, and are pruned when their session file is gone or the record is >14
   days stale. A crashed session (no clean shutdown, so its registry `socket`
   stays set) is caught by a staleness sweep: the board records sockets whose

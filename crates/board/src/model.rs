@@ -3,7 +3,7 @@
 //! agents are a derived view of the registry: cleanly shut-down, resumable
 //! sessions that are not currently live. Nothing here is persisted.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use crate::discovery::RegistryEntry;
@@ -127,9 +127,9 @@ impl Board {
     /// never unlinked). `dead_sockets` carries the socket paths whose watcher
     /// failed to connect, so a crashed agent surfaces as resumable instead of
     /// vanishing, while a freshly starting one (socket set, not yet dead) is
-    /// left to the live path and never flickers through Dormant. Only the most
-    /// recent record per cwd is kept, so a busy directory shows one card, not a
-    /// pile of old sessions.
+    /// left to the live path and never flickers through Dormant. Every
+    /// resumable, not-live record is shown (one card per dormant session,
+    /// newest first), so resuming one visibly drops the count.
     pub fn sync_registry(&mut self, entries: &[RegistryEntry], dead_sockets: &HashSet<PathBuf>) {
         let live_ids: HashSet<&str> = self
             .live
@@ -137,33 +137,28 @@ impl Board {
             .filter_map(|a| a.session_id.as_deref())
             .collect();
 
-        let mut latest: HashMap<&str, &RegistryEntry> = HashMap::new();
-        for e in entries {
-            if e.resume.is_none() {
-                continue;
-            }
-            // A set, non-dead socket means the process is live or still
-            // connecting: not dormant. Only None (clean shutdown) or a
-            // known-dead socket (crash) makes a dormant candidate.
-            let socket_alive = e.socket.as_ref().is_some_and(|s| !dead_sockets.contains(s));
-            if socket_alive {
-                continue;
-            }
-            if live_ids.contains(e.session_id.as_str()) {
-                continue;
-            }
-            let cwd = e.cwd.as_deref().unwrap_or("");
-            match latest.get(cwd) {
-                // ISO-8601 last_seen sorts as a plain string; keep the newest.
-                Some(prev) if prev.last_seen >= e.last_seen => {}
-                _ => {
-                    latest.insert(cwd, e);
+        // Every resumable, not-live record: one card per dormant session.
+        let mut recs: Vec<&RegistryEntry> = entries
+            .iter()
+            .filter(|e| {
+                if e.resume.is_none() {
+                    return false;
                 }
-            }
-        }
-
-        let mut dormant: Vec<Agent> = latest
-            .values()
+                // A set, non-dead socket means the process is live or still
+                // connecting: not dormant. Only None (clean shutdown) or a
+                // known-dead socket (crash) is a dormant candidate.
+                let socket_alive = e.socket.as_ref().is_some_and(|s| !dead_sockets.contains(s));
+                !socket_alive && !live_ids.contains(e.session_id.as_str())
+            })
+            .collect();
+        // Newest first; session id breaks ties for a stable order across ticks.
+        recs.sort_by(|a, b| {
+            b.last_seen
+                .cmp(&a.last_seen)
+                .then(a.session_id.cmp(&b.session_id))
+        });
+        self.dormant = recs
+            .into_iter()
             .map(|e| Agent {
                 socket_path: PathBuf::new(),
                 pid: 0,
@@ -177,9 +172,6 @@ impl Board {
                 resume: e.resume.clone(),
             })
             .collect();
-        // Newest first, stable across ticks (ties broken by cwd).
-        dormant.sort_by(|a, b| b.cwd.cmp(&a.cwd));
-        self.dormant = dormant;
     }
 
     /// Live agents in a given state, in stable order.
@@ -218,7 +210,7 @@ impl Board {
             .or_else(|| self.dormant_by_session(session_id))
     }
 
-    /// The dormant column, latest-per-cwd, newest first.
+    /// The dormant column: every resumable, not-live session, newest first.
     pub fn dormant(&self) -> Vec<&Agent> {
         self.dormant.iter().collect()
     }
@@ -331,9 +323,9 @@ mod tests {
     }
 
     #[test]
-    fn dormant_keeps_latest_per_cwd_and_excludes_live() {
+    fn dormant_shows_all_resumable_newest_first_excluding_live() {
         let mut b = Board::default();
-        // A live session in /p1 (its sessionId must suppress a dormant twin).
+        // A live session (its sessionId must suppress a dormant twin).
         b.apply(Update::Upsert(agent("live-1", State::Running)));
         let entries = vec![
             dormant_record("old", "/p2", "2026-01-01T00:00:00Z"),
@@ -346,8 +338,10 @@ mod tests {
         ];
         b.sync_registry(&entries, &HashSet::new());
         let d = b.dormant();
-        assert_eq!(d.len(), 1, "latest-per-cwd, live excluded");
+        // Both /p2 records shown (no per-cwd dedup), newest first; live excluded.
+        assert_eq!(d.len(), 2, "all resumable, live excluded");
         assert_eq!(d[0].session_id.as_deref(), Some("new"));
+        assert_eq!(d[1].session_id.as_deref(), Some("old"));
         assert_eq!(d[0].origin, Origin::Dormant);
     }
 

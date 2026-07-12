@@ -14,7 +14,9 @@ const PAD: u16 = 1;
 const HEAD_ROWS: u16 = 2;
 /// Rows one card spans: title, meta, and a blank spacer for air.
 const CARD_ROWS: u16 = 3;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -356,6 +358,10 @@ fn column(
         .collect();
     let list = List::new(items)
         .highlight_symbol("▍")
+        // Always reserve the bar column so selecting never shifts the text
+        // (each column is its own list; the default only reserves it when that
+        // list has the selection).
+        .highlight_spacing(HighlightSpacing::Always)
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
     state.select(selected_row);
     frame.render_stateful_widget(list, rows[2], state);
