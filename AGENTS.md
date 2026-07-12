@@ -46,7 +46,7 @@ your terminal (pi, interactive TUI)              another terminal
     |    on session_start                            |    initialize + session/list (seed)
     |  serves ACP beside the live TUI:               |    streams state_update -> column
     |    initialize, session/list, prompt, cancel    |  Enter -> focus (sway) or resume
-    |  broadcasts activity + state_update            |  n -> spawn agent (kitty)
+    |  broadcasts activity + state_update            |  shift+enter -> spawn agent (kitty)
     |  clears socket + unlinks on session_shutdown   |  m -> send prompt to agent
     |                                                |
   message_agent tool -> ~/.corral/outbox/<id>.json --+  routes each mailbox file:
@@ -115,20 +115,23 @@ your terminal (pi, interactive TUI)              another terminal
     selection bar. Three live triage columns (Requires Action, Idle, Running)
     then a dim-gray Dormant column (resumable history). Plus a help footer.
     Owns the card, heading, separator, and age/focus-label formatting.
-  - `src/picker.rs` — the `c` spawn directory picker: candidates are exactly
-    the cwds of sessions on the board (every dir ever opened, live or
-    dormant; no filesystem scan) narrowed by a subsequence fuzzy filter.
-    Unit-tested.
+  - `src/picker.rs` — the `/` jump picker: fuzzy-filter the board's agents
+    (`board.selectable()`); Enter goes to one, Shift+Enter spawns a fresh agent
+    in its dir. Subsequence fuzzy filter; `selected_original` maps the chosen
+    label back to its agent. Unit-tested.
   - `src/main.rs` — the imperative shell: the event loop that scans + prunes
     the registry, spawns watchers, drains updates, polls the `Router`, draws,
-    and dispatches input. Input modes are one `Overlay` enum (spawn-dir /
-    focus-agent picker, or message compose), exclusive by construction. Keys:
-    Up/Down within a column, Left/Right across columns, Enter or click
-    focus/resume, `m` message an agent (resume a dormant one to deliver),
-    `n`/`c` spawn, `d` close a live
-    agent's window or forget a dormant record, `f` fuzzy go-to (focus a live
-    agent or resume a dormant one),
-    `q` quit.
+    and dispatches input. Input modes are one `Overlay` enum (the `/` jump
+    picker or message compose), exclusive by construction. Two verbs chosen by
+    a modifier, on both the board and the picker: Enter goes to the selection
+    (focus a live window, resume a dormant session), Shift+Enter spawns a new
+    agent in the selection's dir. Keys: Up/Down within a column, Left/Right
+    across columns, Enter/Shift+Enter as above, `/` open the jump picker, `m`
+    message an agent (resume a dormant one to deliver), `d` close a live
+    agent's window or forget a dormant record, `q` quit. A left click is
+    two-stage (`click_action`): first click selects, a click on the
+    already-selected card goes. Shift+Enter needs the kitty keyboard protocol
+    (`main` pushes `DISAMBIGUATE_ESCAPE_CODES` where supported).
 
 ## Extensions
 
@@ -196,18 +199,20 @@ message/tool updates) is ACP v1.
 
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
-  h/l) switch columns; Enter or left-click focuses a live agent's window or
-  resumes a dormant session (`pi --session`); `m` compose a message to any
-  agent — delivered to a live one over its socket, or a dormant one by resuming
-  it first, then delivering when it announces; `n` spawn in the selected agent's
-  cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy go-to any
-  agent by title/cwd (focus if live, resume if dormant); `d` close the selected
-  live agent (kill its terminal process, closing the window; pi then goes
-  dormant and resumable) or forget the selected dormant record; `q`/Esc
-  quit. Long columns scroll to keep the selection visible; live cards show
-  time-in-state. Reads `$HOME` (or
-  `$CORRAL_REGISTRY_DIR`) for the registry dir; the `c` picker offers only the
-  cwds of sessions already on the board; uses `swaymsg` and `kitty` for focus
+  h/l) switch columns; Enter or left-click goes to the selected agent (focus a
+  live window, resume a dormant session with `pi --session`); Shift+Enter
+  spawns a new agent in the selected agent's cwd; `/` opens a fuzzy jump picker
+  over all agents (Enter goes, Shift+Enter spawns beside); `m` compose a
+  message to any agent — delivered to a live one over its socket, or a dormant
+  one by resuming it first, then delivering when it announces; `d` close the
+  selected live agent (kill its terminal process, closing the window; pi then
+  goes dormant and resumable) or forget the selected dormant record; `q`/Esc
+  quit. A left click is two-stage: first click selects, a click on the
+  already-selected card goes. Shift+Enter needs the kitty keyboard protocol
+  (corral pushes it where supported). Long columns scroll to keep the selection
+  visible; live cards show time-in-state. Reads `$HOME` (or
+  `$CORRAL_REGISTRY_DIR`) for the registry dir; the `/` picker offers only the
+  agents already on the board; uses `swaymsg` and `kitty` for focus
   and spawn.
 - pi extension `corral-announce` — see Extensions above.
 - Registry records in `$HOME/.corral/registry/` and unix sockets in each

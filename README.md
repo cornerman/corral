@@ -5,10 +5,11 @@ An attention board for coding-agent sessions running on your machine.
 You launch pi agents from your own terminals. Corral shows every running agent
 as a card in one of four columns, Requires Action, Idle, Running (the ACP v2
 state vocabulary), or Dormant (cleanly shut-down, resumable sessions), so you
-can see at a glance which agent is blocked waiting on you. Press Enter to focus
-a live agent's window or resume a dormant session, `m` to send it a message,
-`n` to spawn a new agent, `d` to close a live agent or forget a dormant
-record, `q` to quit. Corral
+can see at a glance which agent is blocked waiting on you. Press Enter to go to
+the selected agent (focus a live window, resume a dormant session), Shift+Enter
+to spawn a new agent in its dir, `/` to fuzzy-jump to any agent, `m` to send a
+message, `d` to close a live agent or forget a dormant record, `q` to quit.
+Corral
 never drives an agent on its own; it routes your attention and jumps you to the
 real window, and delivers a message only when you send one.
 
@@ -32,11 +33,12 @@ talks ACP to that agent.
 
 - **corral** (`crates/board`) — the attention board TUI. Scans
   `$HOME/.corral/registry/`, holds a live watch connection per live socket, and columns
-  each by Requires Action / Idle / Running / Dormant. Enter focuses a live
-  agent's window via sway or resumes a dormant session; `n` spawns a new agent
-  via kitty in the selected agent's cwd; `c`
-  opens a fuzzy picker over the cwds of sessions already on the board to create
-  one in a previously opened directory. Window focus and agent spawn sit behind traits
+  each by Requires Action / Idle / Running / Dormant. Enter goes to the
+  selected agent (focus a live window via sway, or resume a dormant session);
+  Shift+Enter spawns a new agent via kitty in its cwd; `/` opens a fuzzy jump
+  picker over the board's agents (Enter goes, Shift+Enter spawns beside).
+  Shift+Enter relies on the kitty keyboard protocol. Window focus and agent
+  spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them.
 - **corral-announce** (pi extension, `extensions/corral-announce.ts`) —
