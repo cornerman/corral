@@ -4,7 +4,7 @@
 //! (override with $CORRAL_REGISTRY_DIR): each `<sessionId>.json` names a
 //! workdir-local ACP socket. Corral watches each live socket for its
 //! running/idle/requires_action state,
-//! and shows them in three columns. Enter or a mouse click focuses an agent's
+//! and shows them in four columns. Enter or a mouse click focuses an agent's
 //! window (sway), `n` spawns a new agent (kitty) in the selected agent's dir,
 //! `c` opens a fuzzy picker to create one in another directory, `q` quits.
 //! Up/Down (or scroll) move within a
@@ -67,30 +67,30 @@ fn main() {
     }
 }
 
-/// The registry directory: $CORRAL_REGISTRY_DIR, else $HOME/.corral/registry.
+/// A corral path: the `env` override if set, else `$HOME/.corral/<name>`.
+/// `None` only when neither is available. All of corral's on-disk locations
+/// share this shape (a well-known name under `~/.corral`, overridable for
+/// tests and non-standard setups).
+fn corral_path(env: &str, name: &str) -> Option<PathBuf> {
+    if let Some(v) = std::env::var_os(env) {
+        return Some(PathBuf::from(v));
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join(name))
+}
+
+/// The registry directory: the session records corral discovers.
 fn registry_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("CORRAL_REGISTRY_DIR") {
-        return Some(PathBuf::from(d));
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("registry"))
+    corral_path("CORRAL_REGISTRY_DIR", "registry")
 }
 
-/// The outbox directory: $CORRAL_OUTBOX_DIR, else $HOME/.corral/outbox. Must
-/// match the path the corral-announce `message_agent` tool writes to.
+/// The outbox directory the corral-announce `message_agent` tool writes to.
 fn outbox_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("CORRAL_OUTBOX_DIR") {
-        return Some(PathBuf::from(d));
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("outbox"))
+    corral_path("CORRAL_OUTBOX_DIR", "outbox")
 }
 
-/// The whitelist file of pre-authorized `(sender -> target)` dir pairs:
-/// $CORRAL_WHITELIST, else $HOME/.corral/whitelist.
+/// The whitelist file of pre-authorized `(sender -> target)` dir pairs.
 fn whitelist_file() -> Option<PathBuf> {
-    if let Some(f) = std::env::var_os("CORRAL_WHITELIST") {
-        return Some(PathBuf::from(f));
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("whitelist"))
+    corral_path("CORRAL_WHITELIST", "whitelist")
 }
 
 /// A message being routed to a directory that had no (or, with `force_new`, no
@@ -177,8 +177,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         // socket just reconnects-and-Gones cheaply once per second.
         while let Ok(update) = rx.try_recv() {
             match &update {
-                // A Gone drops the socket so a transient failure self-heals on
-                // the next scan; a dead socket reconnects-and-Gones cheaply.
                 Update::Gone(path) => {
                     known.remove(path);
                     state_since.remove(path);
