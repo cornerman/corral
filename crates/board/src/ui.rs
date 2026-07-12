@@ -414,8 +414,7 @@ pub fn render(
         );
     }
 
-    let help =
-        "↑↓←→ move   ⏎ go   ⇧⏎ new   / jump   m msg   d close/forget   q quit";
+    let help = "↑↓←→ move   ⏎ go   ⇧⏎ new   / jump   m msg   d close/forget   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {

@@ -517,7 +517,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                 Click::Go => {
                                     selected = idx;
                                     activate_selected(
-                                        &focuser, &launcher, &board, selected, &mut status,
+                                        &focuser,
+                                        &launcher,
+                                        &board,
+                                        selected,
+                                        &mut status,
                                     );
                                 }
                             }
