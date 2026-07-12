@@ -135,7 +135,7 @@ pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
         ]),
         Line::from(vec![
             Span::raw("to:   "),
-            Span::styled(msg.target_dir.clone(), bold),
+            Span::styled(msg.target_label(), bold),
         ]),
         Line::raw(""),
         Line::raw(msg.message.clone()),

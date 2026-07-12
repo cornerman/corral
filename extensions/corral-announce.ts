@@ -29,7 +29,9 @@
  * Registers one tool, message_agent, that queues a cross-session message as a
  * mailbox file under $HOME/.corral/outbox/<id>.json (override with
  * $CORRAL_OUTBOX_DIR) for corral to route; the agent never reaches another
- * session directly.
+ * session directly. A message is addressed by target_dir (whoever works there)
+ * or target_session (an exact agent, e.g. to reply), and is stamped with the
+ * sender's session id so the receiver can reply to precisely this agent.
  *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
  *   pi -e /path/to/corral-announce.ts
@@ -72,17 +74,27 @@ export default function (pi: ExtensionAPI) {
 		name: "message_agent",
 		label: "Message agent",
 		description:
-			"Send a message to another coding-agent session, addressed by its working " +
-			"directory. corral routes it (spawning an agent there if none is running) and " +
-			"tags it as coming from you. Fire-and-forget: it does not wait for a reply.",
+			"Send a message to another coding-agent session. Address it EITHER by " +
+			"target_dir (reach whoever works in that directory, spawning one if none) " +
+			"OR by target_session (reach that exact agent, resuming it if dormant) — " +
+			"give exactly one. To reply to a message you received, pass its session id " +
+			"(shown as 'session <id>' in the incoming tag) as target_session. corral " +
+			"routes it and tags it as coming from you. Fire-and-forget: no reply is awaited.",
 		parameters: Type.Object({
-			target_dir: Type.String({
-				description: "Absolute path of the target agent's working directory.",
-			}),
+			target_dir: Type.Optional(
+				Type.String({
+					description: "Absolute path of the target agent's working directory.",
+				}),
+			),
+			target_session: Type.Optional(
+				Type.String({
+					description: "Exact session id of the target agent (e.g. to reply to a sender).",
+				}),
+			),
 			message: Type.String({ description: "The message to deliver." }),
 			force_new: Type.Optional(
 				Type.Boolean({
-					description: "Spawn a dedicated fresh agent in the target dir instead of reusing one.",
+					description: "With target_dir: spawn a dedicated fresh agent instead of reusing one.",
 				}),
 			),
 		}),
@@ -92,25 +104,34 @@ export default function (pi: ExtensionAPI) {
 			if (!outbox) {
 				return { content: [{ type: "text", text: "corral: no HOME; cannot queue message" }] };
 			}
+			const hasDir = typeof params.target_dir === "string" && params.target_dir.length > 0;
+			const hasSession = typeof params.target_session === "string" && params.target_session.length > 0;
+			if (hasDir === hasSession) {
+				return {
+					content: [{ type: "text", text: "message_agent: give exactly one of target_dir or target_session" }],
+				};
+			}
 			fs.mkdirSync(outbox, { recursive: true, mode: 0o700 });
 			const id = randomUUID();
-			const record = {
+			const record: Record<string, unknown> = {
 				id,
 				fromCwd: ctx.cwd,
-				targetDir: params.target_dir,
+				// The sender's session id, so the recipient can reply to this exact agent.
+				fromSession: ctx.sessionManager.getSessionId(),
 				message: params.message,
 				forceNew: params.force_new ?? false,
 				createdAt: new Date().toISOString(),
 			};
+			if (hasDir) record.targetDir = params.target_dir;
+			else record.targetSession = params.target_session;
 			// Atomic write so a scanning corral never reads a half-written mailbox.
 			const file = path.join(outbox, `${id}.json`);
 			const tmp = `${file}.${process.pid}.tmp`;
 			fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 			fs.renameSync(tmp, file);
+			const dest = hasDir ? `the agent in ${params.target_dir}` : `session ${params.target_session}`;
 			return {
-				content: [
-					{ type: "text", text: `Queued message to the agent in ${params.target_dir} (corral will deliver it).` },
-				],
+				content: [{ type: "text", text: `Queued message to ${dest} (corral will deliver it).` }],
 			};
 		},
 	});

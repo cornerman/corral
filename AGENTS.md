@@ -50,9 +50,10 @@ your terminal (pi, interactive TUI)              another terminal
     |  clears socket + unlinks on session_shutdown   |  m -> send prompt to agent
     |                                                |
   message_agent tool -> ~/.corral/outbox/<id>.json --+  routes each mailbox file:
-    (another agent asks to message a target dir)         authorize (whitelist +
+    (asks to message a target dir or session)            authorize (whitelist +
                                                          operator popup), resolve
-                                                         target dir (spawn if none),
+                                                         target dir/session (spawn
+                                                         or resume if needed),
                                                          inject with provenance tag
 ```
 
@@ -89,13 +90,16 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Unit-tested against a throwaway listener.
-  - `src/mailbox.rs` — the outbox: parse `message_agent` mailbox files, add the
-    `[from agent in <dir>]` provenance tag, and read/append the
+  - `src/mailbox.rs` — the outbox: parse `message_agent` mailbox files (a
+    `Target` is a directory or an exact session id), add the `[from agent in
+    <dir> (session <id>)]` provenance/reply-handle tag, and read/append the
     `(sender -> target)` whitelist. Pure, unit-tested.
   - `src/router.rs` — `Router`: routes agent-initiated messages from the
-    outbox. Owns the authorization decisions, in-flight spawns, and the one
-    message awaiting operator approval; the event loop polls it and forwards
-    the a/A/d/esc key. Unit-tested (gating, spawn, persist).
+    outbox to a target directory (reuse or spawn) or an exact session (deliver
+    if live, else resume its dormant record). Owns the authorization
+    decisions, in-flight spawns/resumes, and the one message awaiting operator
+    approval; the event loop polls it and forwards the a/A/d/esc key.
+    Unit-tested (gating, spawn, session delivery, unknown-session drop).
   - `src/nav.rs` — pure selection math: move the flat selection index within a
     column (up/down) or across columns (left/right) over the per-column
     counts. Unit-tested.
@@ -133,8 +137,10 @@ your terminal (pi, interactive TUI)              another terminal
   `turn_start`/`turn_end` and while the interactive `question` tool blocks on
   the user. A newly connected client is seeded with the current `state_update`.
   Serves multiple concurrent clients. Also registers a `message_agent` tool
-  (`target_dir`, `message`, `force_new`) that queues a cross-session message as
-  `~/.corral/outbox/<id>.json` for corral to route. Install: symlink into
+  (`target_dir` or `target_session`, `message`, `force_new`) that queues a
+  cross-session message as `~/.corral/outbox/<id>.json` (stamped with the
+  sender's `fromSession` as a reply handle) for corral to route. Install:
+  symlink into
   `~/.pi/agent/extensions/`.
 
 ## Inter-Agent Messaging
@@ -144,11 +150,21 @@ corral is the sole trusted cross-workdir router. An agent calls `message_agent`,
 which drops a mailbox file in `~/.corral/outbox`; corral picks it up on the next
 tick, authorizes the `(sender-dir -> target-dir)` pair against the whitelist (or
 asks the operator: `a` allow once, `A` allow always, `d` deny, `esc` later),
-resolves the target directory to a live agent (spawning one there if none runs,
-or a dedicated one for `force_new`), and injects the message over that agent's
-socket with a `[from agent in <dir>]` provenance tag. Delivery reuses
-`prompt::send_prompt`, the same path as operator messaging (`m`). Fire-and-
-forget: no reply is routed back (a response channel is a planned v2).
+resolves the target, and injects the message over that agent's socket with a
+`[from agent in <dir> (session <id>)]` provenance tag. Delivery reuses
+`prompt::send_prompt`, the same path as operator messaging (`m`).
+
+A message is addressed either by **directory** (`target_dir`: reach whoever
+works there, spawning one if none, or a dedicated one for `force_new`) or by
+**session id** (`target_session`: reach that exact agent, resuming it from its
+dormant record if not live). Session addressing is what makes a reply precise:
+the provenance tag carries the sender's session id as a reply handle, so the
+receiver answers with `message_agent(target_session = ..)` and it lands on the
+agent that actually asked, never a sibling that happens to share the directory.
+Authorization is always keyed on the `(sender-dir -> target-dir)` pair (a
+session target resolves to its cwd), since directories are the stable, human-
+meaningful unit. Fire-and-forget: no reply is auto-routed; the receiver sends a
+new message back using the reply handle.
 
 ## ACP Conformance
 

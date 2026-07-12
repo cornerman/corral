@@ -56,15 +56,21 @@ One per-session file drives discovery, isolation, and resume.
       agent-initiated routing below.
 - [x] Agent-initiated transport: `message_agent` tool writes
       `~/.corral/outbox/<id>.json`; corral routes each tick (`mailbox.rs` +
-      `route_outbox`), async and board-down-tolerant. Address by target dir;
-      spawns there if absent; `force_new` spawns a dedicated agent (targets the
-      socket that appears after the spawn).
-- [x] Provenance + auth: injects with the `[from agent in <dir>]` tag;
-      whitelist of `(sender-dir -> target-dir)` in `~/.corral/whitelist` plus an
-      operator popup (a allow once / A allow always / d deny / esc later). v1
-      fire-and-forget. `_meta` not added (send path is plain text).
-- [ ] v2: response channel back to the sender (capture the target's final
-      message into the sender's inbox).
+      `router.rs`), async and board-down-tolerant.
+- [x] Addressing by target dir (spawn if absent; `force_new` for a dedicated
+      agent) OR by exact `target_session` (deliver if live, else resume its
+      dormant record). Session addressing makes replies land on the precise
+      sender, not a sibling sharing the dir. An unknown session is dropped.
+- [x] Provenance + reply handle: injects `[from agent in <dir> (session <id>)]`
+      — the sender's session id is the handle the receiver replies to via
+      `message_agent(target_session=..)`. Auth is the `(sender-dir ->
+      target-dir)` whitelist (a session target resolves to its cwd) in
+      `~/.corral/whitelist` plus the operator popup (a/A/d/esc). `_meta` not
+      added (send path is plain text).
+- [ ] v2: auto response channel — corral captures the target's final message
+      and routes it back to the sender's session without the receiver having to
+      call `message_agent` itself. (The reply handle above makes a manual reply
+      already correct; this only automates it.)
 - [ ] OPEN: delivery-target policy when the target is Running. v1 reuses +
       queues as follow-up; never-inject-Running and always-new are the
       alternatives. Settle with real use.

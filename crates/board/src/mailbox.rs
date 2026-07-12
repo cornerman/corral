@@ -7,12 +7,24 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// One queued cross-session message, addressed by target working directory.
+/// Who a message is addressed to. A directory reaches whoever works there
+/// (spawning one if none); a session reaches exactly that agent (resuming it if
+/// dormant) and is what a precise reply uses, since a directory can hold zero,
+/// one, or several sessions over time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Dir(String),
+    Session(String),
+}
+
+/// One queued cross-session message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub id: String,
     pub from_cwd: String,
-    pub target_dir: String,
+    /// The sender's session id, so the receiver can reply to this exact agent.
+    pub from_session: Option<String>,
+    pub target: Target,
     pub message: String,
     pub force_new: bool,
 }
@@ -20,21 +32,42 @@ pub struct Message {
 impl Message {
     /// The delivered text, carrying in-band provenance so the receiving model
     /// and the watching human see it came from another agent, not the
-    /// operator.
+    /// operator. When the sender's session is known it is included as a reply
+    /// handle: the receiver answers with `message_agent(target_session = ..)`.
     pub fn tagged(&self) -> String {
-        format!("[from agent in {}] {}", self.from_cwd, self.message)
+        match &self.from_session {
+            Some(sid) => format!(
+                "[from agent in {} (session {})] {}",
+                self.from_cwd, sid, self.message
+            ),
+            None => format!("[from agent in {}] {}", self.from_cwd, self.message),
+        }
+    }
+
+    /// Human label for the target, shown in the approval overlay.
+    pub fn target_label(&self) -> String {
+        match &self.target {
+            Target::Dir(d) => d.clone(),
+            Target::Session(s) => format!("session {s}"),
+        }
     }
 }
 
-/// Parse one mailbox JSON document. Requires the routing fields; `force_new`
-/// defaults to false. Returns `None` on malformed JSON or a missing field.
+/// Parse one mailbox JSON document. Requires `id`, `fromCwd`, `message`, and a
+/// target (`targetSession` wins over `targetDir`); `forceNew` defaults to
+/// false. Returns `None` on malformed JSON or a missing field.
 pub fn parse_message(text: &str) -> Option<Message> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
+    let target = match s("targetSession") {
+        Some(sid) => Target::Session(sid),
+        None => Target::Dir(s("targetDir")?),
+    };
     Some(Message {
         id: s("id")?,
         from_cwd: s("fromCwd")?,
-        target_dir: s("targetDir")?,
+        from_session: s("fromSession"),
+        target,
         message: s("message")?,
         force_new: v.get("forceNew").and_then(|x| x.as_bool()).unwrap_or(false),
     })
@@ -98,7 +131,8 @@ mod tests {
         Message {
             id: "1".into(),
             from_cwd: "/a".into(),
-            target_dir: "/b".into(),
+            from_session: None,
+            target: Target::Dir("/b".into()),
             message: "hi".into(),
             force_new: false,
         }
@@ -114,12 +148,28 @@ mod tests {
     }
 
     #[test]
+    fn targets_a_session_with_reply_handle() {
+        let json = r#"{"id":"1","fromCwd":"/a","fromSession":"sid-9",
+            "targetSession":"sid-7","message":"hi"}"#;
+        let m = parse_message(json).unwrap();
+        assert_eq!(m.target, Target::Session("sid-7".into()));
+        assert_eq!(m.target_label(), "session sid-7");
+        // The reply handle (sender's session) rides in the provenance tag.
+        assert_eq!(m.tagged(), "[from agent in /a (session sid-9)] hi");
+    }
+
+    #[test]
     fn force_new_and_missing_fields() {
         let m = parse_message(
             r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","forceNew":true}"#,
         )
         .unwrap();
         assert!(m.force_new);
+        // Missing both target forms -> no target -> reject.
+        assert_eq!(
+            parse_message(r#"{"id":"1","fromCwd":"/a","message":"hi"}"#),
+            None
+        );
         assert_eq!(parse_message(r#"{"id":"1"}"#), None);
         assert_eq!(parse_message("nope"), None);
     }

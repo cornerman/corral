@@ -196,6 +196,28 @@ impl Board {
             .collect()
     }
 
+    /// The live agent for an exact session id, if running. Used to route a
+    /// session-addressed message (e.g. a reply) to precisely that agent.
+    pub fn live_by_session(&self, session_id: &str) -> Option<&Agent> {
+        self.live
+            .values()
+            .find(|a| a.session_id.as_deref() == Some(session_id))
+    }
+
+    /// The dormant record for an exact session id, if any (to resume it).
+    pub fn dormant_by_session(&self, session_id: &str) -> Option<&Agent> {
+        self.dormant
+            .iter()
+            .find(|a| a.session_id.as_deref() == Some(session_id))
+    }
+
+    /// The agent for a session id, live first then dormant. Used to resolve a
+    /// session-addressed target's cwd (for authorization).
+    pub fn by_session(&self, session_id: &str) -> Option<&Agent> {
+        self.live_by_session(session_id)
+            .or_else(|| self.dormant_by_session(session_id))
+    }
+
     /// The dormant column, latest-per-cwd, newest first.
     pub fn dormant(&self) -> Vec<&Agent> {
         self.dormant.iter().collect()
