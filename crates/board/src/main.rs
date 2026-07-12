@@ -31,6 +31,7 @@ mod focus;
 mod launch;
 mod model;
 mod picker;
+mod prompt;
 mod ui;
 mod watch;
 
@@ -72,6 +73,14 @@ fn registry_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("registry"))
 }
 
+/// The operator composing a message to a live agent (opened with `m`): the
+/// target socket, a display label for the prompt, and the text so far.
+struct Compose {
+    socket: PathBuf,
+    target: String,
+    buf: String,
+}
+
 fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::io::Result<()> {
     let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
     let focuser = SwayFocuser;
@@ -90,6 +99,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     // picker is a focus picker; None means it is the spawn-dir picker.
     let mut picker: Option<Picker> = None;
     let mut picker_focus: Option<Vec<model::Agent>> = None;
+    // Some(_) while the operator is composing a message (`m`) to a live agent.
+    let mut compose: Option<Compose> = None;
     // One persistent ListState per column so ratatui scrolls long columns and
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
@@ -170,6 +181,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 };
                 ui::render_picker(f, p, verb);
             }
+            if let Some(c) = &compose {
+                ui::render_compose(f, &c.target, &c.buf);
+            }
         })?;
 
         if event::poll(POLL)? {
@@ -230,6 +244,32 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 }
                 continue;
             }
+            // The compose overlay captures all input until it closes.
+            if let Some(c) = compose.as_mut() {
+                if let Event::Key(key) = ev {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Esc => compose = None,
+                            KeyCode::Enter => {
+                                let c = compose.take().unwrap();
+                                let text = c.buf.trim();
+                                if !text.is_empty() {
+                                    status = match prompt::send_prompt(&c.socket, text) {
+                                        Ok(()) => format!("sent to {}", c.target),
+                                        Err(e) => format!("send: {e}"),
+                                    };
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                c.buf.pop();
+                            }
+                            KeyCode::Char(ch) => c.buf.push(ch),
+                            _ => {}
+                        }
+                    }
+                }
+                continue;
+            }
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
@@ -261,6 +301,20 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     KeyCode::Char('c') => {
                         status.clear();
                         picker = Some(Picker::new(crate::picker::gather_dirs(&board)));
+                    }
+                    KeyCode::Char('m') => {
+                        // Message a live agent: deliver a prompt over its
+                        // socket. Dormant agents have no socket to receive on.
+                        status.clear();
+                        if let Some(a) = board.selectable().get(selected).copied() {
+                            if a.origin == Origin::Live {
+                                compose = Some(Compose {
+                                    socket: a.socket_path.clone(),
+                                    target: focus_label(a),
+                                    buf: String::new(),
+                                });
+                            }
+                        }
                     }
                     KeyCode::Char('f') => {
                         // Fuzzy-focus: pick among live agents by title/cwd,

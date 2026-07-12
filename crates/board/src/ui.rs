@@ -93,6 +93,19 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker, verb: &str) {
     frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
+/// Draw the `m` message composer as a centered overlay: the target agent in
+/// the title, the typed message on the input line.
+pub fn render_compose(frame: &mut Frame, target: &str, buf: &str) {
+    let area = centered(frame.area(), 70, 20);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(format!(" message {target} — ⏎ send, esc cancel "))
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(format!("> {buf}")), inner);
+}
+
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -189,8 +202,7 @@ pub fn render(
     column(frame, cols[2], "Running", &running, running_sel, s2, ages);
     column(frame, cols[3], "Dormant", &dormant, dormant_sel, s3, ages);
 
-    let help =
-        "↑/↓ move   ←/→ col   ⏎ focus/resume   f find   n new   c create   d dismiss   q quit";
+    let help = "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d dismiss   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {

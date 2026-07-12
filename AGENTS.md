@@ -8,7 +8,9 @@ architecture, or interfaces change.
 An attention board for locally running ACP agent sessions, plus the discovery
 convention it rides on. Design premise: the user launches agents in arbitrary
 terminals, never through a manager. Corral shows which agent needs attention
-and jumps the user to its real window; it never drives an agent.
+and jumps the user to its real window. It never drives an agent autonomously;
+the operator may deliver a message to a selected agent (`m`), which corral
+injects over that agent's socket.
 
 Agent-agnostic by design; pi is the current proof of concept, announced via the
 `corral-announce` extension. The board reads agent identity generically, so
@@ -45,6 +47,7 @@ your terminal (pi, interactive TUI)              another terminal
     |  serves ACP beside the live TUI:               |    streams state_update -> column
     |    initialize, session/list, prompt, cancel    |  Enter -> focus (sway) or resume
     |  broadcasts activity + state_update            |  n -> spawn agent (kitty)
+    |  clears socket + unlinks on session_shutdown   |  m -> send prompt to agent
     |  clears socket + unlinks on session_shutdown   |
 ```
 
@@ -71,6 +74,9 @@ your terminal (pi, interactive TUI)              another terminal
     tree walk is unit-tested.
   - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
     (spawn) or `kitty -e pi --session <path>` (resume a dormant session).
+  - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
+    opening a one-shot connection to its socket and writing a `session/prompt`
+    request (fire-and-forget). Unit-tested against a throwaway listener.
   - `src/ui.rs` — ratatui: four columns (Requires Action, Idle, Running,
     Dormant) in attention priority, plus a help footer. Dormant cards dimmed.
   - `src/picker.rs` — the `c` spawn directory picker: candidate dirs (board
@@ -79,7 +85,7 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/main.rs` — orchestration: scan + prune the registry, spawn watchers,
     rebuild the dormant view, drain updates, handle keys and mouse (Up/Down
     within a column, Left/Right across columns, Enter or click focus/resume,
-    `n`/`c` spawn, `d` dismiss dormant, `q` quit).
+    `m` message a live agent, `n`/`c` spawn, `d` dismiss dormant, `q` quit).
 
 ## Extensions
 
@@ -117,7 +123,8 @@ message/tool updates) is ACP v1.
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
   h/l) switch columns; Enter or left-click focuses a live agent's window or
-  resumes a dormant session (`pi --session`); `n` spawn in the selected agent's
+  resumes a dormant session (`pi --session`); `m` compose a message delivered
+  to a live agent over its socket; `n` spawn in the selected agent's
   cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy-focus a
   live agent by title/cwd; `d` dismiss the selected dormant record; `q`/Esc
   quit. Long columns scroll to keep the selection visible; live cards show

@@ -50,8 +50,10 @@ One per-session file drives discovery, isolation, and resume.
 
 ## Inter-Agent Messaging (designed, not built — see spec)
 
-- [ ] Operator-initiated: board keybinding to send a `session/prompt` to the
-      selected agent (optionally spawn-in-dir then send).
+- [x] Operator-initiated: `m` composes a message to the selected live agent,
+      delivered over its socket via `session/prompt` (`prompt::send_prompt`,
+      fire-and-forget). Spawn-in-dir-then-send is folded into the
+      agent-initiated routing below.
 - [ ] Agent-initiated transport: `message_agent` tool writes
       `~/.corral/outbox/<id>.json`; corral watches the outbox and routes
       (async, survives board-down). Address by target dir; spawn there if
