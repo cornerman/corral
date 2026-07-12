@@ -31,6 +31,7 @@ mod focus;
 mod launch;
 mod mailbox;
 mod model;
+mod nav;
 mod picker;
 mod prompt;
 mod router;
@@ -311,7 +312,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
 
         let ages: HashMap<PathBuf, String> = state_since
             .iter()
-            .map(|(p, t)| (p.clone(), age_label(t.elapsed())))
+            .map(|(p, t)| (p.clone(), ui::age_label(t.elapsed())))
             .collect();
         terminal.draw(|f| {
             ui::render(f, &board, selected, &status, &mut list_states, &ages);
@@ -359,16 +360,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Down | KeyCode::Char('j') => {
-                        selected = move_row(selected, &counts, true);
+                        selected = nav::move_row(selected, &counts, true);
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        selected = move_row(selected, &counts, false);
+                        selected = nav::move_row(selected, &counts, false);
                     }
                     KeyCode::Left | KeyCode::Char('h') => {
-                        selected = move_col(selected, &counts, false);
+                        selected = nav::move_col(selected, &counts, false);
                     }
                     KeyCode::Right | KeyCode::Char('l') => {
-                        selected = move_col(selected, &counts, true);
+                        selected = nav::move_col(selected, &counts, true);
                     }
                     KeyCode::Enter => {
                         activate_selected(&focuser, &launcher, &board, selected, &mut status)
@@ -395,7 +396,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                             if a.origin == Origin::Live {
                                 overlay = Some(Overlay::Compose(Compose {
                                     socket: a.socket_path.clone(),
-                                    target: focus_label(a),
+                                    target: ui::focus_label(a),
                                     buf: String::new(),
                                 }));
                             }
@@ -412,15 +413,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                             .cloned()
                             .collect();
                         if !live.is_empty() {
-                            let labels = live.iter().map(focus_label).collect();
+                            let labels = live.iter().map(ui::focus_label).collect();
                             overlay = Some(Overlay::Focus(Picker::new(labels), live));
                         }
                     }
                     _ => {}
                 },
                 Event::Mouse(m) => match m.kind {
-                    MouseEventKind::ScrollDown => selected = move_row(selected, &counts, true),
-                    MouseEventKind::ScrollUp => selected = move_row(selected, &counts, false),
+                    MouseEventKind::ScrollDown => selected = nav::move_row(selected, &counts, true),
+                    MouseEventKind::ScrollUp => selected = nav::move_row(selected, &counts, false),
                     MouseEventKind::Down(MouseButton::Left) => {
                         let s = terminal.size()?;
                         let area = Rect::new(0, 0, s.width, s.height);
@@ -466,28 +467,6 @@ fn activate_selected(
     }
 }
 
-/// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
-fn age_label(d: Duration) -> String {
-    let s = d.as_secs();
-    if s < 60 {
-        format!("{s}s")
-    } else if s < 3600 {
-        format!("{}m", s / 60)
-    } else if s < 86400 {
-        format!("{}h", s / 3600)
-    } else {
-        format!("{}d", s / 86400)
-    }
-}
-
-/// Label for the `f` focus picker: the title and the cwd's last path segment.
-fn focus_label(agent: &model::Agent) -> String {
-    let title = agent.title.as_deref().unwrap_or("(unnamed)");
-    let cwd = agent.cwd.as_deref().unwrap_or("?");
-    let base = cwd.rsplit('/').next().unwrap_or(cwd);
-    format!("{title} · {base}")
-}
-
 /// `d`: dismiss the selected dormant session by deleting its registry record.
 /// A no-op on live agents (they are not the operator's to forget).
 fn dismiss_selected(dir: &Path, board: &Board, selected: usize, status: &mut String) {
@@ -530,83 +509,4 @@ fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
             true
         })
         .collect()
-}
-
-/// Flat selectable index -> (column, row).
-fn locate(index: usize, counts: &[usize; 4]) -> (usize, usize) {
-    let mut i = index;
-    for (c, &n) in counts.iter().enumerate() {
-        if i < n {
-            return (c, i);
-        }
-        i -= n;
-    }
-    (0, 0)
-}
-
-/// (column, row) -> flat selectable index.
-fn flat(col: usize, row: usize, counts: &[usize; 4]) -> usize {
-    counts[..col].iter().sum::<usize>() + row
-}
-
-/// Move within the current column (Up/Down), clamped to that column.
-fn move_row(index: usize, counts: &[usize; 4], down: bool) -> usize {
-    let (c, r) = locate(index, counts);
-    if counts[c] == 0 {
-        return index;
-    }
-    let r = if down {
-        (r + 1).min(counts[c] - 1)
-    } else {
-        r.saturating_sub(1)
-    };
-    flat(c, r, counts)
-}
-
-/// Jump to the nearest non-empty column in a direction (Left/Right), keeping
-/// the row where possible.
-fn move_col(index: usize, counts: &[usize; 4], right: bool) -> usize {
-    let (c, r) = locate(index, counts);
-    let candidates: Vec<usize> = if right {
-        (c + 1..counts.len()).collect()
-    } else {
-        (0..c).rev().collect()
-    };
-    for tc in candidates {
-        if counts[tc] > 0 {
-            return flat(tc, r.min(counts[tc] - 1), counts);
-        }
-    }
-    index
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn age_label_scales_units() {
-        assert_eq!(age_label(Duration::from_secs(8)), "8s");
-        assert_eq!(age_label(Duration::from_secs(5 * 60)), "5m");
-        assert_eq!(age_label(Duration::from_secs(2 * 3600)), "2h");
-        assert_eq!(age_label(Duration::from_secs(3 * 86400)), "3d");
-    }
-
-    #[test]
-    fn navigation_maps_flat_index_to_columns() {
-        // RequiresAction=2, Idle=0, Running=1, Dormant=0. order: RA0, RA1, Run0.
-        let counts = [2usize, 0, 1, 0];
-        assert_eq!(locate(0, &counts), (0, 0));
-        assert_eq!(locate(2, &counts), (2, 0));
-        // Down within the column, clamped.
-        assert_eq!(move_row(0, &counts, true), 1);
-        assert_eq!(move_row(1, &counts, true), 1);
-        assert_eq!(move_row(1, &counts, false), 0);
-        // Right from RA skips the empty Idle column to Running.
-        assert_eq!(move_col(1, &counts, true), 2);
-        // Left from Running lands back in RA, row clamped.
-        assert_eq!(move_col(2, &counts, false), 0);
-        // Right from the last column stays put.
-        assert_eq!(move_col(2, &counts, true), 2);
-    }
 }

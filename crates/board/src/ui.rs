@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::model::{Agent, Board, Column, Origin};
 use crate::picker::Picker;
@@ -144,6 +145,28 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
+pub fn age_label(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86400 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86400)
+    }
+}
+
+/// Label for the compose target and the `f` focus picker: the title and the
+/// cwd's last path segment.
+pub fn focus_label(agent: &Agent) -> String {
+    let title = agent.title.as_deref().unwrap_or("(unnamed)");
+    let cwd = agent.cwd.as_deref().unwrap_or("?");
+    format!("{title} · {}", basename(cwd))
+}
+
 fn card(agent: &Agent, age: Option<&str>) -> ListItem<'static> {
     let title = agent.title.clone().unwrap_or_else(|| "(unnamed)".into());
     let cwd = agent
@@ -242,6 +265,14 @@ mod tests {
     use super::*;
     use crate::model::{State, Update};
     use std::path::PathBuf;
+
+    #[test]
+    fn age_label_scales_units() {
+        assert_eq!(age_label(Duration::from_secs(8)), "8s");
+        assert_eq!(age_label(Duration::from_secs(5 * 60)), "5m");
+        assert_eq!(age_label(Duration::from_secs(2 * 3600)), "2h");
+        assert_eq!(age_label(Duration::from_secs(3 * 86400)), "3d");
+    }
 
     fn upsert(board: &mut Board, path: &str, state: State) {
         board.apply(Update::Upsert(Agent {
