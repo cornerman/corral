@@ -123,8 +123,12 @@ pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // Reserve the bottom row for the action keys so a long message can never
+    // push them out of view.
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let text = vec![
+    let body = vec![
         Line::from(vec![
             Span::raw("from: "),
             Span::styled(msg.from_cwd.clone(), bold),
@@ -135,10 +139,22 @@ pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
         ]),
         Line::raw(""),
         Line::raw(msg.message.clone()),
-        Line::raw(""),
-        Line::from("a allow once   A allow always   d deny   esc later".dim()),
     ];
-    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), rows[0]);
+
+    // Action keys as highlighted chips, so it is obvious what to press.
+    let key = Style::default().add_modifier(Modifier::REVERSED);
+    let keys = Line::from(vec![
+        Span::styled(" a ", key),
+        Span::raw(" allow once   "),
+        Span::styled(" A ", key),
+        Span::raw(" allow always   "),
+        Span::styled(" d ", key),
+        Span::raw(" deny   "),
+        Span::styled(" esc ", key),
+        Span::raw(" later"),
+    ]);
+    frame.render_widget(Paragraph::new(keys), rows[1]);
 }
 
 fn basename(path: &str) -> &str {
