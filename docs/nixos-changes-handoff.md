@@ -27,11 +27,11 @@ right after `"$WORKDIR"`:
 - `$HOME/projects/corral/crates/board` — new. Lets sandboxed sessions develop
   the board crate while the rest of `~/projects/corral` stays read-only (it is
   in the `read` list already; leave that).
-- `$HOME/.corral` — new, and the important one at runtime. This is the ACP
-  discovery dir: the corral-announce extension binds `sockets/pi-<pid>.sock`
-  here and corral scans it. It replaced `$XDG_RUNTIME_DIR/acp`, which the
-  sandbox does not expose. Without this entry, sandboxed pi sessions cannot
-  announce and corral cannot discover them.
+- `$HOME/.corral` — ALREADY APPLIED. This is the ACP discovery dir: the
+  corral-announce extension binds `sockets/pi-<pid>.sock` here and corral scans
+  it (it replaced `$XDG_RUNTIME_DIR/acp`, which the sandbox does not expose).
+  New pi sessions pick it up; sessions started before it was allowed still bind
+  the old path.
 
 Then activate (needs sudo, so the user runs it):
 

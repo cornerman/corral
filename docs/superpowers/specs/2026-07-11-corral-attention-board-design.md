@@ -3,9 +3,9 @@
 ## Purpose
 
 Corral becomes a simple TUI that shows every running pi agent as a card in one
-of two columns, Working or Needs You, so the operator sees at a glance which
-agent is idle and waiting for input. Enter focuses that agent's real window, `n`
-spawns a new agent, `q` quits. Corral previews and routes attention; it never
+of three columns, Requires Action, Idle, or Running, so the operator sees at a
+glance which agent is blocked on them. Enter or a left-click focuses that
+agent's real window, `n` spawns a new agent, `q` quits. Corral previews and routes attention; it never
 drives an agent (no prompt or cancel from the board). All interaction happens in
 the real pi window after the operator jumps to it.
 
@@ -110,9 +110,9 @@ Modules, each with one clear job:
   implementation does the `/proc` parent-walk plus `swaymsg [con_id=..] focus`.
 - `launch` (seam): trait `Launcher { fn spawn(&self, cwd: &Path) }`. Kitty
   implementation runs `kitty -e pi`.
-- `ui`: ratatui. Two columns of cards (label, title, cwd). Up/Down select,
-  Enter focuses via the seam, `n` spawns via the seam, `q` quits. Redraws on
-  channel events.
+- `ui`: ratatui. Three columns of cards (label, title, cwd) in attention
+  priority. Up/Down or scroll select, Enter or left-click focuses via the seam,
+  `n` spawns via the seam, `q` quits. Redraws on channel events.
 
 The triage core (model, watch, ui) never names sway or kitty; both live behind
 their seams, so the compositor and terminal can change without touching the

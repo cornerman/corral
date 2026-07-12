@@ -1,5 +1,5 @@
-//! Rendering. Two columns of cards, Needs You on the left (where attention
-//! goes first) and Working on the right, plus a one-line status/help footer.
+//! Rendering. Three columns of cards in attention priority: Requires Action,
+//! Idle, Running (left to right), plus a one-line status/help footer.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
