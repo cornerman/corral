@@ -161,7 +161,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_info_changed", async () => {
-		broadcast({ sessionUpdate: "session_info_update", title: pi.getSessionName() ?? null });
+		broadcast({
+			sessionUpdate: "session_info_update",
+			title: currentCtx ? sessionTitle(currentCtx) : null,
+		});
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {

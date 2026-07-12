@@ -46,6 +46,8 @@ pub enum Update {
     Upsert(Agent),
     /// A state transition (from a session/update state broadcast).
     SetState(PathBuf, State),
+    /// A title change (from a session_info_update broadcast on rename).
+    SetTitle(PathBuf, Option<String>),
     /// The socket closed or refused: the agent is gone.
     Gone(PathBuf),
 }
@@ -66,6 +68,11 @@ impl Board {
             Update::SetState(path, state) => {
                 if let Some(a) = self.agents.get_mut(&path) {
                     a.state = state;
+                }
+            }
+            Update::SetTitle(path, title) => {
+                if let Some(a) = self.agents.get_mut(&path) {
+                    a.title = title;
                 }
             }
             Update::Gone(path) => {
@@ -135,6 +142,17 @@ mod tests {
             State::Running,
         ));
         assert!(b.selectable().is_empty());
+    }
+
+    #[test]
+    fn set_title_updates_label() {
+        let mut b = Board::default();
+        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Idle)));
+        b.apply(Update::SetTitle(
+            PathBuf::from("/s/pi-1.sock"),
+            Some("renamed".into()),
+        ));
+        assert_eq!(b.in_state(State::Idle)[0].title.as_deref(), Some("renamed"));
     }
 
     #[test]

@@ -33,6 +33,26 @@ pub fn parse_state_notification(line: &str) -> Option<State> {
     State::from_wire(update.get("state")?.as_str()?)
 }
 
+/// Extract a title change from a `session_info_update` notification. Returns
+/// `Some(new_title)` (which may itself be `None`, meaning cleared) if the line
+/// is that notification, else `None`. Pure.
+pub fn parse_title_notification(line: &str) -> Option<Option<String>> {
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("method")? != "session/update" {
+        return None;
+    }
+    let update = msg.get("params")?.get("update")?;
+    if update.get("sessionUpdate")? != "session_info_update" {
+        return None;
+    }
+    Some(
+        update
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(String::from),
+    )
+}
+
 /// Parse the `session/list` reply into (session_id, title, cwd) for the first
 /// session. State is not carried here; it arrives via the `state_update`
 /// notification the extension sends on connect. Pure helper for testing.
@@ -105,6 +125,10 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
         if let Some(state) = parse_state_notification(&line) {
             let _ = tx.send(Update::SetState(entry.path.clone(), state));
         }
+        // Rename: keep the displayed title current without a reconnect.
+        if let Some(title) = parse_title_notification(&line) {
+            let _ = tx.send(Update::SetTitle(entry.path.clone(), title));
+        }
     }
 }
 
@@ -137,6 +161,19 @@ mod tests {
         assert_eq!(parse_state_notification("not json"), None);
         let reply = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
         assert_eq!(parse_state_notification(reply), None);
+    }
+
+    #[test]
+    fn parses_title_notification() {
+        let renamed = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"session_info_update","title":"fix bug"}}}"#;
+        assert_eq!(
+            parse_title_notification(renamed),
+            Some(Some("fix bug".to_string()))
+        );
+        let cleared = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"session_info_update","title":null}}}"#;
+        assert_eq!(parse_title_notification(cleared), Some(None));
+        let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
+        assert_eq!(parse_title_notification(state), None);
     }
 
     #[test]
