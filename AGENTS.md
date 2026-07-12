@@ -98,7 +98,7 @@ your terminal (pi, interactive TUI)              another terminal
     outbox to a target directory (reuse or spawn) or an exact session (deliver
     if live, else resume its dormant record). Owns the authorization
     decisions, in-flight spawns/resumes, and the one message awaiting operator
-    approval; the event loop polls it and forwards the a/A/d/esc key.
+    approval; the event loop polls it and forwards the decision (key or click).
     Unit-tested (gating, spawn, session delivery, unknown-session drop).
   - `src/nav.rs` — pure selection math: move the flat selection index within a
     column (up/down) or across columns (left/right) over the per-column
@@ -149,7 +149,8 @@ Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
 corral is the sole trusted cross-workdir router. An agent calls `message_agent`,
 which drops a mailbox file in `~/.corral/outbox`; corral picks it up on the next
 tick, authorizes the `(sender-dir -> target-dir)` pair against the whitelist (or
-asks the operator: `a` allow once, `A` allow always, `d` deny, `esc` later),
+asks the operator, by key or mouse click: Enter allow once, `a` allow always,
+Esc deny),
 resolves the target, and injects the message over that agent's socket with a
 `[from agent in <dir> (session <id>)]` provenance tag. Delivery reuses
 `prompt::send_prompt`, the same path as operator messaging (`m`).

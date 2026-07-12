@@ -113,8 +113,39 @@ pub fn render_compose(frame: &mut Frame, target: &str, buf: &str) {
     frame.render_widget(Paragraph::new(format!("> {buf}")), inner);
 }
 
+/// An operator decision on a pending inter-agent message. Returned by both the
+/// keys and `approval_hit_test` (a mouse click), so the two input paths share
+/// one set of actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalAction {
+    AllowOnce,
+    AllowAlways,
+    Deny,
+}
+
+/// The clickable buttons, left to right, with their chip labels. The `(key)`
+/// hint doubles as the keyboard shortcut.
+fn approval_buttons() -> [(ApprovalAction, &'static str); 3] {
+    [
+        (ApprovalAction::AllowOnce, " allow once (⏎) "),
+        (ApprovalAction::AllowAlways, " allow always (a) "),
+        (ApprovalAction::Deny, " deny (esc) "),
+    ]
+}
+
+/// Blank cells between adjacent button chips.
+const APPROVAL_GAP: u16 = 2;
+
+/// The row and x-ranges of the approval buttons, from the same geometry
+/// `render_approval` draws, so clicks map to the chips exactly.
+fn approval_footer(area: Rect) -> Rect {
+    let overlay = centered(area, 70, 40);
+    let inner = Block::default().borders(Borders::ALL).inner(overlay);
+    Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner)[1]
+}
+
 /// Draw the inter-agent message approval dialog: who wants to message whom, the
-/// message body, and the operator's choices.
+/// message body, and the operator's choices (clickable, or by key).
 pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
     let area = centered(frame.area(), 70, 40);
     frame.render_widget(Clear, area);
@@ -123,7 +154,7 @@ pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    // Reserve the bottom row for the action keys so a long message can never
+    // Reserve the bottom row for the action buttons so a long message can never
     // push them out of view.
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
 
@@ -142,19 +173,35 @@ pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
     ];
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), rows[0]);
 
-    // Action keys as highlighted chips, so it is obvious what to press.
-    let key = Style::default().add_modifier(Modifier::REVERSED);
-    let keys = Line::from(vec![
-        Span::styled(" a ", key),
-        Span::raw(" allow once   "),
-        Span::styled(" A ", key),
-        Span::raw(" allow always   "),
-        Span::styled(" d ", key),
-        Span::raw(" deny   "),
-        Span::styled(" esc ", key),
-        Span::raw(" later"),
-    ]);
-    frame.render_widget(Paragraph::new(keys), rows[1]);
+    // Highlighted chips, click or press the key. Gaps match APPROVAL_GAP so
+    // `approval_hit_test` lines up with what is drawn.
+    let chip = Style::default().add_modifier(Modifier::REVERSED);
+    let mut spans = Vec::new();
+    for (i, (_, label)) in approval_buttons().iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".repeat(APPROVAL_GAP as usize)));
+        }
+        spans.push(Span::styled(*label, chip));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), rows[1]);
+}
+
+/// Map a mouse click to an approval button, using the same geometry as
+/// `render_approval`. `None` for clicks off the buttons.
+pub fn approval_hit_test(area: Rect, col: u16, row: u16) -> Option<ApprovalAction> {
+    let footer = approval_footer(area);
+    if row != footer.y {
+        return None;
+    }
+    let mut x = footer.x;
+    for (action, label) in approval_buttons() {
+        let w = label.chars().count() as u16;
+        if col >= x && col < x + w {
+            return Some(action);
+        }
+        x += w + APPROVAL_GAP;
+    }
+    None
 }
 
 fn basename(path: &str) -> &str {

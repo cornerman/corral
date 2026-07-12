@@ -330,23 +330,35 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         if event::poll(POLL)? {
             let ev = event::read()?;
             // The approval overlay captures all input until the operator
-            // decides on the pending inter-agent message: a=allow once,
-            // A=allow always (persist), d=deny, esc=decide later.
+            // decides on the pending inter-agent message. Enter = allow once,
+            // a = allow always (persist), Esc = deny; or click a button.
             if let Some(r) = router.as_mut().filter(|r| r.pending().is_some()) {
-                if let Event::Key(key) = ev {
-                    if key.kind == KeyEventKind::Press {
-                        match key.code {
-                            KeyCode::Char('a') => r.allow_once(),
-                            KeyCode::Char('A') => {
-                                if let Err(e) = r.allow_always() {
-                                    status = format!("whitelist: {e}");
-                                }
-                            }
-                            KeyCode::Char('d') => r.deny(),
-                            KeyCode::Esc => r.defer(),
-                            _ => {}
+                let action = match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                        KeyCode::Enter => Some(ui::ApprovalAction::AllowOnce),
+                        KeyCode::Char('a') => Some(ui::ApprovalAction::AllowAlways),
+                        KeyCode::Esc => Some(ui::ApprovalAction::Deny),
+                        _ => None,
+                    },
+                    Event::Mouse(m) => match m.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let s = terminal.size()?;
+                            let area = Rect::new(0, 0, s.width, s.height);
+                            ui::approval_hit_test(area, m.column, m.row)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match action {
+                    Some(ui::ApprovalAction::AllowOnce) => r.allow_once(),
+                    Some(ui::ApprovalAction::AllowAlways) => {
+                        if let Err(e) = r.allow_always() {
+                            status = format!("whitelist: {e}");
                         }
                     }
+                    Some(ui::ApprovalAction::Deny) => r.deny(),
+                    None => {}
                 }
                 continue;
             }

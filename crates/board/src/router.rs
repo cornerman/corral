@@ -40,8 +40,6 @@ pub struct Router {
     whitelist: PathBuf,
     /// Allow-once decisions for this board run (by message id).
     approved: HashSet<String>,
-    /// Decide-later decisions: left queued, not asked about again this run.
-    deferred: HashSet<String>,
     /// Spawns/resumes in flight, keyed by message id.
     routing: HashMap<String, RouteState>,
     pending: Option<Pending>,
@@ -53,7 +51,6 @@ impl Router {
             outbox,
             whitelist,
             approved: HashSet::new(),
-            deferred: HashSet::new(),
             routing: HashMap::new(),
             pending: None,
         }
@@ -79,9 +76,6 @@ impl Router {
 
         let mut status = None;
         for (file, msg) in pending {
-            if self.deferred.contains(&msg.id) {
-                continue;
-            }
             let Some(target_cwd) = target_cwd(&msg, board) else {
                 // A session target corral has never seen: nothing to deliver
                 // to. Drop it rather than prompt for an undeliverable message.
@@ -128,13 +122,6 @@ impl Router {
         if let Some(p) = self.pending.take() {
             let _ = std::fs::remove_file(p.file);
             self.routing.remove(&p.msg.id);
-        }
-    }
-
-    /// Defer the pending message: leave it queued, stop asking this run.
-    pub fn defer(&mut self) {
-        if let Some(p) = self.pending.take() {
-            self.deferred.insert(p.msg.id);
         }
     }
 
