@@ -251,7 +251,8 @@ pub fn render(
         start += agents.len();
     }
 
-    let help = "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d dismiss   q quit";
+    let help =
+        "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d close/forget   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {

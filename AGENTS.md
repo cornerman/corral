@@ -74,11 +74,13 @@ your terminal (pi, interactive TUI)              another terminal
     never half-closes), seeds from `initialize` + `session/list`, then streams
     `state_update` notifications. Socket EOF reports the agent gone. Pure
     parse helpers are unit-tested.
-  - `src/focus.rs` — `WindowFocuser` seam. `SwayFocuser` correlates agent to
-    window by a `/proc` parent-walk: the socket pid, walked up its PPid chain,
-    hits the kitty process whose pid sway reports (works because the pi sandbox
-    does not unshare the PID namespace), then `swaymsg [con_id=..] focus`. The
-    tree walk is unit-tested.
+  - `src/focus.rs` — `WindowFocuser` seam (focus and close a window).
+    `SwayFocuser` correlates agent to window by a `/proc` parent-walk: the
+    socket pid, walked up its PPid chain, hits the terminal process whose pid
+    sway reports (works because the pi sandbox does not unshare the PID
+    namespace). `focus` then runs `swaymsg [con_id=..] focus`; `close` kills
+    that terminal pid (not a window-close request, which kitty's
+    `confirm_os_window_close` would block). The tree walk is unit-tested.
   - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
     (spawn) or `kitty -e pi --session <path>` (resume a dormant session).
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
@@ -107,8 +109,9 @@ your terminal (pi, interactive TUI)              another terminal
     and dispatches input. Input modes are one `Overlay` enum (spawn-dir /
     focus-agent picker, or message compose), exclusive by construction. Keys:
     Up/Down within a column, Left/Right across columns, Enter or click
-    focus/resume, `m` message a live agent, `n`/`c` spawn, `d` dismiss
-    dormant, `f` fuzzy go-to (focus a live agent or resume a dormant one),
+    focus/resume, `m` message a live agent, `n`/`c` spawn, `d` close a live
+    agent's window or forget a dormant record, `f` fuzzy go-to (focus a live
+    agent or resume a dormant one),
     `q` quit.
 
 ## Extensions
@@ -165,8 +168,9 @@ message/tool updates) is ACP v1.
   resumes a dormant session (`pi --session`); `m` compose a message delivered
   to a live agent over its socket; `n` spawn in the selected agent's
   cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy go-to any
-  agent by title/cwd (focus if live, resume if dormant); `d` dismiss the
-  selected dormant record; `q`/Esc
+  agent by title/cwd (focus if live, resume if dormant); `d` close the selected
+  live agent (kill its terminal process, closing the window; pi then goes
+  dormant and resumable) or forget the selected dormant record; `q`/Esc
   quit. Long columns scroll to keep the selection visible; live cards show
   time-in-state. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir; the `c` picker offers only the

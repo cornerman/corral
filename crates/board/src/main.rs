@@ -374,7 +374,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         activate_selected(&focuser, &launcher, &board, selected, &mut status)
                     }
                     KeyCode::Char('d') => {
-                        dismiss_selected(dir, &board, selected, &mut status);
+                        dismiss_selected(dir, &focuser, &board, selected, &mut status);
                     }
                     KeyCode::Char('n') => {
                         status.clear();
@@ -480,20 +480,36 @@ fn goto_label(agent: &model::Agent) -> String {
     }
 }
 
-/// `d`: dismiss the selected dormant session by deleting its registry record.
-/// A no-op on live agents (they are not the operator's to forget).
-fn dismiss_selected(dir: &Path, board: &Board, selected: usize, status: &mut String) {
+/// `d`: dismiss the selected agent. A live agent is closed by terminating its
+/// pi process (which closes its `kitty -e pi` window and, via pi's clean
+/// shutdown, leaves a dormant resumable record). A dormant record is forgotten
+/// by deleting its registry file. So `d` twice fully removes a session: close,
+/// then forget.
+fn dismiss_selected(
+    dir: &Path,
+    focuser: &dyn WindowFocuser,
+    board: &Board,
+    selected: usize,
+    status: &mut String,
+) {
     status.clear();
     let Some(agent) = board.selectable().get(selected).copied() else {
         return;
     };
-    if agent.origin != Origin::Dormant {
-        return;
-    }
-    if let Some(id) = &agent.session_id {
-        let file = dir.join(format!("{id}.json"));
-        if let Err(e) = std::fs::remove_file(&file) {
-            *status = format!("dismiss: {e}");
+    match agent.origin {
+        Origin::Live => {
+            *status = match focuser.close(agent) {
+                Ok(()) => format!("closing {}", ui::focus_label(agent)),
+                Err(e) => format!("close: {e}"),
+            };
+        }
+        Origin::Dormant => {
+            if let Some(id) = &agent.session_id {
+                let file = dir.join(format!("{id}.json"));
+                if let Err(e) = std::fs::remove_file(&file) {
+                    *status = format!("dismiss: {e}");
+                }
+            }
         }
     }
 }

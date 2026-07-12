@@ -11,26 +11,59 @@ use std::process::Command;
 
 use crate::model::Agent;
 
+/// Manage an agent's terminal window. `focus` raises it; `close` shuts it
+/// (which ends the session). Both are window operations, so both live behind
+/// this compositor seam.
 pub trait WindowFocuser {
     fn focus(&self, agent: &Agent) -> Result<(), String>;
+    fn close(&self, agent: &Agent) -> Result<(), String>;
 }
 
 pub struct SwayFocuser;
 
-impl WindowFocuser for SwayFocuser {
-    fn focus(&self, agent: &Agent) -> Result<(), String> {
+impl SwayFocuser {
+    /// The agent's window as sway sees it: its con id (for focus) and the
+    /// pid sway reports for it (the terminal process, for close). Found by the
+    /// `/proc` parent-walk from the socket pid up to the window's pid.
+    fn window(&self, agent: &Agent) -> Result<(i64, u32), String> {
         let ancestors = ancestor_pids(agent.pid);
         let tree = sway_get_tree()?;
-        let con_id = find_con_id(&tree, &ancestors)
-            .ok_or_else(|| format!("no sway window found for pid {}", agent.pid))?;
-        let status = Command::new("swaymsg")
+        find_window(&tree, &ancestors)
+            .ok_or_else(|| format!("no sway window found for pid {}", agent.pid))
+    }
+}
+
+impl WindowFocuser for SwayFocuser {
+    fn focus(&self, agent: &Agent) -> Result<(), String> {
+        let (con_id, _) = self.window(agent)?;
+        let ok = Command::new("swaymsg")
             .arg(format!("[con_id={con_id}] focus"))
             .status()
-            .map_err(|e| format!("swaymsg failed: {e}"))?;
-        if status.success() {
+            .map_err(|e| format!("swaymsg failed: {e}"))?
+            .success();
+        if ok {
             Ok(())
         } else {
             Err("swaymsg focus returned non-zero".into())
+        }
+    }
+
+    // Kill the terminal process itself (the pid sway reports for the window),
+    // not a window-close request: kitty's `confirm_os_window_close` would keep
+    // an interactive window open on a close request. Killing the process takes
+    // the window and pi with it; pi's socket then goes unreachable, so the
+    // session reappears as a dormant, resumable record on the next scan.
+    fn close(&self, agent: &Agent) -> Result<(), String> {
+        let (_, window_pid) = self.window(agent)?;
+        let ok = Command::new("kill")
+            .arg(window_pid.to_string())
+            .status()
+            .map_err(|e| format!("kill failed: {e}"))?
+            .success();
+        if ok {
+            Ok(())
+        } else {
+            Err("kill returned non-zero".into())
         }
     }
 }
@@ -59,20 +92,20 @@ fn ppid_of(pid: u32) -> Option<u32> {
 }
 
 /// Walk the sway tree JSON for the first node whose `pid` is in `pids`,
-/// returning its con `id`.
-fn find_con_id(node: &serde_json::Value, pids: &HashSet<u32>) -> Option<i64> {
+/// returning its con `id` and that `pid`.
+fn find_window(node: &serde_json::Value, pids: &HashSet<u32>) -> Option<(i64, u32)> {
     if let Some(pid) = node.get("pid").and_then(|p| p.as_u64()) {
         if pids.contains(&(pid as u32)) {
             if let Some(id) = node.get("id").and_then(|i| i.as_i64()) {
-                return Some(id);
+                return Some((id, pid as u32));
             }
         }
     }
     for key in ["nodes", "floating_nodes"] {
         if let Some(children) = node.get(key).and_then(|c| c.as_array()) {
             for child in children {
-                if let Some(id) = find_con_id(child, pids) {
-                    return Some(id);
+                if let Some(found) = find_window(child, pids) {
+                    return Some(found);
                 }
             }
         }
@@ -93,7 +126,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_con_id_by_pid_in_tree() {
+    fn finds_window_by_pid_in_tree() {
         let tree = serde_json::json!({
             "id": 1, "nodes": [
                 {"id": 5, "pid": 4834, "name": "keepass"},
@@ -102,7 +135,7 @@ mod tests {
         });
         let mut pids = HashSet::new();
         pids.insert(84669);
-        assert_eq!(find_con_id(&tree, &pids), Some(66));
+        assert_eq!(find_window(&tree, &pids), Some((66, 84669)));
     }
 
     #[test]
@@ -110,6 +143,6 @@ mod tests {
         let tree = serde_json::json!({"id": 1, "nodes": [{"id": 5, "pid": 1}]});
         let mut pids = HashSet::new();
         pids.insert(9999);
-        assert_eq!(find_con_id(&tree, &pids), None);
+        assert_eq!(find_window(&tree, &pids), None);
     }
 }

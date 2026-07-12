@@ -7,7 +7,8 @@ as a card in one of four columns, Requires Action, Idle, Running (the ACP v2
 state vocabulary), or Dormant (cleanly shut-down, resumable sessions), so you
 can see at a glance which agent is blocked waiting on you. Press Enter to focus
 a live agent's window or resume a dormant session, `m` to send it a message,
-`n` to spawn a new agent, `d` to dismiss a dormant record, `q` to quit. Corral
+`n` to spawn a new agent, `d` to close a live agent or forget a dormant
+record, `q` to quit. Corral
 never drives an agent on its own; it routes your attention and jumps you to the
 real window, and delivers a message only when you send one.
 
