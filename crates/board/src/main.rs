@@ -102,6 +102,117 @@ struct Compose {
     buf: String,
 }
 
+/// The active input overlay. Exactly one can be open, so the modes are
+/// exclusive by construction: no parallel `Option`s to keep consistent.
+enum Overlay {
+    /// `c`: pick a directory to spawn a new agent in.
+    Spawn(Picker),
+    /// `f`: pick a live agent (paired with the agents behind the labels) to
+    /// focus its window.
+    Focus(Picker, Vec<model::Agent>),
+    /// `m`: compose a message to a live agent.
+    Compose(Compose),
+}
+
+/// The outcome of a key press inside a picker overlay.
+enum PickerInput {
+    /// The query or selection changed; keep the picker open.
+    Continue,
+    /// Esc: close without acting.
+    Cancel,
+    /// Enter: act on the current selection, then close.
+    Submit,
+}
+
+fn picker_input(p: &mut Picker, code: KeyCode) -> PickerInput {
+    match code {
+        KeyCode::Esc => PickerInput::Cancel,
+        KeyCode::Enter => PickerInput::Submit,
+        KeyCode::Up => {
+            p.up();
+            PickerInput::Continue
+        }
+        KeyCode::Down => {
+            p.down();
+            PickerInput::Continue
+        }
+        KeyCode::Backspace => {
+            p.backspace();
+            PickerInput::Continue
+        }
+        KeyCode::Char(c) => {
+            p.push(c);
+            PickerInput::Continue
+        }
+        _ => PickerInput::Continue,
+    }
+}
+
+/// Feed one event to the open overlay. Returns the overlay to keep it open, or
+/// `None` once it has closed (cancelled or acted).
+fn handle_overlay(
+    mut ov: Overlay,
+    ev: Event,
+    focuser: &dyn WindowFocuser,
+    launcher: &dyn Launcher,
+    status: &mut String,
+) -> Option<Overlay> {
+    let Event::Key(key) = ev else {
+        return Some(ov);
+    };
+    if key.kind != KeyEventKind::Press {
+        return Some(ov);
+    }
+    match &mut ov {
+        Overlay::Spawn(p) => match picker_input(p, key.code) {
+            PickerInput::Continue => Some(ov),
+            PickerInput::Cancel => None,
+            PickerInput::Submit => {
+                if let Some(d) = p.selected_dir() {
+                    if let Err(e) = launcher.spawn(Path::new(&d)) {
+                        *status = format!("spawn: {e}");
+                    }
+                }
+                None
+            }
+        },
+        Overlay::Focus(p, targets) => match picker_input(p, key.code) {
+            PickerInput::Continue => Some(ov),
+            PickerInput::Cancel => None,
+            PickerInput::Submit => {
+                if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
+                    if let Err(e) = focuser.focus(a) {
+                        *status = format!("focus: {e}");
+                    }
+                }
+                None
+            }
+        },
+        Overlay::Compose(c) => match key.code {
+            KeyCode::Esc => None,
+            KeyCode::Enter => {
+                let text = c.buf.trim();
+                if !text.is_empty() {
+                    *status = match prompt::send_prompt(&c.socket, text) {
+                        Ok(()) => format!("sent to {}", c.target),
+                        Err(e) => format!("send: {e}"),
+                    };
+                }
+                None
+            }
+            KeyCode::Backspace => {
+                c.buf.pop();
+                Some(ov)
+            }
+            KeyCode::Char(ch) => {
+                c.buf.push(ch);
+                Some(ov)
+            }
+            _ => Some(ov),
+        },
+    }
+}
+
 fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::io::Result<()> {
     let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
     let focuser = SwayFocuser;
@@ -115,13 +226,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut dead_sockets: HashSet<PathBuf> = HashSet::new();
     let mut selected: usize = 0;
     let mut status = String::new();
-    // Some(_) while a picker overlay is open (`c` spawn dir, or `f`
-    // focus). `picker_focus` holds the live agents behind the labels when the
-    // picker is a focus picker; None means it is the spawn-dir picker.
-    let mut picker: Option<Picker> = None;
-    let mut picker_focus: Option<Vec<model::Agent>> = None;
-    // Some(_) while the operator is composing a message (`m`) to a live agent.
-    let mut compose: Option<Compose> = None;
+    // The active input overlay, if any (`c` spawn dir, `f` focus agent, `m`
+    // compose a message). One at a time by construction.
+    let mut overlay: Option<Overlay> = None;
     // Agent-initiated message routing (the outbox). The router owns its state;
     // None when there is no home to resolve the outbox/whitelist under.
     let mut router = outbox_dir()
@@ -188,7 +295,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         // Route agent-initiated messages when no overlay is capturing input.
         // Cheap (a readdir), so delivery is prompt once a spawned target
         // announces.
-        if picker.is_none() && compose.is_none() {
+        if overlay.is_none() {
             if let Some(r) = router.as_mut() {
                 if let Some(s) = r.poll(&board, &launcher) {
                     status = s;
@@ -208,16 +315,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             .collect();
         terminal.draw(|f| {
             ui::render(f, &board, selected, &status, &mut list_states, &ages);
-            if let Some(p) = &picker {
-                let verb = if picker_focus.is_some() {
-                    "focus agent"
-                } else {
-                    "spawn agent"
-                };
-                ui::render_picker(f, p, verb);
-            }
-            if let Some(c) = &compose {
-                ui::render_compose(f, &c.target, &c.buf);
+            match &overlay {
+                Some(Overlay::Spawn(p)) => ui::render_picker(f, p, "spawn agent"),
+                Some(Overlay::Focus(p, _)) => ui::render_picker(f, p, "focus agent"),
+                Some(Overlay::Compose(c)) => ui::render_compose(f, &c.target, &c.buf),
+                None => {}
             }
             if let Some(msg) = router.as_ref().and_then(Router::pending) {
                 ui::render_approval(f, msg);
@@ -226,62 +328,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
 
         if event::poll(POLL)? {
             let ev = event::read()?;
-            // The picker, when open, captures all input until it closes.
-            if picker.is_some() {
-                if let Event::Key(key) = ev {
-                    if key.kind == KeyEventKind::Press {
-                        match key.code {
-                            KeyCode::Esc => {
-                                picker = None;
-                                picker_focus = None;
-                            }
-                            KeyCode::Enter => {
-                                if let Some(targets) = picker_focus.take() {
-                                    // Focus picker: map the selected match back
-                                    // to its agent and focus its window.
-                                    let idx = picker.as_ref().and_then(Picker::selected_original);
-                                    picker = None;
-                                    if let Some(a) = idx.and_then(|i| targets.get(i)) {
-                                        if let Err(e) = focuser.focus(a) {
-                                            status = format!("focus: {e}");
-                                        }
-                                    }
-                                } else {
-                                    let dir = picker.as_ref().and_then(Picker::selected_dir);
-                                    picker = None;
-                                    if let Err(e) = dir.map_or(Ok(()), |d| {
-                                        launcher.spawn(std::path::Path::new(&d))
-                                    }) {
-                                        status = format!("spawn: {e}");
-                                    }
-                                }
-                            }
-                            KeyCode::Backspace => {
-                                if let Some(p) = picker.as_mut() {
-                                    p.backspace();
-                                }
-                            }
-                            KeyCode::Up => {
-                                if let Some(p) = picker.as_mut() {
-                                    p.up();
-                                }
-                            }
-                            KeyCode::Down => {
-                                if let Some(p) = picker.as_mut() {
-                                    p.down();
-                                }
-                            }
-                            KeyCode::Char(c) => {
-                                if let Some(p) = picker.as_mut() {
-                                    p.push(c);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                continue;
-            }
             // The approval overlay captures all input until the operator
             // decides on the pending inter-agent message: a=allow once,
             // A=allow always (persist), d=deny, esc=decide later.
@@ -304,30 +350,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 }
                 continue;
             }
-            // The compose overlay captures all input until it closes.
-            if let Some(c) = compose.as_mut() {
-                if let Event::Key(key) = ev {
-                    if key.kind == KeyEventKind::Press {
-                        match key.code {
-                            KeyCode::Esc => compose = None,
-                            KeyCode::Enter => {
-                                let c = compose.take().unwrap();
-                                let text = c.buf.trim();
-                                if !text.is_empty() {
-                                    status = match prompt::send_prompt(&c.socket, text) {
-                                        Ok(()) => format!("sent to {}", c.target),
-                                        Err(e) => format!("send: {e}"),
-                                    };
-                                }
-                            }
-                            KeyCode::Backspace => {
-                                c.buf.pop();
-                            }
-                            KeyCode::Char(ch) => c.buf.push(ch),
-                            _ => {}
-                        }
-                    }
-                }
+            // Any open overlay captures all input until it closes.
+            if let Some(ov) = overlay.take() {
+                overlay = handle_overlay(ov, ev, &focuser, &launcher, &mut status);
                 continue;
             }
             match ev {
@@ -360,7 +385,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     }
                     KeyCode::Char('c') => {
                         status.clear();
-                        picker = Some(Picker::new(crate::picker::gather_dirs(&board)));
+                        overlay = Some(Overlay::Spawn(Picker::new(picker::gather_dirs(&board))));
                     }
                     KeyCode::Char('m') => {
                         // Message a live agent: deliver a prompt over its
@@ -368,11 +393,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         status.clear();
                         if let Some(a) = board.selectable().get(selected).copied() {
                             if a.origin == Origin::Live {
-                                compose = Some(Compose {
+                                overlay = Some(Overlay::Compose(Compose {
                                     socket: a.socket_path.clone(),
                                     target: focus_label(a),
                                     buf: String::new(),
-                                });
+                                }));
                             }
                         }
                     }
@@ -388,8 +413,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                             .collect();
                         if !live.is_empty() {
                             let labels = live.iter().map(focus_label).collect();
-                            picker = Some(Picker::new(labels));
-                            picker_focus = Some(live);
+                            overlay = Some(Overlay::Focus(Picker::new(labels), live));
                         }
                     }
                     _ => {}
