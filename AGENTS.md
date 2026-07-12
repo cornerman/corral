@@ -67,7 +67,9 @@ your terminal (pi, interactive TUI)              another terminal
     agents are keyed by socket path (driven by watchers); dormant agents are a
     derived view of the registry (cleanly shut-down, resumable, not-live
     records, latest-per-cwd). `State` is Running, Idle, or RequiresAction (the
-    ACP v2 `state_update` vocabulary). Pure, unit-tested.
+    ACP v2 `state_update` vocabulary). `Column::ALL` is the single source of
+    truth for the column set and order; navigation, hit-testing, and rendering
+    all derive from it. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per socket. Connects (stays fully open,
     never half-closes), seeds from `initialize` + `session/list`, then streams
     `state_update` notifications. Socket EOF reports the agent gone. Pure
@@ -85,16 +87,28 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/mailbox.rs` — the outbox: parse `message_agent` mailbox files, add the
     `[from agent in <dir>]` provenance tag, and read/append the
     `(sender -> target)` whitelist. Pure, unit-tested.
+  - `src/router.rs` — `Router`: routes agent-initiated messages from the
+    outbox. Owns the authorization decisions, in-flight spawns, and the one
+    message awaiting operator approval; the event loop polls it and forwards
+    the a/A/d/esc key. Unit-tested (gating, spawn, persist).
+  - `src/nav.rs` — pure selection math: move the flat selection index within a
+    column (up/down) or across columns (left/right) over the per-column
+    counts. Unit-tested.
   - `src/ui.rs` — ratatui: four columns (Requires Action, Idle, Running,
-    Dormant) in attention priority, plus a help footer. Dormant cards dimmed.
+    Dormant) derived from `Column::ALL` in attention priority, plus a help
+    footer. Dormant cards dimmed. Owns the card, heading, and age/focus-label
+    formatting.
   - `src/picker.rs` — the `c` spawn directory picker: candidates are exactly
     the cwds of sessions on the board (every dir ever opened, live or
     dormant; no filesystem scan) narrowed by a subsequence fuzzy filter.
     Unit-tested.
-  - `src/main.rs` — orchestration: scan + prune the registry, spawn watchers,
-    rebuild the dormant view, drain updates, handle keys and mouse (Up/Down
-    within a column, Left/Right across columns, Enter or click focus/resume,
-    `m` message a live agent, `n`/`c` spawn, `d` dismiss dormant, `q` quit).
+  - `src/main.rs` — the imperative shell: the event loop that scans + prunes
+    the registry, spawns watchers, drains updates, polls the `Router`, draws,
+    and dispatches input. Input modes are one `Overlay` enum (spawn-dir /
+    focus-agent picker, or message compose), exclusive by construction. Keys:
+    Up/Down within a column, Left/Right across columns, Enter or click
+    focus/resume, `m` message a live agent, `n`/`c` spawn, `d` dismiss
+    dormant, `f` fuzzy-focus, `q` quit.
 
 ## Extensions
 
