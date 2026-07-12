@@ -1,11 +1,6 @@
-//! Directory picker for `c` (create-elsewhere) spawn. Candidates are exactly
-//! the cwds of sessions the board knows: every directory ever opened, live or
-//! dormant, and nothing else. A subsequence fuzzy filter narrows the list as
-//! the operator types.
-
-use std::collections::BTreeSet;
-
-use crate::model::Board;
+//! Fuzzy picker for the `/` jump overlay. Candidates are the labels of the
+//! board's agents; a subsequence fuzzy filter narrows the list as the operator
+//! types, and `selected_original` maps the chosen label back to its agent.
 
 pub struct Picker {
     pub query: String,
@@ -30,10 +25,6 @@ impl Picker {
             .filter(|c| fuzzy(&self.query, c))
             .map(String::as_str)
             .collect()
-    }
-
-    pub fn selected_dir(&self) -> Option<String> {
-        self.matches().get(self.selected).map(|s| s.to_string())
     }
 
     /// Index into the *original* candidate list of the selected match. Lets a
@@ -86,19 +77,6 @@ fn fuzzy(query: &str, cand: &str) -> bool {
     q.peek().is_none()
 }
 
-/// Gather candidate directories: the cwd of every session on the board (live
-/// or dormant). Sorted and de-duplicated. No filesystem scan; corral offers
-/// only directories an agent has actually run in.
-pub fn gather_dirs(board: &Board) -> Vec<String> {
-    let mut set = BTreeSet::new();
-    for agent in board.selectable() {
-        if let Some(cwd) = &agent.cwd {
-            set.insert(cwd.clone());
-        }
-    }
-    set.into_iter().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +103,7 @@ mod tests {
         // /home has no... "/home/u/projects/nixos" contains n; corral contains
         // no 'n'; /tmp no. Expect nixos only among these.
         assert_eq!(p.matches(), vec!["/home/u/projects/nixos"]);
-        assert_eq!(p.selected_dir().as_deref(), Some("/home/u/projects/nixos"));
+        assert_eq!(p.matches(), vec!["/home/u/projects/nixos"]);
         // The match maps back to its original index (nixos is candidate 1).
         assert_eq!(p.selected_original(), Some(1));
         p.backspace();
