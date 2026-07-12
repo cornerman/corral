@@ -1,9 +1,11 @@
-//! Rendering. Three columns of cards in attention priority: Requires Action,
-//! Idle, Running (left to right), plus a one-line status/help footer.
+//! Rendering. Three live triage columns in attention priority — Requires
+//! Action, Idle, Running (left to right) — then, walled off by a divider on the
+//! right, a narrower dimmed Dormant rail (resumable history, different in kind
+//! from the live states). A one-line status/help footer sits at the bottom.
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use std::collections::HashMap;
@@ -24,12 +26,37 @@ fn heading(column: Column) -> &'static str {
     }
 }
 
-/// The four column rects (Requires Action, Idle, Running, Dormant), reserving
-/// the bottom row for the footer. Shared by `render` and `hit_test` so their
-/// geometry can never drift apart.
-fn column_layout(area: Rect) -> std::rc::Rc<[Rect]> {
-    let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-    Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(outer[0])
+/// The column rects plus the divider between the live columns and the dormant
+/// rail. Shared by `render` and `hit_test` so their geometry cannot drift.
+struct BoardLayout {
+    /// Requires Action, Idle, Running, Dormant (in `Column::ALL` order).
+    cols: [Rect; 4],
+    /// The vertical rule separating the live columns from the dormant rail.
+    divider: Rect,
+}
+
+/// Lay out the board: three equal live columns fill the left, then a gap with a
+/// divider, then a narrower dormant rail on the right. The bottom row is
+/// reserved for the footer.
+fn column_layout(area: Rect) -> BoardLayout {
+    let content = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area)[0];
+    let split = Layout::horizontal([
+        Constraint::Min(0),         // live triage columns
+        Constraint::Length(3),      // gap holding the divider
+        Constraint::Percentage(22), // dormant rail, deliberately narrower
+    ])
+    .split(content);
+    let live = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(split[0]);
+    let divider = Rect {
+        x: split[1].x + 1,
+        y: split[1].y,
+        width: 1,
+        height: split[1].height,
+    };
+    BoardLayout {
+        cols: [live[0], live[1], live[2], split[2]],
+        divider,
+    }
 }
 
 /// Map a mouse cell (col,row) to a selectable index, using the same layout as
@@ -45,10 +72,10 @@ pub fn hit_test(
     row: u16,
     scroll: [usize; 4],
 ) -> Option<usize> {
-    let cols = column_layout(area);
+    let lay = column_layout(area);
     let counts = board.column_counts();
     let mut flat_start = 0;
-    for (i, rect) in cols.iter().enumerate() {
+    for (i, rect) in lay.cols.iter().enumerate() {
         let inside = col >= rect.x
             && col < rect.x + rect.width
             && row > rect.y
@@ -261,19 +288,40 @@ fn card(agent: &Agent, age: Option<&str>) -> ListItem<'static> {
 fn column(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    heading: &str,
+    col: Column,
     agents: &[&Agent],
     selected_row: Option<usize>,
     state: &mut ListState,
     ages: &HashMap<PathBuf, String>,
 ) {
+    // The dormant rail reads as a separate archive: dim gray border and
+    // heading, not a fourth live triage column.
+    let secondary = matches!(col, Column::Dormant);
     let items: Vec<ListItem> = agents
         .iter()
         .map(|a| card(a, ages.get(&a.socket_path).map(String::as_str)))
         .collect();
-    let title = format!(" {heading} ({}) ", agents.len());
+    let dim_gray = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    let title = format!(" {} ({}) ", heading(col), agents.len());
+    let title = if secondary {
+        Line::from(Span::styled(title, dim_gray))
+    } else {
+        Line::from(title)
+    };
+    let border_style = if secondary {
+        dim_gray
+    } else {
+        Style::default()
+    };
     let list = List::new(items)
-        .block(Block::default().title(title).borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     // The state persists across frames, so ratatui keeps the selected card in
     // view (scrolling long columns) and its offset feeds `hit_test`.
@@ -293,7 +341,7 @@ pub fn render(
 ) {
     let footer_area =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area())[1];
-    let cols = column_layout(frame.area());
+    let lay = column_layout(frame.area());
 
     // One render per column, in `Column::ALL` order (matching navigation and
     // hit-testing). `start` accumulates the flat selection offset so the
@@ -302,17 +350,20 @@ pub fn render(
     for (i, col) in Column::ALL.into_iter().enumerate() {
         let agents = board.column(col);
         let sel = selected.checked_sub(start).filter(|&r| r < agents.len());
-        column(
-            frame,
-            cols[i],
-            heading(col),
-            &agents,
-            sel,
-            &mut states[i],
-            ages,
-        );
+        column(frame, lay.cols[i], col, &agents, sel, &mut states[i], ages);
         start += agents.len();
     }
+
+    // The vertical rule walling the dormant rail off from the live columns.
+    let bar = Text::from(vec![Line::from("│"); lay.divider.height as usize]);
+    frame.render_widget(
+        Paragraph::new(bar).style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        ),
+        lay.divider,
+    );
 
     let help =
         "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d close/forget   q quit";
@@ -371,8 +422,8 @@ mod tests {
         // Second column (Idle) is empty.
         assert_eq!(hit_test(area, &b, 30, 1, no_scroll), None);
 
-        // Third column (Running), of four equal columns: index continues after
-        // the two left cards.
+        // Third live column (Running): index continues after the two left cards.
+        // (Live columns are 3 equal thirds of the area left of the dormant rail.)
         assert_eq!(hit_test(area, &b, 60, 1, no_scroll), Some(2));
 
         // Footer row is outside every column.
