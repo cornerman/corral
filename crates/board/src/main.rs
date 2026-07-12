@@ -33,15 +33,16 @@ mod mailbox;
 mod model;
 mod picker;
 mod prompt;
+mod router;
 mod ui;
 mod watch;
 
 use discovery::RegistryEntry;
 use focus::{SwayFocuser, WindowFocuser};
 use launch::{KittyLauncher, Launcher};
-use mailbox::Message;
 use model::{Board, Origin, Update};
 use picker::Picker;
+use router::Router;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
@@ -93,15 +94,6 @@ fn whitelist_file() -> Option<PathBuf> {
     corral_path("CORRAL_WHITELIST", "whitelist")
 }
 
-/// A message being routed to a directory that had no (or, with `force_new`, no
-/// dedicated) agent yet: corral spawned one and waits for it to announce.
-struct RouteState {
-    spawned: bool,
-    /// Sockets already live in the target dir before the spawn, so the newly
-    /// spawned agent can be told apart and receive the message.
-    pre: HashSet<PathBuf>,
-}
-
 /// The operator composing a message to a live agent (opened with `m`): the
 /// target socket, a display label for the prompt, and the text so far.
 struct Compose {
@@ -130,16 +122,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut picker_focus: Option<Vec<model::Agent>> = None;
     // Some(_) while the operator is composing a message (`m`) to a live agent.
     let mut compose: Option<Compose> = None;
-    // Agent-initiated message routing (the outbox). `approval` holds the one
-    // non-whitelisted message awaiting an operator decision; `approved` and
-    // `deferred` record per-session allow-once / decide-later choices;
-    // `routing` tracks spawns in flight to a target dir.
-    let mut approval: Option<(PathBuf, Message)> = None;
-    let mut approved: HashSet<String> = HashSet::new();
-    let mut deferred: HashSet<String> = HashSet::new();
-    let mut routing: HashMap<String, RouteState> = HashMap::new();
-    let outbox = outbox_dir();
-    let whitelist = whitelist_file();
+    // Agent-initiated message routing (the outbox). The router owns its state;
+    // None when there is no home to resolve the outbox/whitelist under.
+    let mut router = outbox_dir()
+        .zip(whitelist_file())
+        .map(|(o, w)| Router::new(o, w));
     // One persistent ListState per column so ratatui scrolls long columns and
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
@@ -198,22 +185,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             board.apply(update);
         }
 
-        // Route agent-initiated messages: deliver whitelisted/approved ones,
-        // raise the approval overlay for anything new. Cheap (a readdir), so
-        // delivery is prompt once a spawned target announces.
+        // Route agent-initiated messages when no overlay is capturing input.
+        // Cheap (a readdir), so delivery is prompt once a spawned target
+        // announces.
         if picker.is_none() && compose.is_none() {
-            if let (Some(ob), Some(wl)) = (&outbox, &whitelist) {
-                route_outbox(
-                    ob,
-                    wl,
-                    &board,
-                    &launcher,
-                    &mut routing,
-                    &mut approval,
-                    &approved,
-                    &deferred,
-                    &mut status,
-                );
+            if let Some(r) = router.as_mut() {
+                if let Some(s) = r.poll(&board, &launcher) {
+                    status = s;
+                }
             }
         }
 
@@ -240,7 +219,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             if let Some(c) = &compose {
                 ui::render_compose(f, &c.target, &c.buf);
             }
-            if let Some((_, msg)) = &approval {
+            if let Some(msg) = router.as_ref().and_then(Router::pending) {
                 ui::render_approval(f, msg);
             }
         })?;
@@ -304,43 +283,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 continue;
             }
             // The approval overlay captures all input until the operator
-            // decides on the pending inter-agent message.
-            if approval.is_some() {
+            // decides on the pending inter-agent message: a=allow once,
+            // A=allow always (persist), d=deny, esc=decide later.
+            if router.as_ref().is_some_and(|r| r.pending().is_some()) {
                 if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
-                        let (file, msg) = {
-                            let (f, m) = approval.as_ref().unwrap();
-                            (f.clone(), m.clone())
-                        };
+                        let r = router.as_mut().unwrap();
                         match key.code {
-                            // allow once (this session): route it now.
-                            KeyCode::Char('a') => {
-                                approved.insert(msg.id);
-                                approval = None;
-                            }
-                            // allow always: persist the pair, then route.
+                            KeyCode::Char('a') => r.allow_once(),
                             KeyCode::Char('A') => {
-                                if let Some(wl) = &whitelist {
-                                    if let Err(e) =
-                                        mailbox::whitelist_add(wl, &msg.from_cwd, &msg.target_dir)
-                                    {
-                                        status = format!("whitelist: {e}");
-                                    }
+                                if let Err(e) = r.allow_always() {
+                                    status = format!("whitelist: {e}");
                                 }
-                                approved.insert(msg.id);
-                                approval = None;
                             }
-                            // deny: drop the message.
-                            KeyCode::Char('d') => {
-                                let _ = std::fs::remove_file(&file);
-                                routing.remove(&msg.id);
-                                approval = None;
-                            }
-                            // later: leave it queued, stop asking this session.
-                            KeyCode::Esc => {
-                                deferred.insert(msg.id);
-                                approval = None;
-                            }
+                            KeyCode::Char('d') => r.deny(),
+                            KeyCode::Esc => r.defer(),
                             _ => {}
                         }
                     }
@@ -549,96 +506,6 @@ fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
             true
         })
         .collect()
-}
-
-/// Route pending outbox messages. Deliver whitelisted or already-approved ones
-/// to their target directory (spawning an agent there if needed); raise the
-/// approval overlay for the first message that is neither. `deferred` messages
-/// wait untouched until the next board run.
-#[allow(clippy::too_many_arguments)]
-fn route_outbox(
-    outbox: &Path,
-    whitelist: &Path,
-    board: &Board,
-    launcher: &dyn Launcher,
-    routing: &mut HashMap<String, RouteState>,
-    approval: &mut Option<(PathBuf, Message)>,
-    approved: &HashSet<String>,
-    deferred: &HashSet<String>,
-    status: &mut String,
-) {
-    if approval.is_some() {
-        return; // one decision at a time
-    }
-    let pending = mailbox::scan_outbox(outbox);
-    // Forget spawn-tracking for messages that are no longer queued.
-    let ids: HashSet<&str> = pending.iter().map(|(_, m)| m.id.as_str()).collect();
-    routing.retain(|k, _| ids.contains(k.as_str()));
-
-    for (file, msg) in pending {
-        if deferred.contains(&msg.id) {
-            continue;
-        }
-        let ok = approved.contains(&msg.id)
-            || mailbox::is_whitelisted(whitelist, &msg.from_cwd, &msg.target_dir);
-        if !ok {
-            *approval = Some((file, msg));
-            return; // ask the operator; the rest wait for the next tick
-        }
-        deliver(&file, &msg, board, launcher, routing, status);
-    }
-}
-
-/// Deliver one authorized message: reuse the live agent in the target dir, or
-/// spawn one (and, for `force_new`, always a dedicated agent) and wait for it
-/// to announce before injecting.
-fn deliver(
-    file: &Path,
-    msg: &Message,
-    board: &Board,
-    launcher: &dyn Launcher,
-    routing: &mut HashMap<String, RouteState>,
-    status: &mut String,
-) {
-    let in_dir = board.live_in_dir(&msg.target_dir);
-    if !msg.force_new {
-        if let Some(agent) = in_dir.first() {
-            finish(file, &agent.socket_path, msg, routing, status);
-            return;
-        }
-    }
-    let r = routing.entry(msg.id.clone()).or_insert_with(|| RouteState {
-        spawned: false,
-        pre: in_dir.iter().map(|a| a.socket_path.clone()).collect(),
-    });
-    if !r.spawned {
-        if let Err(e) = launcher.spawn(Path::new(&msg.target_dir)) {
-            *status = format!("route spawn: {e}");
-        }
-        r.spawned = true;
-        return; // the fresh agent will announce on a later tick
-    }
-    // Deliver to the agent that appeared after our spawn.
-    if let Some(agent) = in_dir.iter().find(|a| !r.pre.contains(&a.socket_path)) {
-        let sock = agent.socket_path.clone();
-        finish(file, &sock, msg, routing, status);
-    }
-}
-
-/// Inject a delivered message over the target socket and drop the mailbox file.
-fn finish(
-    file: &Path,
-    socket: &Path,
-    msg: &Message,
-    routing: &mut HashMap<String, RouteState>,
-    status: &mut String,
-) {
-    *status = match prompt::send_prompt(socket, &msg.tagged()) {
-        Ok(()) => format!("routed to {}", msg.target_dir),
-        Err(e) => format!("route send: {e}"),
-    };
-    let _ = std::fs::remove_file(file);
-    routing.remove(&msg.id);
 }
 
 /// Flat selectable index -> (column, row).
