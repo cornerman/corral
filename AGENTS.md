@@ -5,102 +5,129 @@ architecture, or interfaces change.
 
 ## What This Is
 
-A discovery system for locally running ACP coding-agent sessions. Design
-premise: agents are launched by the user in arbitrary terminals, never by a
-manager. Discovery works through a filesystem convention, not a registry
-service:
+An attention board for locally running ACP agent sessions, plus the discovery
+convention it rides on. Design premise: the user launches agents in arbitrary
+terminals, never through a manager. Corral shows which agent needs attention
+and jumps the user to its real window; it never drives an agent.
+
+Agent-agnostic by design; pi is the current proof of concept, announced via the
+`corral-announce` extension. The board discovers any `<label>-<pid>.sock` and
+reads agent identity generically, so other ACP agents are a matter of giving
+them a way to announce (see Future).
+
+Discovery works through a filesystem convention, not a registry service:
 
 ```
-$XDG_RUNTIME_DIR/acp/<label>-<pid>.sock   (directory mode 0700)
+$XDG_RUNTIME_DIR/acp/pi-<pid>.sock   (directory mode 0700)
 ```
 
-Whoever runs an agent binds a socket there and unlinks it on exit. The
-filesystem is the registry: `ls` enumerates sessions, connecting to a socket
-talks plain ACP (JSON-RPC, newline-delimited, as on stdio) to that agent.
+A pi extension binds a socket there and unlinks it on exit. The filesystem is
+the registry: `ls` enumerates sessions, connecting to a socket talks plain ACP
+(JSON-RPC, newline-delimited, as on stdio) to that agent.
 
 ## Data Flow
 
 ```
-your terminal                                    another terminal
-  agentwrap --name foo -- claude-agent-acp         corral
-    |  spawns child (ACP JSON-RPC on stdio)          |  scans $XDG_RUNTIME_DIR/acp/
-    |  binds $XDG_RUNTIME_DIR/acp/foo-<pid>.sock     |  probes each socket:
-    |  pumps bytes: socket <-> child stdio           |    ACP initialize -> live/busy/stale
-    |  unlinks socket on exit                        |    ACP session/list -> title, cwd
-                                                     |  renders table, 1s refresh
-your terminal (pi, interactive TUI)
-  pi -e extensions/corral-announce.ts
-    |  extension binds $XDG_RUNTIME_DIR/acp/pi-<pid>.sock on session_start
-    |  serves minimal ACP (initialize, session/list) beside the live TUI
-    |  unlinks socket on session_shutdown
+your terminal (pi, interactive TUI)              another terminal
+  pi -e extensions/corral-announce.ts              corral (attention board)
+    |  binds $XDG_RUNTIME_DIR/acp/pi-<pid>.sock      |  scans $XDG_RUNTIME_DIR/acp/ (1s)
+    |    on session_start                            |  one watch connection per socket:
+    |  serves ACP beside the live TUI:               |    initialize + session/list (seed)
+    |    initialize, session/list, prompt, cancel    |    streams _corral/state -> column
+    |  broadcasts activity + _corral/state           |  Enter -> focus window (sway)
+    |  unlinks socket on session_shutdown            |  n -> spawn agent (kitty)
 ```
 
 ## Crates
 
-- `crates/agentwrap` — the wrapper. Plain byte pump, no ACP knowledge except
-  in comments. One client at a time: a concurrent connect is accepted and
-  immediately closed (probers read that as "busy"). Child stdin stays open
-  across client disconnects so the agent never sees EOF between reconnects.
-  Child stdout backpressures via the pipe buffer while no client is
-  connected; a chunk that fails mid-send is delivered to the next client.
-  Cleanup (socket unlink + exit with child's status) happens in one place:
-  the child-waiter thread. SIGINT/SIGTERM are forwarded to the child.
-  - `src/naming.rs` — label/socket-path convention (pure, unit-tested)
-  - `tests/wrap_roundtrip.rs` — end-to-end: wraps `cat`, round-trips bytes,
-    reconnects, rejects concurrent clients, verifies cleanup
-- `crates/corral` — the manager CLI. Scans the socket dir, probes each
-  socket with an ACP `initialize` request (2s timeout), disconnects right
-  after so real clients can attach. `--once` for a snapshot, default loops
-  with a cleared screen every second.
-  - `src/discovery.rs` — filename parsing + dir scan (pure, unit-tested)
+- `crates/board` — the attention board (binary name `corral`). The triage core
+  (`model`, `watch`, `ui`) never names sway or kitty; both sit behind traits.
+  - `src/discovery.rs` — scan the socket dir, parse `<label>-<pid>.sock`
+    (pure, unit-tested).
+  - `src/model.rs` — `Agent` (keyed by socket path) and `Board`, the state the
+    UI renders; `State` is Working or NeedsYou. Pure, unit-tested.
+  - `src/watch.rs` — one reader thread per socket. Connects (stays fully open,
+    never half-closes), seeds from `initialize` + `session/list`, then streams
+    `_corral/state` notifications. Socket EOF reports the agent gone. Pure
+    parse helpers are unit-tested.
+  - `src/focus.rs` — `WindowFocuser` seam. `SwayFocuser` correlates agent to
+    window by a `/proc` parent-walk: the socket pid, walked up its PPid chain,
+    hits the kitty process whose pid sway reports (works because the pi sandbox
+    does not unshare the PID namespace), then `swaymsg [con_id=..] focus`. The
+    tree walk is unit-tested.
+  - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`.
+  - `src/ui.rs` — ratatui: two columns (Needs You, Working) plus a help footer.
+  - `src/main.rs` — orchestration: scan, spawn watchers, drain updates, handle
+    keys (Up/Down select, Enter focus, `n` spawn, `q` quit).
 
 ## Extensions
 
-- `extensions/corral-announce.ts` — pi extension announcing interactive pi
-  sessions on the socket dir. Serves `initialize`, `session/list` (title,
-  cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as
-  follow-up while busy; responds with stopReason once the message queue
-  drains — coarse, documented in-file), `session/cancel` → abort. Broadcasts
-  `session/update` to all connected clients: user/agent message chunks
-  (whole messages on `message_end`; token deltas deferred — stream event
-  shape is undocumented API), `tool_call`/`tool_call_update`,
-  `session_info_update` on rename. Serves multiple concurrent clients (the
-  extension, not a byte pump, is the session authority). `session/load`
-  replay is a later stage. Install: symlink into `~/.pi/agent/extensions/`.
+- `extensions/corral-announce.ts` — pi extension announcing an interactive pi
+  session on the socket dir. Serves `initialize`, `session/list` (id, title,
+  cwd; Working/idle under `SessionInfo._meta["corral/state"]`),
+  `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
+  while busy; responds with stopReason once the message queue drains, coarse,
+  documented in-file), `session/cancel` -> abort. Broadcasts to all connected
+  clients: `session/update` message and tool events (whole messages on
+  `message_end`; token deltas deferred), `session_info_update` on rename; and
+  a vendor `_corral/state` ExtNotification on `turn_start`/`turn_end`. Serves
+  multiple concurrent clients. Install: symlink into `~/.pi/agent/extensions/`.
+
+## ACP Conformance
+
+The socket surface stays ACP-conformant. Working/idle is not an ACP concept
+(the `sessionUpdate` union is closed, and ACP signals turn end only to the
+prompt sender via `stopReason`), so corral's passive-observer state rides ACP's
+vendor seams: a `_corral/state` ExtNotification (conformant clients ignore
+unknown notifications) and `SessionInfo._meta`, never a fake `sessionUpdate`
+variant.
 
 ## Interfaces to the Outside World
 
-- CLI `agentwrap [--name <label>] [--] <command> [args...]` — stderr of the
-  child passes through to the terminal; exit code mirrors the child.
-- CLI `corral [--once]` — writes a table to stdout (label, pid, status,
-  agent, title, cwd).
+- CLI `corral` — full-screen TUI. Keys: Up/Down (or j/k) select, Enter focus
+  the selected agent's window, `n` spawn a new agent, `q`/Esc quit. Requires
+  `$XDG_RUNTIME_DIR`; uses `swaymsg` and `kitty` for focus and spawn.
 - pi extension `corral-announce` — see Extensions above.
 - Unix sockets in `$XDG_RUNTIME_DIR/acp/` (created 0700). No TCP ports, no
   network exposure. Peer authentication relies on the directory permissions.
 
 ## Known Limitations (v1, deliberate)
 
-- One client per socket; multiplexing (board + editor concurrently) is a
-  later layer.
-- Busy-rejection is racy for back-to-back reconnects: right after a client
-  disconnects, the next connect may still be bounced until the pump thread
-  observes the EOF. Clients must treat a bounced connect as retryable.
-- corral's probe sends `initialize` a second time when a real client later
-  initializes the same agent; agents are expected to tolerate re-initialize.
-- corral's `session/list` follow-up stalls up to the 2s read timeout per
-  socket on agents that never answer unknown methods.
-- Sessions not wrapped or announced are invisible (no passive finder tier).
+- Attention states are Working and Needs You only. Approval-blocked is not a
+  column: pi's built-in tool-approval prompt is not observable by an extension,
+  so it folds into Working.
+- Focus correlation assumes the pi process and its terminal window share the
+  host PID namespace (true under the current nono/bwrap sandbox). If a sandbox
+  unshares PIDs, the `/proc` parent-walk cannot reach the window pid.
+- A transient watch read error reports the agent gone; the next 1s scan
+  reconnects. A genuinely dead socket (crashed pi) reconnects-and-drops cheaply
+  once per second until its file disappears.
 - corral-announce answers `session/new`/`session/load` with method-not-
-  supported: clients can discover, watch, and prompt running pi sessions,
-  but attaching with history replay is not yet served.
-- corral-announce's `session/prompt` responses are resolved for all waiting
-  clients at once when the queue drains (no per-message turn attribution).
+  supported: clients can discover, watch, and prompt running pi sessions, but
+  attaching with history replay is not yet served.
+- corral-announce's `session/prompt` responses resolve for all waiting clients
+  at once when the queue drains (no per-message turn attribution).
 - Approvals stay in the pi TUI; socket clients never receive
   `session/request_permission`.
+- Agent-to-agent communication (opening a channel between two agents) is a
+  planned later layer, not built.
+
+## Future
+
+- More than pi. Today only pi announces, via `corral-announce`. Other ACP
+  agents (Claude Code, codex, gemini) are a planned direction: each needs a way
+  to bind a `<label>-<pid>.sock` (its own extension, or a stdio-to-socket
+  wrapper), after which the board discovers it unchanged. Agents that do not
+  emit `_corral/state` simply default to Needs You.
+- Agent-to-agent channels: corral brokering a link so two agents can talk.
+- More than sway and kitty. `SwayFocuser` and `KittyLauncher` are the PoC
+  implementations for the maintainer's setup; other compositors and terminals
+  drop in as new `WindowFocuser` / `Launcher` implementations behind the same
+  seams, with no change to the triage core.
 
 ## Development Setup
 
 - Nix flake (nixpkgs-unstable) + direnv; Rust pinned via rust-toolchain.toml
   through rust-overlay. `just` for commands: `just test`, `just lint`,
-  `just watch` (cargo-watch), `just nix-build`.
+  `just board`, `just watch` (cargo-watch), `just nix-build`.
 - CI: GitHub Action runs `nix flake check` (build + tests via nix).

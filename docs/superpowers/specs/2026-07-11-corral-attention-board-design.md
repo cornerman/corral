@@ -21,6 +21,11 @@ board's one job is to point it at the agent that needs it.
   reliably. Approval-blocked folds into Working for now.
 - Any in-board control of agents (prompt, steer, cancel, spawn-with-prompt).
 
+Proof-of-concept scope, all swappable later behind existing seams: pi is the
+only announced agent (via corral-announce), sway the only WindowFocuser, kitty
+the only Launcher. Other ACP agents, compositors, and terminals are future
+directions, not built now.
+
 ## State Model
 
 Two states per agent, derived from pi turn events:
