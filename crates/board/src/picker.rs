@@ -37,6 +37,18 @@ impl Picker {
         self.matches().get(self.selected).map(|s| s.to_string())
     }
 
+    /// Index into the *original* candidate list of the selected match. Lets a
+    /// caller recover a parallel value (e.g. the agent behind a focus label)
+    /// without relying on the candidate string being unique.
+    pub fn selected_original(&self) -> Option<usize> {
+        self.candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| fuzzy(&self.query, c))
+            .nth(self.selected)
+            .map(|(i, _)| i)
+    }
+
     pub fn push(&mut self, ch: char) {
         self.query.push(ch);
         self.selected = 0;
@@ -139,7 +151,10 @@ mod tests {
         // no 'n'; /tmp no. Expect nixos only among these.
         assert_eq!(p.matches(), vec!["/home/u/projects/nixos"]);
         assert_eq!(p.selected_dir().as_deref(), Some("/home/u/projects/nixos"));
+        // The match maps back to its original index (nixos is candidate 1).
+        assert_eq!(p.selected_original(), Some(1));
         p.backspace();
         assert_eq!(p.matches().len(), 3);
+        assert_eq!(p.selected_original(), Some(0));
     }
 }

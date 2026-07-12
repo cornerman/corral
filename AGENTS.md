@@ -118,8 +118,10 @@ message/tool updates) is ACP v1.
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
   h/l) switch columns; Enter or left-click focuses a live agent's window or
   resumes a dormant session (`pi --session`); `n` spawn in the selected agent's
-  cwd; `N` open a fuzzy directory picker to spawn elsewhere; `d` dismiss the
-  selected dormant record; `q`/Esc quit. Reads `$HOME` (or
+  cwd; `N` open a fuzzy directory picker to spawn elsewhere; `f` fuzzy-focus a
+  live agent by title/cwd; `d` dismiss the selected dormant record; `q`/Esc
+  quit. Long columns scroll to keep the selection visible; live cards show
+  time-in-state. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir and `$CORRAL_PROJECT_ROOTS`
   (colon-separated, default `~/projects`) for picker candidates; uses `swaymsg`
   and `kitty` for focus and spawn.

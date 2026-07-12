@@ -83,14 +83,13 @@ One per-session file drives discovery, isolation, and resume.
 
 ## Board Polish
 
-- [ ] Column scrolling when a column has more cards than fit. `ui::hit_test`
-      currently assumes no per-column scroll, so clicks past the visible area
-      mis-map. Add a scroll offset per column and account for it in hit_test.
-- [ ] Consider showing time-in-state (how long an agent has been Requires
-      Action / Idle) to sharpen triage.
-- [ ] `f` fuzzy-focus: open the picker over live sessions (filter by
-      label/title/cwd), Enter focuses the chosen session's window. Reuses the
-      Picker widget; faster than arrow nav when many agents are running.
+- [x] Column scrolling: each column keeps a persistent `ListState`, so ratatui
+      scrolls long columns to keep the selection visible and `hit_test` reads
+      the real scroll offset per column.
+- [x] Time-in-state: live cards show a compact age (`8s`/`5m`/`2h`/`3d`) since
+      the last state transition, restarted on each `SetState`.
+- [x] `f` fuzzy-focus: picker over live agents (filter by title/cwd), Enter
+      focuses the chosen window. Reuses the Picker via `selected_original`.
 
 ## Extension (corral-announce)
 

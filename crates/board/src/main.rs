@@ -12,7 +12,7 @@
 //!
 //! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
 
 mod discovery;
 mod focus;
@@ -79,8 +80,17 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut known: HashSet<PathBuf> = HashSet::new();
     let mut selected: usize = 0;
     let mut status = String::new();
-    // Some(_) while the Shift+N spawn directory picker is open.
+    // Some(_) while a picker overlay is open (Shift+N spawn dir, or `f`
+    // focus). `picker_focus` holds the live agents behind the labels when the
+    // picker is a focus picker; None means it is the spawn-dir picker.
     let mut picker: Option<Picker> = None;
+    let mut picker_focus: Option<Vec<model::Agent>> = None;
+    // One persistent ListState per column so ratatui scrolls long columns and
+    // hit_test can read each column's scroll offset.
+    let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
+    // When each live agent entered its current state, keyed by socket path, so
+    // the cards can show time-in-state.
+    let mut state_since: HashMap<PathBuf, Instant> = HashMap::new();
     let mut last_scan = Instant::now() - SCAN_INTERVAL * 2;
 
     loop {
@@ -104,8 +114,24 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         // transient failure self-heals on the next scan; a genuinely dead
         // socket just reconnects-and-Gones cheaply once per second.
         while let Ok(update) = rx.try_recv() {
-            if let Update::Gone(path) = &update {
-                known.remove(path);
+            match &update {
+                // A Gone drops the socket so a transient failure self-heals on
+                // the next scan; a dead socket reconnects-and-Gones cheaply.
+                Update::Gone(path) => {
+                    known.remove(path);
+                    state_since.remove(path);
+                }
+                // Each SetState is a real transition (the extension only
+                // broadcasts on change): restart the timer.
+                Update::SetState(path, _) => {
+                    state_since.insert(path.clone(), Instant::now());
+                }
+                Update::Upsert(a) => {
+                    state_since
+                        .entry(a.socket_path.clone())
+                        .or_insert_with(Instant::now);
+                }
+                Update::SetTitle(..) => {}
             }
             board.apply(update);
         }
@@ -116,10 +142,19 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             selected = count.saturating_sub(1);
         }
 
+        let ages: HashMap<PathBuf, String> = state_since
+            .iter()
+            .map(|(p, t)| (p.clone(), age_label(t.elapsed())))
+            .collect();
         terminal.draw(|f| {
-            ui::render(f, &board, selected, &status);
+            ui::render(f, &board, selected, &status, &mut list_states, &ages);
             if let Some(p) = &picker {
-                ui::render_picker(f, p);
+                let verb = if picker_focus.is_some() {
+                    "focus agent"
+                } else {
+                    "spawn agent"
+                };
+                ui::render_picker(f, p, verb);
             }
         })?;
 
@@ -130,12 +165,27 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
-                            KeyCode::Esc => picker = None,
-                            KeyCode::Enter => {
-                                let dir = picker.as_ref().and_then(Picker::selected_dir);
+                            KeyCode::Esc => {
                                 picker = None;
-                                if let Some(dir) = dir {
-                                    if let Err(e) = launcher.spawn(std::path::Path::new(&dir)) {
+                                picker_focus = None;
+                            }
+                            KeyCode::Enter => {
+                                if let Some(targets) = picker_focus.take() {
+                                    // Focus picker: map the selected match back
+                                    // to its agent and focus its window.
+                                    let idx = picker.as_ref().and_then(Picker::selected_original);
+                                    picker = None;
+                                    if let Some(a) = idx.and_then(|i| targets.get(i)) {
+                                        if let Err(e) = focuser.focus(a) {
+                                            status = format!("focus: {e}");
+                                        }
+                                    }
+                                } else {
+                                    let dir = picker.as_ref().and_then(Picker::selected_dir);
+                                    picker = None;
+                                    if let Err(e) = dir.map_or(Ok(()), |d| {
+                                        launcher.spawn(std::path::Path::new(&d))
+                                    }) {
                                         status = format!("spawn: {e}");
                                     }
                                 }
@@ -198,6 +248,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         status.clear();
                         picker = Some(Picker::new(crate::picker::gather_dirs(&board)));
                     }
+                    KeyCode::Char('f') => {
+                        // Fuzzy-focus: pick among live agents by title/cwd,
+                        // faster than arrow nav when many are running.
+                        status.clear();
+                        let live: Vec<model::Agent> = board
+                            .selectable()
+                            .into_iter()
+                            .filter(|a| a.origin == Origin::Live)
+                            .cloned()
+                            .collect();
+                        if !live.is_empty() {
+                            let labels = live.iter().map(focus_label).collect();
+                            picker = Some(Picker::new(labels));
+                            picker_focus = Some(live);
+                        }
+                    }
                     _ => {}
                 },
                 Event::Mouse(m) => match m.kind {
@@ -206,7 +272,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     MouseEventKind::Down(MouseButton::Left) => {
                         let s = terminal.size()?;
                         let area = Rect::new(0, 0, s.width, s.height);
-                        if let Some(idx) = ui::hit_test(area, &board, m.column, m.row) {
+                        let scroll = std::array::from_fn(|i| list_states[i].offset());
+                        if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
                             selected = idx;
                             activate_selected(&focuser, &launcher, &board, selected, &mut status);
                         }
@@ -245,6 +312,28 @@ fn activate_selected(
     if let Err(e) = result {
         *status = e;
     }
+}
+
+/// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
+fn age_label(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86400 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86400)
+    }
+}
+
+/// Label for the `f` focus picker: the title and the cwd's last path segment.
+fn focus_label(agent: &model::Agent) -> String {
+    let title = agent.title.as_deref().unwrap_or("(unnamed)");
+    let cwd = agent.cwd.as_deref().unwrap_or("?");
+    let base = cwd.rsplit('/').next().unwrap_or(cwd);
+    format!("{title} · {base}")
 }
 
 /// `d`: dismiss the selected dormant session by deleting its registry record.
@@ -354,6 +443,14 @@ fn move_col(index: usize, counts: &[usize; 4], right: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn age_label_scales_units() {
+        assert_eq!(age_label(Duration::from_secs(8)), "8s");
+        assert_eq!(age_label(Duration::from_secs(5 * 60)), "5m");
+        assert_eq!(age_label(Duration::from_secs(2 * 3600)), "2h");
+        assert_eq!(age_label(Duration::from_secs(3 * 86400)), "3d");
+    }
 
     #[test]
     fn navigation_maps_flat_index_to_columns() {
