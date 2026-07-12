@@ -3,6 +3,24 @@
 Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design.
 
+## Built (on `main`)
+
+The attention board is shipped and working:
+- `crates/board`: 3 columns Requires Action / Idle / Running (ACP v2
+  `state_update` vocabulary), a live watch connection per socket, sway focus
+  (`/proc` parent-walk) and kitty spawn behind `WindowFocuser`/`Launcher`
+  seams. Keys: Up/Down (or scroll) within a column, Left/Right (h/l) across
+  columns, Enter/left-click focus, `n` spawn in selected cwd, `N` fuzzy dir
+  picker (board cwds + `$CORRAL_PROJECT_ROOTS` subdirs, skips dotdirs), `q`
+  quit. 20 tests, clippy clean.
+- Discovery today: flat `~/.corral/sockets/pi-<pid>.sock` (override
+  `$CORRAL_ACP_DIR`). Will be replaced by the Unified Session Registry below.
+- `corral-announce`: serves initialize / session/list / session/prompt /
+  session/cancel; broadcasts message + tool events, `state_update`
+  (running/idle from turn events; requires_action while the `question` tool
+  blocks), `session_info_update` on rename; title falls back to the first user
+  message (capped) when unnamed, and updates live.
+
 ## Unified Session Registry (designed, not built — see spec)
 
 Supersedes the current flat `~/.corral/sockets` discovery and the idea of a
@@ -80,6 +98,5 @@ resume.
 - [ ] Multi-agent: let non-pi ACP agents announce (their own extension or a
       stdio-to-socket wrapper binding `<label>-<pid>.sock`). The board already
       discovers any socket and reads agentInfo generically.
-- [ ] Agent-to-agent channel: corral brokers a link so two agents can talk.
 - [ ] More compositors/terminals: new `WindowFocuser` / `Launcher`
       implementations behind the existing seams (sway/kitty are PoC).
