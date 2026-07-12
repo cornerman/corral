@@ -108,7 +108,8 @@ your terminal (pi, interactive TUI)              another terminal
     focus-agent picker, or message compose), exclusive by construction. Keys:
     Up/Down within a column, Left/Right across columns, Enter or click
     focus/resume, `m` message a live agent, `n`/`c` spawn, `d` dismiss
-    dormant, `f` fuzzy-focus, `q` quit.
+    dormant, `f` fuzzy go-to (focus a live agent or resume a dormant one),
+    `q` quit.
 
 ## Extensions
 
@@ -163,8 +164,9 @@ message/tool updates) is ACP v1.
   h/l) switch columns; Enter or left-click focuses a live agent's window or
   resumes a dormant session (`pi --session`); `m` compose a message delivered
   to a live agent over its socket; `n` spawn in the selected agent's
-  cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy-focus a
-  live agent by title/cwd; `d` dismiss the selected dormant record; `q`/Esc
+  cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy go-to any
+  agent by title/cwd (focus if live, resume if dormant); `d` dismiss the
+  selected dormant record; `q`/Esc
   quit. Long columns scroll to keep the selection visible; live cards show
   time-in-state. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir; the `c` picker offers only the

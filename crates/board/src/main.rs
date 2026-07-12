@@ -108,9 +108,9 @@ struct Compose {
 enum Overlay {
     /// `c`: pick a directory to spawn a new agent in.
     Spawn(Picker),
-    /// `f`: pick a live agent (paired with the agents behind the labels) to
-    /// focus its window.
-    Focus(Picker, Vec<model::Agent>),
+    /// `f`: pick any agent (paired with the agents behind the labels) to go
+    /// to — focus a live window, or resume a dormant session.
+    Goto(Picker, Vec<model::Agent>),
     /// `m`: compose a message to a live agent.
     Compose(Compose),
 }
@@ -177,13 +177,13 @@ fn handle_overlay(
                 None
             }
         },
-        Overlay::Focus(p, targets) => match picker_input(p, key.code) {
+        Overlay::Goto(p, targets) => match picker_input(p, key.code) {
             PickerInput::Continue => Some(ov),
             PickerInput::Cancel => None,
             PickerInput::Submit => {
                 if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
-                    if let Err(e) = focuser.focus(a) {
-                        *status = format!("focus: {e}");
+                    if let Err(e) = activate(a, focuser, launcher) {
+                        *status = e;
                     }
                 }
                 None
@@ -318,7 +318,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             ui::render(f, &board, selected, &status, &mut list_states, &ages);
             match &overlay {
                 Some(Overlay::Spawn(p)) => ui::render_picker(f, p, "spawn agent"),
-                Some(Overlay::Focus(p, _)) => ui::render_picker(f, p, "focus agent"),
+                Some(Overlay::Goto(p, _)) => ui::render_picker(f, p, "focus / resume agent"),
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.target, &c.buf),
                 None => {}
             }
@@ -402,18 +402,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         }
                     }
                     KeyCode::Char('f') => {
-                        // Fuzzy-focus: pick among live agents by title/cwd,
-                        // faster than arrow nav when many are running.
+                        // Fuzzy go-to: pick any agent by title/cwd, faster than
+                        // arrow nav. Enter focuses a live agent or resumes a
+                        // dormant one, matching the Enter/click action.
                         status.clear();
-                        let live: Vec<model::Agent> = board
-                            .selectable()
-                            .into_iter()
-                            .filter(|a| a.origin == Origin::Live)
-                            .cloned()
-                            .collect();
-                        if !live.is_empty() {
-                            let labels = live.iter().map(ui::focus_label).collect();
-                            overlay = Some(Overlay::Focus(Picker::new(labels), live));
+                        let targets: Vec<model::Agent> =
+                            board.selectable().into_iter().cloned().collect();
+                        if !targets.is_empty() {
+                            let labels = targets.iter().map(goto_label).collect();
+                            overlay = Some(Overlay::Goto(Picker::new(labels), targets));
                         }
                     }
                     _ => {}
@@ -449,10 +446,21 @@ fn activate_selected(
     status: &mut String,
 ) {
     status.clear();
-    let Some(agent) = board.selectable().get(selected).copied() else {
-        return;
-    };
-    let result = match agent.origin {
+    if let Some(agent) = board.selectable().get(selected).copied() {
+        if let Err(e) = activate(agent, focuser, launcher) {
+            *status = e;
+        }
+    }
+}
+
+/// Go to an agent: focus a live window, or resume a dormant session. Shared by
+/// the Enter key, a left click, and the `f` go-to picker.
+fn activate(
+    agent: &model::Agent,
+    focuser: &dyn WindowFocuser,
+    launcher: &dyn Launcher,
+) -> Result<(), String> {
+    match agent.origin {
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume) {
             (Some(cwd), Some(resume)) => launcher
@@ -460,9 +468,15 @@ fn activate_selected(
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume".into()),
         },
-    };
-    if let Err(e) = result {
-        *status = e;
+    }
+}
+
+/// Picker label for the `f` go-to list: the focus label, marked when dormant
+/// so the operator knows Enter will resume rather than focus.
+fn goto_label(agent: &model::Agent) -> String {
+    match agent.origin {
+        Origin::Live => ui::focus_label(agent),
+        Origin::Dormant => format!("{} (dormant)", ui::focus_label(agent)),
     }
 }
 
