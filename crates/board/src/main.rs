@@ -130,11 +130,8 @@ struct Compose {
 /// The active input overlay. Exactly one can be open, so the modes are
 /// exclusive by construction: no parallel `Option`s to keep consistent.
 enum Overlay {
-    /// `c`: pick a directory to spawn a new agent in.
-    Spawn(Picker),
-    /// `f`: pick any agent (paired with the agents behind the labels) to go
-    /// to — focus a live window, or resume a dormant session.
-    Goto(Picker, Vec<model::Agent>),
+    /// `/`: fuzzy-pick any agent to go to (Enter) or spawn beside (Shift+Enter).
+    Jump(Picker, Vec<model::Agent>),
     /// `m`: compose a message to a live agent.
     Compose(Compose),
 }
@@ -145,13 +142,16 @@ enum PickerInput {
     Continue,
     /// Esc: close without acting.
     Cancel,
-    /// Enter: act on the current selection, then close.
+    /// Enter: go to the current selection, then close.
     Submit,
+    /// Shift+Enter: spawn a new agent in the selection's dir, then close.
+    SubmitSpawn,
 }
 
-fn picker_input(p: &mut Picker, code: KeyCode) -> PickerInput {
-    match code {
+fn picker_input(p: &mut Picker, key: KeyEvent) -> PickerInput {
+    match key.code {
         KeyCode::Esc => PickerInput::Cancel,
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => PickerInput::SubmitSpawn,
         KeyCode::Enter => PickerInput::Submit,
         KeyCode::Up => {
             p.up();
@@ -190,25 +190,22 @@ fn handle_overlay(
         return Some(ov);
     }
     match &mut ov {
-        Overlay::Spawn(p) => match picker_input(p, key.code) {
-            PickerInput::Continue => Some(ov),
-            PickerInput::Cancel => None,
-            PickerInput::Submit => {
-                if let Some(d) = p.selected_dir() {
-                    if let Err(e) = launcher.spawn(Path::new(&d)) {
-                        *status = format!("spawn: {e}");
-                    }
-                }
-                None
-            }
-        },
-        Overlay::Goto(p, targets) => match picker_input(p, key.code) {
+        Overlay::Jump(p, targets) => match picker_input(p, key) {
             PickerInput::Continue => Some(ov),
             PickerInput::Cancel => None,
             PickerInput::Submit => {
                 if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
                     if let Err(e) = activate(a, focuser, launcher) {
                         *status = e;
+                    }
+                }
+                None
+            }
+            PickerInput::SubmitSpawn => {
+                if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
+                    let cwd = launch::default_cwd(Some(a));
+                    if let Err(e) = launcher.spawn(&cwd) {
+                        *status = format!("spawn: {e}");
                     }
                 }
                 None
@@ -388,8 +385,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         terminal.draw(|f| {
             ui::render(f, &board, selected, &status, &mut list_states, &ages);
             match &overlay {
-                Some(Overlay::Spawn(p)) => ui::render_picker(f, p, "spawn agent"),
-                Some(Overlay::Goto(p, _)) => ui::render_picker(f, p, "focus / resume agent"),
+                Some(Overlay::Jump(p, _)) => ui::render_picker(f, p),
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
                 None => {}
             }
@@ -463,22 +459,30 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     KeyCode::Right | KeyCode::Char('l') => {
                         selected = nav::move_col(selected, &counts, true);
                     }
-                    KeyCode::Enter => {
-                        activate_selected(&focuser, &launcher, &board, selected, &mut status)
-                    }
-                    KeyCode::Char('d') => {
-                        dismiss_selected(dir, &focuser, &board, selected, &mut status);
-                    }
-                    KeyCode::Char('n') => {
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        // Shift+Enter: spawn a new agent in the selected dir.
                         status.clear();
                         let cwd = launch::default_cwd(board.selectable().get(selected).copied());
                         if let Err(e) = launcher.spawn(&cwd) {
                             status = format!("spawn: {e}");
                         }
                     }
-                    KeyCode::Char('c') => {
+                    KeyCode::Enter => {
+                        activate_selected(&focuser, &launcher, &board, selected, &mut status)
+                    }
+                    KeyCode::Char('d') => {
+                        dismiss_selected(dir, &focuser, &board, selected, &mut status);
+                    }
+                    KeyCode::Char('/') => {
+                        // Fuzzy-pick any agent: Enter goes to it, Shift+Enter
+                        // spawns a fresh agent in its dir.
                         status.clear();
-                        overlay = Some(Overlay::Spawn(Picker::new(picker::gather_dirs(&board))));
+                        let targets: Vec<model::Agent> =
+                            board.selectable().into_iter().cloned().collect();
+                        if !targets.is_empty() {
+                            let labels = targets.iter().map(goto_label).collect();
+                            overlay = Some(Overlay::Jump(Picker::new(labels), targets));
+                        }
                     }
                     KeyCode::Char('m') => {
                         // Message any agent: a live one over its socket, a
@@ -496,18 +500,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                     buf: String::new(),
                                 }));
                             }
-                        }
-                    }
-                    KeyCode::Char('f') => {
-                        // Fuzzy go-to: pick any agent by title/cwd, faster than
-                        // arrow nav. Enter focuses a live agent or resumes a
-                        // dormant one, matching the Enter/click action.
-                        status.clear();
-                        let targets: Vec<model::Agent> =
-                            board.selectable().into_iter().cloned().collect();
-                        if !targets.is_empty() {
-                            let labels = targets.iter().map(goto_label).collect();
-                            overlay = Some(Overlay::Goto(Picker::new(labels), targets));
                         }
                     }
                     _ => {}
@@ -683,5 +675,17 @@ mod tests {
         assert!(matches!(click_action(3, 3), Click::Go));
         assert!(matches!(click_action(3, 1), Click::Select));
         assert!(matches!(click_action(0, 5), Click::Select));
+    }
+
+    #[test]
+    fn shift_enter_in_picker_is_spawn() {
+        let mut p = Picker::new(vec!["a".into()]);
+        let plain = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let shift = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(matches!(picker_input(&mut p, plain), PickerInput::Submit));
+        assert!(matches!(
+            picker_input(&mut p, shift),
+            PickerInput::SubmitSpawn
+        ));
     }
 }

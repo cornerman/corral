@@ -93,13 +93,13 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
     .split(v[1])[1]
 }
 
-/// Draw the `c` directory picker as a centered overlay: a query line above
-/// the fuzzy-filtered candidate list.
-pub fn render_picker(frame: &mut Frame, picker: &Picker, verb: &str) {
+/// Draw the `/` jump picker as a centered overlay: a query line above the
+/// fuzzy-filtered agent list (Enter goes, Shift+Enter spawns).
+pub fn render_picker(frame: &mut Frame, picker: &Picker) {
     let area = centered(frame.area(), 70, 60);
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .title(format!(" {verb} — type to filter, ⏎ select, esc cancel "))
+        .title(" jump — type to filter, ⏎ go, ⇧⏎ new, esc cancel ")
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -415,7 +415,7 @@ pub fn render(
     }
 
     let help =
-        "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d close/forget   q quit";
+        "↑↓←→ move   ⏎ go   ⇧⏎ new   / jump   m msg   d close/forget   q quit";
     let footer = if status.is_empty() {
         Line::from(help.dim())
     } else {
