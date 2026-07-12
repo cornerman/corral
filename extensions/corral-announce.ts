@@ -26,6 +26,11 @@
  *                         turn_start/turn_end, and requires_action while the
  *                         interactive `question` tool blocks on the user
  *
+ * Registers one tool, message_agent, that queues a cross-session message as a
+ * mailbox file under $HOME/.corral/outbox/<id>.json (override with
+ * $CORRAL_OUTBOX_DIR) for corral to route; the agent never reaches another
+ * session directly.
+ *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
  *   pi -e /path/to/corral-announce.ts
  *
@@ -33,11 +38,13 @@
  * current state and updates go to all connections.
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 export default function (pi: ExtensionAPI) {
 	let server: net.Server | undefined;
@@ -54,6 +61,59 @@ export default function (pi: ExtensionAPI) {
 	const clients = new Set<net.Socket>();
 	// session/prompt requests waiting for the turn that consumes them to end.
 	const pendingPrompts: Array<{ conn: net.Socket; id: number | string }> = [];
+
+	// message_agent: let this agent hand a message to another session, addressed
+	// by working directory. It only writes a mailbox file under ~/.corral/outbox;
+	// corral (the unsandboxed board) is the trusted cross-workdir router that
+	// authorizes, resolves the target, spawns an agent if none runs there, and
+	// injects with a provenance tag. Sandboxed agents cannot reach each other
+	// directly, so this indirection is the only cross-session path.
+	pi.registerTool({
+		name: "message_agent",
+		label: "Message agent",
+		description:
+			"Send a message to another coding-agent session, addressed by its working " +
+			"directory. corral routes it (spawning an agent there if none is running) and " +
+			"tags it as coming from you. Fire-and-forget: it does not wait for a reply.",
+		parameters: Type.Object({
+			target_dir: Type.String({
+				description: "Absolute path of the target agent's working directory.",
+			}),
+			message: Type.String({ description: "The message to deliver." }),
+			force_new: Type.Optional(
+				Type.Boolean({
+					description: "Spawn a dedicated fresh agent in the target dir instead of reusing one.",
+				}),
+			),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const home = process.env.HOME;
+			const outbox = process.env.CORRAL_OUTBOX_DIR ?? (home ? path.join(home, ".corral", "outbox") : undefined);
+			if (!outbox) {
+				return { content: [{ type: "text", text: "corral: no HOME; cannot queue message" }] };
+			}
+			fs.mkdirSync(outbox, { recursive: true, mode: 0o700 });
+			const id = randomUUID();
+			const record = {
+				id,
+				fromCwd: ctx.cwd,
+				targetDir: params.target_dir,
+				message: params.message,
+				forceNew: params.force_new ?? false,
+				createdAt: new Date().toISOString(),
+			};
+			// Atomic write so a scanning corral never reads a half-written mailbox.
+			const file = path.join(outbox, `${id}.json`);
+			const tmp = `${file}.${process.pid}.tmp`;
+			fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
+			fs.renameSync(tmp, file);
+			return {
+				content: [
+					{ type: "text", text: `Queued message to the agent in ${params.target_dir} (corral will deliver it).` },
+				],
+			};
+		},
+	});
 
 	const stop = () => {
 		// Idempotent: session_shutdown can fire more than once across
