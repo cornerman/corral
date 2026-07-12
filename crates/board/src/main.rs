@@ -78,6 +78,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
 
     let mut board = Board::default();
     let mut known: HashSet<PathBuf> = HashSet::new();
+    // Sockets whose watcher failed to connect. A record whose socket is set
+    // but dead is a crashed session: surfaced as dormant (resumable) rather
+    // than vanishing. Cleared when the socket comes alive (an Upsert).
+    let mut dead_sockets: HashSet<PathBuf> = HashSet::new();
     let mut selected: usize = 0;
     let mut status = String::new();
     // Some(_) while a picker overlay is open (Shift+N spawn dir, or `f`
@@ -99,6 +103,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             // watch each live socket, and hand the survivors to the board so it
             // can rebuild the dormant column.
             let entries = prune(dir, discovery::scan_registry(dir));
+            // Forget dead sockets for records that no longer exist, so the set
+            // cannot grow without bound.
+            dead_sockets.retain(|p| {
+                entries
+                    .iter()
+                    .any(|e| e.socket.as_deref() == Some(p.as_path()))
+            });
             for entry in &entries {
                 if let Some(sock) = discovery::live_socket(entry) {
                     if known.insert(sock.path.clone()) {
@@ -106,7 +117,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     }
                 }
             }
-            board.sync_registry(&entries);
+            board.sync_registry(&entries, &dead_sockets);
             last_scan = Instant::now();
         }
 
@@ -120,6 +131,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 Update::Gone(path) => {
                     known.remove(path);
                     state_since.remove(path);
+                    dead_sockets.insert(path.clone());
                 }
                 // Each SetState is a real transition (the extension only
                 // broadcasts on change): restart the timer.
@@ -130,6 +142,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     state_since
                         .entry(a.socket_path.clone())
                         .or_insert_with(Instant::now);
+                    dead_sockets.remove(&a.socket_path);
                 }
                 Update::SetTitle(..) => {}
             }

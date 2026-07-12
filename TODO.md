@@ -43,9 +43,10 @@ One per-session file drives discovery, isolation, and resume.
       via the Launcher seam (`pi --session <resume>` in `kitty --directory
       cwd`); `d` dismisses; prune dead-target / >14-day (by registry-file
       mtime).
-- [ ] Staleness sweep: a crashed session leaves `socket` set but dead, so it
-      renders as neither live nor dormant and vanishes. Detect socket-set but
-      unreachable and fall back to dormant.
+- [x] Staleness sweep: a crashed session leaves `socket` set but dead. The
+      board records sockets whose watcher fails to connect (`dead_sockets`) and
+      treats a dead-socketed record as dormant, so it stays resumable instead
+      of vanishing; a still-connecting socket never flickers through Dormant.
 
 ## Inter-Agent Messaging (designed, not built — see spec)
 

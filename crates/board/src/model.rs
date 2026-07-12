@@ -100,11 +100,16 @@ impl Board {
     }
 
     /// Rebuild the dormant view from the latest registry snapshot. A record is
-    /// dormant when it was cleanly shut down (`socket == None`), is resumable
-    /// (`resume` set), and its session is not currently live. Only the most
+    /// dormant when it is resumable (`resume` set), its session is not
+    /// currently live, and its socket is not reachable: either cleared to
+    /// `None` on clean shutdown, or set but found dead (a crashed session that
+    /// never unlinked). `dead_sockets` carries the socket paths whose watcher
+    /// failed to connect, so a crashed agent surfaces as resumable instead of
+    /// vanishing, while a freshly starting one (socket set, not yet dead) is
+    /// left to the live path and never flickers through Dormant. Only the most
     /// recent record per cwd is kept, so a busy directory shows one card, not a
     /// pile of old sessions.
-    pub fn sync_registry(&mut self, entries: &[RegistryEntry]) {
+    pub fn sync_registry(&mut self, entries: &[RegistryEntry], dead_sockets: &HashSet<PathBuf>) {
         let live_ids: HashSet<&str> = self
             .live
             .values()
@@ -113,7 +118,14 @@ impl Board {
 
         let mut latest: HashMap<&str, &RegistryEntry> = HashMap::new();
         for e in entries {
-            if e.socket.is_some() || e.resume.is_none() {
+            if e.resume.is_none() {
+                continue;
+            }
+            // A set, non-dead socket means the process is live or still
+            // connecting: not dormant. Only None (clean shutdown) or a
+            // known-dead socket (crash) makes a dormant candidate.
+            let socket_alive = e.socket.as_ref().is_some_and(|s| !dead_sockets.contains(s));
+            if socket_alive {
                 continue;
             }
             if live_ids.contains(e.session_id.as_str()) {
@@ -263,7 +275,7 @@ mod tests {
                 ..dormant_record("live-1", "/p1", "2026-06-02T00:00:00Z")
             },
         ];
-        b.sync_registry(&entries);
+        b.sync_registry(&entries, &HashSet::new());
         let d = b.dormant();
         assert_eq!(d.len(), 1, "latest-per-cwd, live excluded");
         assert_eq!(d[0].session_id.as_deref(), Some("new"));
@@ -285,8 +297,32 @@ mod tests {
                 ..dormant_record("b", "/q", "t")
             },
         ];
-        b.sync_registry(&entries);
+        b.sync_registry(&entries, &HashSet::new());
         assert!(b.dormant().is_empty());
+    }
+
+    #[test]
+    fn crashed_socket_becomes_dormant() {
+        let mut b = Board::default();
+        let sock = PathBuf::from("/p/.corral/pi-1.sock");
+        // Record still names a socket (no clean shutdown), but it is dead.
+        let entries = vec![RegistryEntry {
+            socket: Some(sock.clone()),
+            ..dormant_record("crashed", "/p", "t")
+        }];
+        // Not yet known dead -> treated as live/connecting, not dormant.
+        b.sync_registry(&entries, &HashSet::new());
+        assert!(
+            b.dormant().is_empty(),
+            "a set socket is live until proven dead"
+        );
+        // Once the watcher reports it dead, it surfaces as resumable.
+        let dead = HashSet::from([sock]);
+        b.sync_registry(&entries, &dead);
+        let d = b.dormant();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].session_id.as_deref(), Some("crashed"));
+        assert_eq!(d[0].origin, Origin::Dormant);
     }
 
     #[test]
@@ -295,7 +331,7 @@ mod tests {
         b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
         b.apply(Update::Upsert(agent("/s/pi-2.sock", State::Idle)));
         b.apply(Update::Upsert(agent("/s/pi-3.sock", State::RequiresAction)));
-        b.sync_registry(&[dormant_record("z", "/p9", "t")]);
+        b.sync_registry(&[dormant_record("z", "/p9", "t")], &HashSet::new());
         let sel = b.selectable();
         assert_eq!(sel[0].state, State::RequiresAction);
         assert_eq!(sel[1].state, State::Idle);

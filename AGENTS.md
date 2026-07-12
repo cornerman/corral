@@ -155,12 +155,14 @@ message/tool updates) is ACP v1.
 - Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
   socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
   to a global gitignore if the stray dir bothers you.
-- A crashed session (no clean shutdown) leaves its registry `socket` set but
-  dead, so it renders as neither live (watch fails) nor dormant (dormant
-  requires `socket == null`); it simply disappears until a staleness sweep
-  (socket set but unreachable -> dormant) is added. Cleanly shut-down sessions
-  do render as dormant (latest-per-cwd), resume on Enter, dismiss on `d`, and
-  are pruned when their session file is gone or the record is >14 days stale.
+- Dormant sessions render as dormant (latest-per-cwd), resume on Enter, dismiss
+  on `d`, and are pruned when their session file is gone or the record is >14
+  days stale. A crashed session (no clean shutdown, so its registry `socket`
+  stays set) is caught by a staleness sweep: the board records sockets whose
+  watcher fails to connect (`dead_sockets`) and treats a dead-socketed record
+  as dormant, so a crashed agent stays resumable instead of vanishing. A
+  freshly starting session (socket set, not yet proven dead) stays on the live
+  path and never flickers through the Dormant column.
 
 ## Future
 
