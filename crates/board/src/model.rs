@@ -40,6 +40,27 @@ pub enum Origin {
     Dormant,
 }
 
+/// The board's columns, left to right in attention priority. Defined once
+/// here; navigation, hit-testing, and rendering all derive their column set
+/// and order from `Column::ALL`, so they can never drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    RequiresAction,
+    Idle,
+    Running,
+    Dormant,
+}
+
+impl Column {
+    /// Every column, in display and selection order.
+    pub const ALL: [Column; 4] = [
+        Column::RequiresAction,
+        Column::Idle,
+        Column::Running,
+        Column::Dormant,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub socket_path: PathBuf,
@@ -180,15 +201,30 @@ impl Board {
         self.dormant.iter().collect()
     }
 
-    /// Selectable agents in attention priority: RequiresAction (blocked on the
-    /// operator), Idle (awaiting the next task), Running (leave alone), then
-    /// Dormant (resumable). The UI's selection index is over this order.
+    /// The agents in one column.
+    pub fn column(&self, column: Column) -> Vec<&Agent> {
+        match column {
+            Column::RequiresAction => self.in_state(State::RequiresAction),
+            Column::Idle => self.in_state(State::Idle),
+            Column::Running => self.in_state(State::Running),
+            Column::Dormant => self.dormant(),
+        }
+    }
+
+    /// The agent count of each column, in `Column::ALL` order. Drives
+    /// navigation and hit-testing.
+    pub fn column_counts(&self) -> [usize; 4] {
+        Column::ALL.map(|c| self.column(c).len())
+    }
+
+    /// Selectable agents flattened in column order: RequiresAction (blocked on
+    /// the operator), Idle (awaiting the next task), Running (leave alone),
+    /// then Dormant (resumable). The UI's selection index is over this order.
     pub fn selectable(&self) -> Vec<&Agent> {
-        let mut v = self.in_state(State::RequiresAction);
-        v.extend(self.in_state(State::Idle));
-        v.extend(self.in_state(State::Running));
-        v.extend(self.dormant());
-        v
+        Column::ALL
+            .into_iter()
+            .flat_map(|c| self.column(c))
+            .collect()
     }
 }
 

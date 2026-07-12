@@ -9,8 +9,19 @@ use ratatui::Frame;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::model::{Agent, Board, Origin, State};
+use crate::model::{Agent, Board, Column, Origin};
 use crate::picker::Picker;
+
+/// The heading shown above each column. Bound to the column identity (not a
+/// parallel array), so it cannot drift from `Column::ALL`.
+fn heading(column: Column) -> &'static str {
+    match column {
+        Column::RequiresAction => "Requires Action",
+        Column::Idle => "Idle",
+        Column::Running => "Running",
+        Column::Dormant => "Dormant",
+    }
+}
 
 /// The four column rects (Requires Action, Idle, Running, Dormant), reserving
 /// the bottom row for the footer. Shared by `render` and `hit_test` so their
@@ -34,12 +45,7 @@ pub fn hit_test(
     scroll: [usize; 4],
 ) -> Option<usize> {
     let cols = column_layout(area);
-    let counts = [
-        board.in_state(State::RequiresAction).len(),
-        board.in_state(State::Idle).len(),
-        board.in_state(State::Running).len(),
-        board.dormant().len(),
-    ];
+    let counts = board.column_counts();
     let mut flat_start = 0;
     for (i, rect) in cols.iter().enumerate() {
         let inside = col >= rect.x
@@ -203,32 +209,24 @@ pub fn render(
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area())[1];
     let cols = column_layout(frame.area());
 
-    let action = board.in_state(State::RequiresAction);
-    let idle = board.in_state(State::Idle);
-    let running = board.in_state(State::Running);
-    let dormant = board.dormant();
-
-    // Map the flat selection index (same order as board.selectable()) onto the
-    // four columns.
-    let sel_in = |start: usize, len: usize| selected.checked_sub(start).filter(|&r| r < len);
-    let action_sel = sel_in(0, action.len());
-    let idle_sel = sel_in(action.len(), idle.len());
-    let running_sel = sel_in(action.len() + idle.len(), running.len());
-    let dormant_sel = sel_in(action.len() + idle.len() + running.len(), dormant.len());
-
-    let [s0, s1, s2, s3] = states;
-    column(
-        frame,
-        cols[0],
-        "Requires Action",
-        &action,
-        action_sel,
-        s0,
-        ages,
-    );
-    column(frame, cols[1], "Idle", &idle, idle_sel, s1, ages);
-    column(frame, cols[2], "Running", &running, running_sel, s2, ages);
-    column(frame, cols[3], "Dormant", &dormant, dormant_sel, s3, ages);
+    // One render per column, in `Column::ALL` order (matching navigation and
+    // hit-testing). `start` accumulates the flat selection offset so the
+    // highlighted card lands in the right column.
+    let mut start = 0;
+    for (i, col) in Column::ALL.into_iter().enumerate() {
+        let agents = board.column(col);
+        let sel = selected.checked_sub(start).filter(|&r| r < agents.len());
+        column(
+            frame,
+            cols[i],
+            heading(col),
+            &agents,
+            sel,
+            &mut states[i],
+            ages,
+        );
+        start += agents.len();
+    }
 
     let help = "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d dismiss   q quit";
     let footer = if status.is_empty() {
@@ -242,7 +240,7 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Update;
+    use crate::model::{State, Update};
     use std::path::PathBuf;
 
     fn upsert(board: &mut Board, path: &str, state: State) {

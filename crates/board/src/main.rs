@@ -40,7 +40,7 @@ use discovery::RegistryEntry;
 use focus::{SwayFocuser, WindowFocuser};
 use launch::{KittyLauncher, Launcher};
 use mailbox::Message;
-use model::{Board, Origin, State, Update};
+use model::{Board, Origin, Update};
 use picker::Picker;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
@@ -217,7 +217,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             }
         }
 
-        let counts = column_counts(&board);
+        let counts = board.column_counts();
         let count: usize = counts.iter().sum();
         if selected >= count {
             selected = count.saturating_sub(1);
@@ -639,18 +639,6 @@ fn finish(
     };
     let _ = std::fs::remove_file(file);
     routing.remove(&msg.id);
-}
-
-/// Column agent counts in board order: RequiresAction, Idle, Running, Dormant.
-/// This matches `Board::selectable()`, so a flat index maps cleanly to
-/// (column, row).
-fn column_counts(board: &Board) -> [usize; 4] {
-    [
-        board.in_state(State::RequiresAction).len(),
-        board.in_state(State::Idle).len(),
-        board.in_state(State::Running).len(),
-        board.dormant().len(),
-    ]
 }
 
 /// Flat selectable index -> (column, row).
