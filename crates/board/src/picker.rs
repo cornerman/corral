@@ -89,6 +89,11 @@ pub fn gather_dirs(board: &Board) -> Vec<String> {
             continue;
         };
         for entry in entries.flatten() {
+            // Skip dotfiles/dirs (.git, .cache, .direnv, ...): noise in a
+            // project picker.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 set.insert(entry.path().to_string_lossy().into_owned());
             }
