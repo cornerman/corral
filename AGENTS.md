@@ -100,6 +100,12 @@ your terminal (pi, interactive TUI)              another terminal
     decisions, in-flight spawns/resumes, and the one message awaiting operator
     approval; the event loop polls it and forwards the decision (key or click).
     Unit-tested (gating, spawn, session delivery, unknown-session drop).
+  - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
+    pending approval to a desktop notification with Allow once / Allow always /
+    Deny buttons (`notify-send -A`), reporting the choice back on a channel
+    tagged with the message id. Best-effort and non-blocking (a thread per
+    notification); the in-board dialog always works too. Pure name mapping is
+    unit-tested.
   - `src/nav.rs` — pure selection math: move the flat selection index within a
     column (up/down) or across columns (left/right) over the per-column
     counts. Unit-tested.
@@ -155,7 +161,10 @@ asks the operator, by key or mouse click: Enter allow once, `a` allow always,
 Esc deny),
 resolves the target, and injects the message over that agent's socket with a
 `[from agent in <dir> (session <id>)]` provenance tag. Delivery reuses
-`prompt::send_prompt`, the same path as operator messaging (`m`).
+`prompt::send_prompt`, the same path as operator messaging (`m`). A pending
+approval is also mirrored to a desktop notification (`notify-send -A`) whose
+Allow/Deny buttons resolve it without switching to the board; best-effort, and
+the in-board dialog stays available.
 
 A message is addressed either by **directory** (`target_dir`: reach whoever
 works there, spawning one if none, or a dedicated one for `force_new`) or by

@@ -32,6 +32,7 @@ mod launch;
 mod mailbox;
 mod model;
 mod nav;
+mod notify;
 mod picker;
 mod prompt;
 mod router;
@@ -42,6 +43,7 @@ use discovery::RegistryEntry;
 use focus::{SwayFocuser, WindowFocuser};
 use launch::{KittyLauncher, Launcher};
 use model::{Board, Origin, Update};
+use notify::{ApprovalNotifier, NotifySendNotifier};
 use picker::Picker;
 use router::Router;
 
@@ -235,6 +237,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut router = outbox_dir()
         .zip(whitelist_file())
         .map(|(o, w)| Router::new(o, w));
+    // A pending approval is mirrored to a desktop notification; its buttons
+    // report back here. `notified` tracks which message id already has one, so
+    // a notification fires once per pending message.
+    let notifier = NotifySendNotifier;
+    let (napp_tx, napp_rx) = mpsc::channel::<(String, ui::ApprovalAction)>();
+    let mut notified: Option<String> = None;
     // One persistent ListState per column so ratatui scrolls long columns and
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
@@ -304,6 +312,30 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             }
         }
 
+        // Mirror a newly pending approval to a desktop notification, and apply
+        // any decision its buttons send back (ignoring stale ids).
+        match router.as_ref().and_then(Router::pending) {
+            Some(msg) if notified.as_deref() != Some(&msg.id) => {
+                notifier.notify(
+                    msg.id.clone(),
+                    &msg.from_cwd,
+                    &msg.target_label(),
+                    &msg.message,
+                    napp_tx.clone(),
+                );
+                notified = Some(msg.id.clone());
+            }
+            None => notified = None,
+            _ => {}
+        }
+        while let Ok((id, action)) = napp_rx.try_recv() {
+            if let Some(r) = router.as_mut() {
+                if r.pending().map(|m| m.id.as_str()) == Some(id.as_str()) {
+                    apply_approval(r, action, &mut status);
+                }
+            }
+        }
+
         let counts = board.column_counts();
         let count: usize = counts.iter().sum();
         if selected >= count {
@@ -350,15 +382,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     },
                     _ => None,
                 };
-                match action {
-                    Some(ui::ApprovalAction::AllowOnce) => r.allow_once(),
-                    Some(ui::ApprovalAction::AllowAlways) => {
-                        if let Err(e) = r.allow_always() {
-                            status = format!("whitelist: {e}");
-                        }
-                    }
-                    Some(ui::ApprovalAction::Deny) => r.deny(),
-                    None => {}
+                if let Some(a) = action {
+                    apply_approval(r, a, &mut status);
                 }
                 continue;
             }
@@ -489,6 +514,20 @@ fn goto_label(agent: &model::Agent) -> String {
     match agent.origin {
         Origin::Live => ui::focus_label(agent),
         Origin::Dormant => format!("{} (dormant)", ui::focus_label(agent)),
+    }
+}
+
+/// Apply an approval decision to the router. Shared by the in-board dialog
+/// (keys/click) and the desktop notification's buttons.
+fn apply_approval(router: &mut Router, action: ui::ApprovalAction, status: &mut String) {
+    match action {
+        ui::ApprovalAction::AllowOnce => router.allow_once(),
+        ui::ApprovalAction::AllowAlways => {
+            if let Err(e) = router.allow_always() {
+                *status = format!("whitelist: {e}");
+            }
+        }
+        ui::ApprovalAction::Deny => router.deny(),
     }
 }
 
