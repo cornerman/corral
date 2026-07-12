@@ -34,8 +34,8 @@ talks ACP to that agent.
   each by Requires Action / Idle / Running / Dormant. Enter focuses a live
   agent's window via sway or resumes a dormant session; `n` spawns a new agent
   via kitty in the selected agent's cwd; `c`
-  opens a fuzzy directory picker to create one elsewhere (roots from `$CORRAL_PROJECT_ROOTS`, default
-  `~/projects`). Window focus and agent spawn sit behind traits
+  opens a fuzzy picker over the cwds of sessions already on the board to create
+  one in a previously opened directory. Window focus and agent spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them.
 - **corral-announce** (pi extension, `extensions/corral-announce.ts`) —

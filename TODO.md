@@ -11,7 +11,7 @@ The attention board is shipped and working:
   (`/proc` parent-walk) and kitty spawn behind `WindowFocuser`/`Launcher`
   seams. Keys: Up/Down (or scroll) within a column, Left/Right (h/l) across
   columns, Enter/left-click focus, `n` spawn in selected cwd, `N` fuzzy dir
-  picker (board cwds + `$CORRAL_PROJECT_ROOTS` subdirs, skips dotdirs), `q`
+  picker (cwds of sessions on the board only, no filesystem scan), `q`
   quit. 20 tests, clippy clean.
 - Discovery: per-session registry `~/.corral/registry/<sessionId>.json`
   (override dir `$CORRAL_REGISTRY_DIR`) naming a workdir-local socket

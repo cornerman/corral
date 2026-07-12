@@ -87,9 +87,10 @@ your terminal (pi, interactive TUI)              another terminal
     `(sender -> target)` whitelist. Pure, unit-tested.
   - `src/ui.rs` — ratatui: four columns (Requires Action, Idle, Running,
     Dormant) in attention priority, plus a help footer. Dormant cards dimmed.
-  - `src/picker.rs` — the `c` spawn directory picker: candidate dirs (board
-    cwds + `$CORRAL_PROJECT_ROOTS` subdirs, default ~/projects) and a
-    subsequence fuzzy filter. Unit-tested.
+  - `src/picker.rs` — the `c` spawn directory picker: candidates are exactly
+    the cwds of sessions on the board (every dir ever opened, live or
+    dormant; no filesystem scan) narrowed by a subsequence fuzzy filter.
+    Unit-tested.
   - `src/main.rs` — orchestration: scan + prune the registry, spawn watchers,
     rebuild the dormant view, drain updates, handle keys and mouse (Up/Down
     within a column, Left/Right across columns, Enter or click focus/resume,
@@ -152,9 +153,9 @@ message/tool updates) is ACP v1.
   live agent by title/cwd; `d` dismiss the selected dormant record; `q`/Esc
   quit. Long columns scroll to keep the selection visible; live cards show
   time-in-state. Reads `$HOME` (or
-  `$CORRAL_REGISTRY_DIR`) for the registry dir and `$CORRAL_PROJECT_ROOTS`
-  (colon-separated, default `~/projects`) for picker candidates; uses `swaymsg`
-  and `kitty` for focus and spawn.
+  `$CORRAL_REGISTRY_DIR`) for the registry dir; the `c` picker offers only the
+  cwds of sessions already on the board; uses `swaymsg` and `kitty` for focus
+  and spawn.
 - pi extension `corral-announce` — see Extensions above.
 - Registry records in `$HOME/.corral/registry/` and unix sockets in each
   `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /

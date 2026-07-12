@@ -1,10 +1,9 @@
-//! Directory picker for `c` (create-elsewhere) spawn. Candidates are the cwds of agents
-//! already on the board plus the immediate subdirectories of configurable
-//! roots (`$CORRAL_PROJECT_ROOTS`, colon-separated; default `$HOME/projects`).
-//! A subsequence fuzzy filter narrows the list as the operator types.
+//! Directory picker for `c` (create-elsewhere) spawn. Candidates are exactly
+//! the cwds of sessions the board knows: every directory ever opened, live or
+//! dormant, and nothing else. A subsequence fuzzy filter narrows the list as
+//! the operator types.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use crate::model::Board;
 
@@ -87,8 +86,9 @@ fn fuzzy(query: &str, cand: &str) -> bool {
     q.peek().is_none()
 }
 
-/// Gather candidate directories: board agents' cwds, then the immediate
-/// subdirectories of each project root. Sorted and de-duplicated.
+/// Gather candidate directories: the cwd of every session on the board (live
+/// or dormant). Sorted and de-duplicated. No filesystem scan; corral offers
+/// only directories an agent has actually run in.
 pub fn gather_dirs(board: &Board) -> Vec<String> {
     let mut set = BTreeSet::new();
     for agent in board.selectable() {
@@ -96,32 +96,7 @@ pub fn gather_dirs(board: &Board) -> Vec<String> {
             set.insert(cwd.clone());
         }
     }
-    for root in project_roots() {
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            // Skip dotfiles/dirs (.git, .cache, .direnv, ...): noise in a
-            // project picker.
-            if entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
-            }
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                set.insert(entry.path().to_string_lossy().into_owned());
-            }
-        }
-    }
     set.into_iter().collect()
-}
-
-/// `$CORRAL_PROJECT_ROOTS` (colon-separated) or `$HOME/projects`.
-fn project_roots() -> Vec<PathBuf> {
-    if let Some(v) = std::env::var_os("CORRAL_PROJECT_ROOTS") {
-        return std::env::split_paths(&v).collect();
-    }
-    std::env::var_os("HOME")
-        .map(|h| vec![PathBuf::from(h).join("projects")])
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
