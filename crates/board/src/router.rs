@@ -35,6 +35,15 @@ struct Pending {
     target_cwd: String,
 }
 
+/// An operator message (`m`) to a specific session, delivered on the next poll
+/// after resuming the session if it is dormant. No provenance tag and no
+/// approval: the operator is trusted, unlike an agent-initiated message.
+struct OpDelivery {
+    session_id: String,
+    text: String,
+    resumed: bool,
+}
+
 pub struct Router {
     outbox: PathBuf,
     whitelist: PathBuf,
@@ -43,6 +52,8 @@ pub struct Router {
     /// Spawns/resumes in flight, keyed by message id.
     routing: HashMap<String, RouteState>,
     pending: Option<Pending>,
+    /// Operator messages awaiting delivery (resume-then-send).
+    ops: Vec<OpDelivery>,
 }
 
 impl Router {
@@ -53,7 +64,18 @@ impl Router {
             approved: HashSet::new(),
             routing: HashMap::new(),
             pending: None,
+            ops: Vec::new(),
         }
+    }
+
+    /// Queue an operator message to a session by id (from the board's `m`).
+    /// Delivered on the next poll, resuming the session first if dormant.
+    pub fn operator_send(&mut self, session_id: String, text: String) {
+        self.ops.push(OpDelivery {
+            session_id,
+            text,
+            resumed: false,
+        });
     }
 
     /// The message awaiting an operator decision, if any (for the overlay).
@@ -66,15 +88,17 @@ impl Router {
     /// `pending`. Returns a status line when it acted. A no-op while a decision
     /// is pending (one at a time).
     pub fn poll(&mut self, board: &Board, launcher: &dyn Launcher) -> Option<String> {
+        // Operator messages deliver regardless of any pending agent approval.
+        let mut op_status = self.pump_operator(board, launcher);
         if self.pending.is_some() {
-            return None;
+            return op_status;
         }
         let pending = mailbox::scan_outbox(&self.outbox);
         // Forget spawn-tracking for messages no longer queued.
         let ids: HashSet<&str> = pending.iter().map(|(_, m)| m.id.as_str()).collect();
         self.routing.retain(|k, _| ids.contains(k.as_str()));
 
-        let mut status = None;
+        let mut status = op_status.take();
         for (file, msg) in pending {
             let Some(target_cwd) = target_cwd(&msg, board) else {
                 // A session target corral has never seen: nothing to deliver
@@ -123,6 +147,45 @@ impl Router {
             let _ = std::fs::remove_file(p.file);
             self.routing.remove(&p.msg.id);
         }
+    }
+
+    /// Deliver queued operator messages: send to the live session, or resume a
+    /// dormant one (once) and wait for it to announce. Returns a status line.
+    fn pump_operator(&mut self, board: &Board, launcher: &dyn Launcher) -> Option<String> {
+        let mut status = None;
+        self.ops.retain_mut(|op| {
+            if let Some(agent) = board.live_by_session(&op.session_id) {
+                let sock = agent.socket_path.clone();
+                status = Some(match prompt::send_prompt(&sock, &op.text) {
+                    Ok(()) => "message delivered".into(),
+                    Err(e) => format!("send: {e}"),
+                });
+                return false; // done
+            }
+            if op.resumed {
+                return true; // waiting for the resumed session to announce
+            }
+            op.resumed = true;
+            match board.dormant_by_session(&op.session_id) {
+                Some(d) => match (&d.cwd, &d.resume) {
+                    (Some(cwd), Some(resume)) => {
+                        if let Err(e) = launcher.resume(Path::new(cwd), resume) {
+                            status = Some(format!("resume: {e}"));
+                        }
+                        true // wait for it to come back live
+                    }
+                    _ => {
+                        status = Some("send: session not resumable".into());
+                        false
+                    }
+                },
+                None => {
+                    status = Some("send: session not found".into());
+                    false
+                }
+            }
+        });
+        status
     }
 
     /// Deliver one authorized message to its target.

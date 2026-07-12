@@ -97,11 +97,19 @@ fn whitelist_file() -> Option<PathBuf> {
     corral_path("CORRAL_WHITELIST", "whitelist")
 }
 
-/// The operator composing a message to a live agent (opened with `m`): the
-/// target socket, a display label for the prompt, and the text so far.
+/// Where an operator-composed message (`m`) is delivered.
+enum ComposeTarget {
+    /// A live agent: deliver straight to its socket.
+    Live(PathBuf),
+    /// A dormant session (by id): resume it, then deliver.
+    Dormant(String),
+}
+
+/// The operator composing a message (opened with `m`): the target, a display
+/// label for the prompt, and the text so far.
 struct Compose {
-    socket: PathBuf,
-    target: String,
+    target: ComposeTarget,
+    label: String,
     buf: String,
 }
 
@@ -158,6 +166,7 @@ fn handle_overlay(
     ev: Event,
     focuser: &dyn WindowFocuser,
     launcher: &dyn Launcher,
+    router: Option<&mut Router>,
     status: &mut String,
 ) -> Option<Overlay> {
     let Event::Key(key) = ev else {
@@ -196,10 +205,23 @@ fn handle_overlay(
             KeyCode::Enter => {
                 let text = c.buf.trim();
                 if !text.is_empty() {
-                    *status = match prompt::send_prompt(&c.socket, text) {
-                        Ok(()) => format!("sent to {}", c.target),
-                        Err(e) => format!("send: {e}"),
-                    };
+                    match &c.target {
+                        ComposeTarget::Live(socket) => {
+                            *status = match prompt::send_prompt(socket, text) {
+                                Ok(()) => format!("sent to {}", c.label),
+                                Err(e) => format!("send: {e}"),
+                            };
+                        }
+                        // Dormant: hand it to the router, which resumes the
+                        // session and delivers once it announces.
+                        ComposeTarget::Dormant(session_id) => match router {
+                            Some(r) => {
+                                r.operator_send(session_id.clone(), text.to_string());
+                                *status = format!("resuming {} to deliver", c.label);
+                            }
+                            None => *status = "send: unavailable (no HOME)".into(),
+                        },
+                    }
                 }
                 None
             }
@@ -351,7 +373,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             match &overlay {
                 Some(Overlay::Spawn(p)) => ui::render_picker(f, p, "spawn agent"),
                 Some(Overlay::Goto(p, _)) => ui::render_picker(f, p, "focus / resume agent"),
-                Some(Overlay::Compose(c)) => ui::render_compose(f, &c.target, &c.buf),
+                Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
                 None => {}
             }
             if let Some(msg) = router.as_ref().and_then(Router::pending) {
@@ -389,7 +411,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             }
             // Any open overlay captures all input until it closes.
             if let Some(ov) = overlay.take() {
-                overlay = handle_overlay(ov, ev, &focuser, &launcher, &mut status);
+                overlay = handle_overlay(ov, ev, &focuser, &launcher, router.as_mut(), &mut status);
                 continue;
             }
             match ev {
@@ -425,14 +447,18 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         overlay = Some(Overlay::Spawn(Picker::new(picker::gather_dirs(&board))));
                     }
                     KeyCode::Char('m') => {
-                        // Message a live agent: deliver a prompt over its
-                        // socket. Dormant agents have no socket to receive on.
+                        // Message any agent: a live one over its socket, a
+                        // dormant one by resuming it first (via the router).
                         status.clear();
                         if let Some(a) = board.selectable().get(selected).copied() {
-                            if a.origin == Origin::Live {
+                            let target = match a.origin {
+                                Origin::Live => Some(ComposeTarget::Live(a.socket_path.clone())),
+                                Origin::Dormant => a.session_id.clone().map(ComposeTarget::Dormant),
+                            };
+                            if let Some(target) = target {
                                 overlay = Some(Overlay::Compose(Compose {
-                                    socket: a.socket_path.clone(),
-                                    target: ui::focus_label(a),
+                                    target,
+                                    label: ui::focus_label(a),
                                     buf: String::new(),
                                 }));
                             }

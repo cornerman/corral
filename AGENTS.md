@@ -124,7 +124,8 @@ your terminal (pi, interactive TUI)              another terminal
     and dispatches input. Input modes are one `Overlay` enum (spawn-dir /
     focus-agent picker, or message compose), exclusive by construction. Keys:
     Up/Down within a column, Left/Right across columns, Enter or click
-    focus/resume, `m` message a live agent, `n`/`c` spawn, `d` close a live
+    focus/resume, `m` message an agent (resume a dormant one to deliver),
+    `n`/`c` spawn, `d` close a live
     agent's window or forget a dormant record, `f` fuzzy go-to (focus a live
     agent or resume a dormant one),
     `q` quit.
@@ -196,8 +197,9 @@ message/tool updates) is ACP v1.
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
   h/l) switch columns; Enter or left-click focuses a live agent's window or
-  resumes a dormant session (`pi --session`); `m` compose a message delivered
-  to a live agent over its socket; `n` spawn in the selected agent's
+  resumes a dormant session (`pi --session`); `m` compose a message to any
+  agent — delivered to a live one over its socket, or a dormant one by resuming
+  it first, then delivering when it announces; `n` spawn in the selected agent's
   cwd; `c` open a fuzzy directory picker to create one elsewhere; `f` fuzzy go-to any
   agent by title/cwd (focus if live, resume if dormant); `d` close the selected
   live agent (kill its terminal process, closing the window; pi then goes
