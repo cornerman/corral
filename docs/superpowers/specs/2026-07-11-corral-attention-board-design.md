@@ -196,3 +196,50 @@ live.
 Model impact. `Agent` gains `origin: Live { socket } | Dormant { resume }`;
 dormant agents are `Idle` and dimmed. `focus_selected` branches: Live focuses
 the window, Dormant runs the resume recipe.
+
+## Socket Isolation (Security) — mechanism TBD, requirement firm
+
+Requirement: an agent must not be able to reach another workdir's agent socket.
+This has to be enforced by the sandbox (a denied `open()`), not merely by
+convention, because the sockets grant prompt-injection into a session.
+
+Direction: sockets move to a per-workdir subtree that mirrors the absolute
+workdir, `~/.corral/sockets<abs-cwd>/pi-<pid>.sock` (e.g.
+`~/.corral/sockets/home/cornerman/nixos/...`). corral (trusted) keeps broad
+`~/.corral` read and scans recursively; each agent is granted only its own
+subtree.
+
+Verified constraint (nono 0.61.1, via `nono why`): a static profile entry
+cannot compose `$WORKDIR` into a longer path. `$WORKDIR` alone and a leading
+`$HOME/...` expand, but `$HOME/.corral/sockets$WORKDIR` is DENIED. So the grant
+cannot be a single static profile line.
+
+Leading mechanism (decide when building): the wrapper that launches pi under
+nono adds `--allow "$HOME/.corral/sockets$PWD"` — the shell composes the literal
+path, so no nono variable composition is needed; corral spawns agents the same
+way. Rejected as insufficient for "must be secure": flat sockets + capability
+control (no FS enforcement).
+
+## Inter-Agent Messaging — design, not built
+
+Mechanism already exists: `session/prompt` over a target's socket injects a user
+message; the receiving agent executes it inside its own sandbox and its own
+approval gates, so no sandbox is breached ("safe on ACP").
+
+Shape (both levels, per operator intent):
+- Operator-initiated: a keybinding on the board — select an agent, type a
+  message, Enter delivers it via `session/prompt` (optionally spawn-in-dir then
+  send).
+- Agent-initiated: a tool an agent calls to message another agent, gated by a
+  board popup and/or a whitelist.
+
+Why it depends on socket isolation (the "gain"): with flat, mutually-reachable
+sockets, agents can already peer-message directly, so a corral mediator adds no
+safety. Once sockets are isolated per workdir, agents cannot reach each other,
+so corral becomes the sole trusted cross-workdir path — which is where the
+whitelist/approval belongs. Isolation is the precondition that makes mediated
+messaging meaningful.
+
+Open question: if only the running board can bridge workdirs, cross-agent
+messaging works only while it is up; an always-on broker service would lift
+that, but is likely more than v1 warrants.

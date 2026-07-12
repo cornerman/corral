@@ -13,6 +13,19 @@ docs/superpowers/specs/ for the design.
 - [ ] board: `Agent.origin` Live|Dormant; Enter/click resumes a dormant ghost
       via the Launcher seam (`resume`); `d` dismisses (deletes the recipe).
 
+## Socket Isolation + Inter-Agent Messaging (designed, not built — see spec)
+
+- [ ] Socket isolation (MUST be sandbox-enforced): move sockets to
+      `~/.corral/sockets<abs-cwd>/pi-<pid>.sock`; grant each agent only its own
+      subtree (leading mechanism: pi-under-nono launcher adds
+      `--allow "$HOME/.corral/sockets$PWD"`; nono can't compose `$WORKDIR`
+      statically — verified). corral scans recursively, keeps broad read.
+- [ ] Operator-initiated messaging: board keybinding to send a `session/prompt`
+      to the selected agent (optionally spawn-in-dir then send).
+- [ ] Agent-initiated messaging: a tool routing through corral to a target
+      agent, gated by popup and/or whitelist. Needs the board (or a broker)
+      running to bridge isolated workdirs.
+
 ## Validation
 
 - [x] `$HOME/.corral` is in the pi sandbox allow list (sandboxed sessions can
