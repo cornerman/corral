@@ -157,3 +157,42 @@ Done while the sandbox is off, because it edits outside the new crate:
 After this, the pi sandbox confines ongoing board development to
 `$HOME/projects/corral/crates/board` (writable), with the rest of the repo
 read-only.
+
+## History and Resume (Dormant Sessions)
+
+Problem: after a reboot nothing is running, so socket discovery finds nothing,
+yet the operator wants to resume where they left off. Dormant sessions have no
+socket, so the socket path no longer identifies them; `sessionId` is the
+cross-cutting key. This is inherently outside ACP (a dormant agent answers no
+`session/list`) and is solved with a corral-owned store, not by reading pi's
+files (which would couple corral to pi's on-disk format).
+
+Recipe store. While live, corral-announce writes
+`~/.corral/history/<uuid>.json` = `{ sessionId, cwd, label, resume:
+["pi","--session","<sessionFilePath>"], lastSeen }`. Written on `session_start`,
+refreshed on `session_info_changed` (label) and `turn_end` (lastSeen). Ephemeral
+sessions with no session file are skipped (not resumable). One file per session,
+so concurrent pi processes never contend. Agent-agnostic: any announcing agent
+supplies its own resume recipe, so corral needs no per-agent knowledge.
+
+Discovery and dedup. corral reads `~/.corral/history/*.json`. A recipe whose
+`sessionId` matches a live agent (from `session/list`) is suppressed (it is
+live, not dormant). The rest are dormant.
+
+Display. Dormant sessions render dimmed in the Idle column, below the live-idle
+agents, ordered by `lastSeen`, scoped to latest-per-cwd (one ghost per project
+directory) so a reboot does not flood Idle.
+
+Actions. Enter or click on a dimmed ghost resumes it: `kitty --directory <cwd>
+-e <recipe resume cmd>`, via the `Launcher` seam extended with `resume`. A
+dismiss key (`d`) deletes that recipe file.
+
+Removal. No live socket lifecycle to track; recipes are pruned on three
+signals: dismiss (explicit), dead backing file (the stored session file no
+longer exists, a cheap `stat` on read), and age-out (lastSeen older than 14
+days). Resume is not a deletion; it re-announces and dedup flips the entry to
+live.
+
+Model impact. `Agent` gains `origin: Live { socket } | Dormant { resume }`;
+dormant agents are `Idle` and dimmed. `focus_selected` branches: Live focuses
+the window, Dormant runs the resume recipe.

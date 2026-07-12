@@ -3,6 +3,16 @@
 Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design.
 
+## History / Resume (designed, not built — see spec)
+
+- [ ] corral-announce: write `~/.corral/history/<uuid>.json` recipe
+      `{ sessionId, cwd, label, resume, lastSeen }` on session_start; refresh
+      on session_info_changed + turn_end; skip ephemeral (no session file).
+- [ ] board: read recipes, dedup against live `sessionId`, prune dead-file /
+      >14-day / dismissed; show latest-per-cwd dimmed in the Idle column.
+- [ ] board: `Agent.origin` Live|Dormant; Enter/click resumes a dormant ghost
+      via the Launcher seam (`resume`); `d` dismisses (deletes the recipe).
+
 ## Validation
 
 - [x] `$HOME/.corral` is in the pi sandbox allow list (sandboxed sessions can
