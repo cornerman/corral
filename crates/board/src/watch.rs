@@ -18,19 +18,16 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// operator rather than silently hidden.
 const DEFAULT_STATE: State = State::NeedsYou;
 
-/// Extract a state transition from a single JSONL line, if it is a
-/// `session/update` carrying our `session_state` update. Pure, so it is unit
-/// tested without a socket.
+/// Extract a state transition from a single JSONL line, if it is the vendor
+/// `_corral/state` ExtNotification. Pure, so it is unit tested without a
+/// socket. (State is not an ACP session/update variant, so it rides its own
+/// notification method rather than polluting the session/update union.)
 pub fn parse_state_notification(line: &str) -> Option<State> {
     let msg: serde_json::Value = serde_json::from_str(line).ok()?;
-    if msg.get("method")? != "session/update" {
+    if msg.get("method")? != "_corral/state" {
         return None;
     }
-    let update = msg.get("params")?.get("update")?;
-    if update.get("sessionUpdate")? != "session_state" {
-        return None;
-    }
-    State::from_wire(update.get("state")?.as_str()?)
+    State::from_wire(msg.get("params")?.get("state")?.as_str()?)
 }
 
 /// Parse the `session/list` reply into (session_id, title, cwd, state) for the
@@ -39,7 +36,8 @@ pub fn parse_session_list(
     msg: &serde_json::Value,
 ) -> (Option<String>, Option<String>, Option<String>, State) {
     let s = &msg["result"]["sessions"][0];
-    let state = s["state"]
+    // Vendor run-state lives under SessionInfo._meta["corral/state"].
+    let state = s["_meta"]["corral/state"]
         .as_str()
         .and_then(State::from_wire)
         .unwrap_or(DEFAULT_STATE);
@@ -123,9 +121,9 @@ mod tests {
 
     #[test]
     fn parses_state_notification() {
-        let working = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"session_state","state":"working"}}}"#;
+        let working = r#"{"jsonrpc":"2.0","method":"_corral/state","params":{"sessionId":"s","state":"working"}}"#;
         assert_eq!(parse_state_notification(working), Some(State::Working));
-        let idle = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"session_state","state":"idle"}}}"#;
+        let idle = r#"{"jsonrpc":"2.0","method":"_corral/state","params":{"sessionId":"s","state":"idle"}}"#;
         assert_eq!(parse_state_notification(idle), Some(State::NeedsYou));
     }
 
@@ -142,7 +140,7 @@ mod tests {
     fn session_list_seeds_fields_and_defaults_state() {
         let msg = serde_json::json!({
             "id": 1,
-            "result": {"sessions": [{"sessionId": "abc", "title": "fix bug", "cwd": "/tmp/p", "state": "working"}]}
+            "result": {"sessions": [{"sessionId": "abc", "title": "fix bug", "cwd": "/tmp/p", "_meta": {"corral/state": "working"}}]}
         });
         let (sid, title, cwd, state) = parse_session_list(&msg);
         assert_eq!(sid.as_deref(), Some("abc"));

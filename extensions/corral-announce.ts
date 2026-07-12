@@ -4,7 +4,8 @@
  *
  * Binds an ACP socket at $XDG_RUNTIME_DIR/acp/pi-<pid>.sock. Served surface:
  *   initialize            identity (agentInfo)
- *   session/list          this session: id, title, cwd
+ *   session/list          this session: id, title, cwd; working/idle under
+ *                         SessionInfo._meta["corral/state"]
  *   session/prompt        inject a user message (queued as follow-up while
  *                         the agent is busy); responds on turn completion
  *   session/cancel        abort the current turn (notification)
@@ -15,6 +16,8 @@
  *                         stream shape is not part of pi's documented API)
  *   tool_call / tool_call_update
  *   session_info_update   session renames
+ * Plus a vendor ExtNotification outside the ACP session/update union:
+ *   _corral/state         working/idle transitions (turn_start/turn_end)
  *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
  *   pi -e /path/to/corral-announce.ts
@@ -32,6 +35,10 @@ export default function (pi: ExtensionAPI) {
 	let server: net.Server | undefined;
 	let socketPath: string | undefined;
 	let currentCtx: ExtensionContext | undefined;
+	// Working/idle triage state, driven by turn_start/turn_end. Reported in
+	// session/list and broadcast on every transition so corral can column the
+	// agent without polling.
+	let currentState: "working" | "idle" = "idle";
 	const clients = new Set<net.Socket>();
 	// session/prompt requests waiting for the turn that consumes them to end.
 	const pendingPrompts: Array<{ conn: net.Socket; id: number | string }> = [];
@@ -52,6 +59,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
 		currentCtx = ctx;
+		currentState = "idle";
 		const runtimeDir = process.env.XDG_RUNTIME_DIR;
 		if (!runtimeDir) return; // no runtime dir, no discovery -- stay silent
 
@@ -88,6 +96,16 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => stop());
 
 	// --- outgoing: agent activity -> session/update broadcasts ---
+
+	pi.on("turn_start", async () => {
+		currentState = "working";
+		broadcastState();
+	});
+
+	pi.on("turn_end", async () => {
+		currentState = "idle";
+		broadcastState();
+	});
 
 	pi.on("message_end", async (event) => {
 		const role = event.message.role;
@@ -138,6 +156,22 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 	});
+
+	// Working/idle is not part of ACP's session/update union, so it rides a
+	// vendor-namespaced ExtNotification (`_corral/state`). Conformant clients
+	// ignore unknown notifications; corral listens for this method.
+	function broadcastState() {
+		if (clients.size === 0 || !currentCtx) return;
+		const line =
+			JSON.stringify({
+				jsonrpc: "2.0",
+				method: "_corral/state",
+				params: { sessionId: sessionInfo(currentCtx).sessionId, state: currentState },
+			}) + "\n";
+		for (const c of clients) {
+			if (!c.destroyed) c.write(line);
+		}
+	}
 
 	function broadcast(update: Record<string, unknown>) {
 		if (clients.size === 0 || !currentCtx) return;
@@ -218,6 +252,8 @@ export default function (pi: ExtensionAPI) {
 			sessionId: ctx.sessionManager.getSessionFile() ?? `ephemeral-${process.pid}`,
 			title: pi.getSessionName() ?? null,
 			cwd: ctx.cwd,
+			// Vendor state under _meta; SessionInfo has no standard run-state field.
+			_meta: { "corral/state": currentState },
 		};
 	}
 }

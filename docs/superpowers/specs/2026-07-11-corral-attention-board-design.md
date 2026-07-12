@@ -51,12 +51,27 @@ Both are fully detectable today. No pi changes required.
 One addition to the existing extension: track Working/Needs-You and expose it.
 
 - On `turn_start` set internal state to working; on `turn_end` set idle.
-- Report `state` ("working" | "idle") as a field per session in `session/list`.
-- Broadcast a `session/update` with the new state on each transition, so a
-  watching client learns transitions without polling.
+- Report state per session in `session/list` under `SessionInfo._meta`
+  (`_meta["corral/state"]`).
+- Broadcast the transition as a vendor ExtNotification `_corral/state` on each
+  change, so a watching client learns transitions without polling.
 
 Everything else in the extension already exists (socket bind, initialize,
 session/list, prompt, cancel, message and tool broadcasts).
+
+### ACP Conformance
+
+Working/idle is not part of ACP. The `sessionUpdate` union is closed
+(user_message_chunk, agent_message_chunk, agent_thought_chunk, tool_call,
+tool_call_update, plan/plan_update/plan_removed, available_commands_update,
+current_mode_update, config_option_update, session_info_update, usage_update),
+and ACP signals turn end only via the `PromptResponse` `stopReason` to the
+client that sent the prompt. Corral is a passive observer, so it needs an
+out-of-band signal. Rather than add a bogus `sessionUpdate` variant (which a
+strict client such as Zed would reject), state rides ACP's sanctioned vendor
+seams: a `_corral/state` ExtNotification (unknown notifications are ignored by
+conformant clients) and `SessionInfo._meta` in `session/list`. The rest of the
+socket surface stays ACP-conformant.
 
 ### Board Crate (crates/board)
 
