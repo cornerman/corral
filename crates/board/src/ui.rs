@@ -36,11 +36,11 @@ fn heading(column: Column) -> &'static str {
     }
 }
 
-/// The four equal column rects, reserving the bottom row for the footer.
-/// Shared by `render` and `hit_test` so their geometry cannot drift. Columns
-/// are separated by gutters (layout spacing), not borders.
+/// The four equal column rects, reserving the bottom two rows (a blank spacer
+/// above the footer). Shared by `render` and `hit_test` so their geometry
+/// cannot drift. Columns are separated by gutters (layout spacing), not borders.
 fn column_layout(area: Rect) -> [Rect; 4] {
-    let content = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area)[0];
+    let content = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area)[0];
     let cols = Layout::horizontal([Constraint::Ratio(1, 4); 4])
         .spacing(3)
         .split(content);
@@ -384,8 +384,17 @@ pub fn render(
     states: &mut [ListState; 4],
     ages: &HashMap<PathBuf, String>,
 ) {
-    let footer_area =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area())[1];
+    // Two rows at the bottom: a blank spacer (breathing room under the cards
+    // and separators), then the footer in the last row, inset by PAD so it
+    // aligns with the columns.
+    let bottom =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(frame.area())[1];
+    let footer_area = Rect {
+        x: bottom.x + PAD,
+        y: bottom.y + 1,
+        width: bottom.width.saturating_sub(2 * PAD),
+        height: 1,
+    };
     let cols = column_layout(frame.area());
 
     // One flat column per `Column::ALL` entry (matching navigation and
