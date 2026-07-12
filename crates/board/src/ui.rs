@@ -161,7 +161,7 @@ fn approval_footer(area: Rect) -> Rect {
 
 /// Draw the inter-agent message approval dialog: who wants to message whom, the
 /// message body, and the operator's choices (clickable, or by key).
-pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
+pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message, scroll: u16) {
     let area = centered(frame.area(), 70, 40);
     frame.render_widget(Clear, area);
     let block = Block::default()
@@ -186,7 +186,14 @@ pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
         Line::raw(""),
         Line::raw(msg.message.clone()),
     ];
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), rows[0]);
+    // Scrollable: a long message is read by scrolling (Up/Down / wheel), not
+    // clipped. The action row below stays fixed.
+    frame.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: true })
+            .scroll((scroll, 0)),
+        rows[0],
+    );
 
     // Highlighted chips, click or press the key. Gaps match APPROVAL_GAP so
     // `approval_hit_test` lines up with what is drawn.

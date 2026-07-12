@@ -23,6 +23,16 @@ pub trait ApprovalNotifier {
     );
 }
 
+/// Clip to `n` chars with an ellipsis. Notifications do not scroll, and a long
+/// body pushes the action buttons off-screen, so the message is kept short.
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    }
+}
+
 /// Map a notify-send action name to a decision. Pure, so it is unit-tested.
 fn parse_action(name: &str) -> Option<ApprovalAction> {
     match name.trim() {
@@ -44,7 +54,10 @@ impl ApprovalNotifier for NotifySendNotifier {
         message: &str,
         tx: Sender<(String, ApprovalAction)>,
     ) {
-        let body = format!("from {from}\nto {target}\n\n{message}");
+        // Compact: basename the paths, clip the message.
+        let from_s = from.rsplit('/').next().unwrap_or(from);
+        let to_s = target.rsplit('/').next().unwrap_or(target);
+        let body = format!("{from_s} → {to_s}\n{}", clip(message, 140));
         thread::spawn(move || {
             // `-A name=Label` implies --wait and prints the chosen name to
             // stdout; critical urgency keeps it on screen until acted on.
@@ -78,6 +91,12 @@ impl ApprovalNotifier for NotifySendNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_adds_ellipsis_when_too_long() {
+        assert_eq!(clip("short", 140), "short");
+        assert_eq!(clip("abcdef", 4), "abc…");
+    }
 
     #[test]
     fn parses_action_names() {

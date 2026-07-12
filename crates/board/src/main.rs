@@ -265,6 +265,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let notifier = NotifySendNotifier;
     let (napp_tx, napp_rx) = mpsc::channel::<(String, ui::ApprovalAction)>();
     let mut notified: Option<String> = None;
+    // Scroll offset for the pending approval's (possibly long) message body.
+    let mut approval_scroll: u16 = 0;
     // One persistent ListState per column so ratatui scrolls long columns and
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
@@ -346,6 +348,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     napp_tx.clone(),
                 );
                 notified = Some(msg.id.clone());
+                approval_scroll = 0; // fresh message starts at the top
             }
             None => notified = None,
             _ => {}
@@ -377,7 +380,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 None => {}
             }
             if let Some(msg) = router.as_ref().and_then(Router::pending) {
-                ui::render_approval(f, msg);
+                ui::render_approval(f, msg, approval_scroll);
             }
         })?;
 
@@ -392,6 +395,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         KeyCode::Enter => Some(ui::ApprovalAction::AllowOnce),
                         KeyCode::Char('a') => Some(ui::ApprovalAction::AllowAlways),
                         KeyCode::Esc => Some(ui::ApprovalAction::Deny),
+                        // Up/Down scroll the message body, not a decision.
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            approval_scroll = approval_scroll.saturating_sub(1);
+                            None
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            approval_scroll = approval_scroll.saturating_add(1);
+                            None
+                        }
                         _ => None,
                     },
                     Event::Mouse(m) => match m.kind {
@@ -399,6 +411,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                             let s = terminal.size()?;
                             let area = Rect::new(0, 0, s.width, s.height);
                             ui::approval_hit_test(area, m.column, m.row)
+                        }
+                        MouseEventKind::ScrollUp => {
+                            approval_scroll = approval_scroll.saturating_sub(1);
+                            None
+                        }
+                        MouseEventKind::ScrollDown => {
+                            approval_scroll = approval_scroll.saturating_add(1);
+                            None
                         }
                         _ => None,
                     },
