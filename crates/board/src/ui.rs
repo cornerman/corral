@@ -1,11 +1,11 @@
-//! Rendering. Three live triage columns in attention priority — Requires
-//! Action, Idle, Running (left to right) — then, walled off by a divider on the
-//! right, a narrower dimmed Dormant rail (resumable history, different in kind
-//! from the live states). A one-line status/help footer sits at the bottom.
+//! Rendering. A flat board: columns of cards under bold headings, no boxes,
+//! separated by gutters. Three live triage columns in attention priority
+//! (Requires Action, Idle, Running) then a dimmed Dormant column (resumable
+//! history). A one-line status/help footer sits at the bottom.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use std::collections::HashMap;
@@ -26,37 +26,15 @@ fn heading(column: Column) -> &'static str {
     }
 }
 
-/// The column rects plus the divider between the live columns and the dormant
-/// rail. Shared by `render` and `hit_test` so their geometry cannot drift.
-struct BoardLayout {
-    /// Requires Action, Idle, Running, Dormant (in `Column::ALL` order).
-    cols: [Rect; 4],
-    /// The vertical rule separating the live columns from the dormant rail.
-    divider: Rect,
-}
-
-/// Lay out the board: three equal live columns fill the left, then a gap with a
-/// divider, then a narrower dormant rail on the right. The bottom row is
-/// reserved for the footer.
-fn column_layout(area: Rect) -> BoardLayout {
+/// The four equal column rects, reserving the bottom row for the footer.
+/// Shared by `render` and `hit_test` so their geometry cannot drift. Columns
+/// are separated by gutters (layout spacing), not borders.
+fn column_layout(area: Rect) -> [Rect; 4] {
     let content = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area)[0];
-    let split = Layout::horizontal([
-        Constraint::Min(0),         // live triage columns
-        Constraint::Length(3),      // gap holding the divider
-        Constraint::Percentage(22), // dormant rail, deliberately narrower
-    ])
-    .split(content);
-    let live = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(split[0]);
-    let divider = Rect {
-        x: split[1].x + 1,
-        y: split[1].y,
-        width: 1,
-        height: split[1].height,
-    };
-    BoardLayout {
-        cols: [live[0], live[1], live[2], split[2]],
-        divider,
-    }
+    let cols = Layout::horizontal([Constraint::Ratio(1, 4); 4])
+        .spacing(2)
+        .split(content);
+    [cols[0], cols[1], cols[2], cols[3]]
 }
 
 /// Map a mouse cell (col,row) to a selectable index, using the same layout as
@@ -72,10 +50,10 @@ pub fn hit_test(
     row: u16,
     scroll: [usize; 4],
 ) -> Option<usize> {
-    let lay = column_layout(area);
+    let cols = column_layout(area);
     let counts = board.column_counts();
     let mut flat_start = 0;
-    for (i, rect) in lay.cols.iter().enumerate() {
+    for (i, rect) in cols.iter().enumerate() {
         let inside = col >= rect.x
             && col < rect.x + rect.width
             && row > rect.y
@@ -273,8 +251,8 @@ fn card(agent: &Agent, age: Option<&str>) -> ListItem<'static> {
     // Time in the current state sharpens triage ("blocked for 8m"). Only live
     // agents have a running timer.
     let meta = match age {
-        Some(a) => format!("  {} · {} · {}", agent.label, cwd, a),
-        None => format!("  {} · {}", agent.label, cwd),
+        Some(a) => format!("{} · {} · {}", agent.label, cwd, a),
+        None => format!("{} · {}", agent.label, cwd),
     };
     ListItem::new(vec![
         Line::from(Span::styled(title, title_style)),
@@ -294,8 +272,8 @@ fn column(
     state: &mut ListState,
     ages: &HashMap<PathBuf, String>,
 ) {
-    // The dormant rail reads as a separate archive, not a fourth live column:
-    // borderless (title only) and dim gray, versus the boxed live columns.
+    // The dormant column is fully dim gray, setting it apart from the live
+    // columns in an otherwise uniform flat layout.
     let secondary = matches!(col, Column::Dormant);
     let items: Vec<ListItem> = agents
         .iter()
@@ -304,14 +282,22 @@ fn column(
     let dim_gray = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM);
-    let title = format!(" {} ({}) ", heading(col), agents.len());
-    let (title, borders) = if secondary {
-        (Line::from(Span::styled(title, dim_gray)), Borders::NONE)
+    // Flat heading: bold uppercase name + dim count, no box. Columns are set
+    // apart by gutters (layout spacing), not borders.
+    let (name_style, count_style) = if secondary {
+        (dim_gray, dim_gray)
     } else {
-        (Line::from(title), Borders::ALL)
+        (
+            Style::default().add_modifier(Modifier::BOLD),
+            Style::default().add_modifier(Modifier::DIM),
+        )
     };
+    let heading_line = Line::from(vec![
+        Span::styled(heading(col).to_uppercase(), name_style),
+        Span::styled(format!("  {}", agents.len()), count_style),
+    ]);
     let list = List::new(items)
-        .block(Block::default().title(title).borders(borders))
+        .block(Block::default().title(heading_line))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     // The state persists across frames, so ratatui keeps the selected card in
     // view (scrolling long columns) and its offset feeds `hit_test`.
@@ -331,29 +317,18 @@ pub fn render(
 ) {
     let footer_area =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area())[1];
-    let lay = column_layout(frame.area());
+    let cols = column_layout(frame.area());
 
-    // One render per column, in `Column::ALL` order (matching navigation and
+    // One flat column per `Column::ALL` entry (matching navigation and
     // hit-testing). `start` accumulates the flat selection offset so the
     // highlighted card lands in the right column.
     let mut start = 0;
     for (i, col) in Column::ALL.into_iter().enumerate() {
         let agents = board.column(col);
         let sel = selected.checked_sub(start).filter(|&r| r < agents.len());
-        column(frame, lay.cols[i], col, &agents, sel, &mut states[i], ages);
+        column(frame, cols[i], col, &agents, sel, &mut states[i], ages);
         start += agents.len();
     }
-
-    // The vertical rule walling the dormant rail off from the live columns.
-    let bar = Text::from(vec![Line::from("│"); lay.divider.height as usize]);
-    frame.render_widget(
-        Paragraph::new(bar).style(
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        ),
-        lay.divider,
-    );
 
     let help =
         "↑/↓ move   ⏎ focus/resume   m msg   f find   n new   c create   d close/forget   q quit";
