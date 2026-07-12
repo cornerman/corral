@@ -294,8 +294,8 @@ fn column(
     state: &mut ListState,
     ages: &HashMap<PathBuf, String>,
 ) {
-    // The dormant rail reads as a separate archive: dim gray border and
-    // heading, not a fourth live triage column.
+    // The dormant rail reads as a separate archive, not a fourth live column:
+    // borderless (title only) and dim gray, versus the boxed live columns.
     let secondary = matches!(col, Column::Dormant);
     let items: Vec<ListItem> = agents
         .iter()
@@ -305,23 +305,13 @@ fn column(
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM);
     let title = format!(" {} ({}) ", heading(col), agents.len());
-    let title = if secondary {
-        Line::from(Span::styled(title, dim_gray))
+    let (title, borders) = if secondary {
+        (Line::from(Span::styled(title, dim_gray)), Borders::NONE)
     } else {
-        Line::from(title)
-    };
-    let border_style = if secondary {
-        dim_gray
-    } else {
-        Style::default()
+        (Line::from(title), Borders::ALL)
     };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        )
+        .block(Block::default().title(title).borders(borders))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     // The state persists across frames, so ratatui keeps the selected card in
     // view (scrolling long columns) and its offset feeds `hit_test`.
