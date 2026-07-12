@@ -4,7 +4,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -104,6 +104,34 @@ pub fn render_compose(frame: &mut Frame, target: &str, buf: &str) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(format!("> {buf}")), inner);
+}
+
+/// Draw the inter-agent message approval dialog: who wants to message whom, the
+/// message body, and the operator's choices.
+pub fn render_approval(frame: &mut Frame, msg: &crate::mailbox::Message) {
+    let area = centered(frame.area(), 70, 40);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" inter-agent message — approve? ")
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let text = vec![
+        Line::from(vec![
+            Span::raw("from: "),
+            Span::styled(msg.from_cwd.clone(), bold),
+        ]),
+        Line::from(vec![
+            Span::raw("to:   "),
+            Span::styled(msg.target_dir.clone(), bold),
+        ]),
+        Line::raw(""),
+        Line::raw(msg.message.clone()),
+        Line::raw(""),
+        Line::from("a allow once   A allow always   d deny   esc later".dim()),
+    ];
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
 fn basename(path: &str) -> &str {

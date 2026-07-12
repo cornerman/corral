@@ -48,21 +48,26 @@ One per-session file drives discovery, isolation, and resume.
       treats a dead-socketed record as dormant, so it stays resumable instead
       of vanishing; a still-connecting socket never flickers through Dormant.
 
-## Inter-Agent Messaging (designed, not built — see spec)
+## Inter-Agent Messaging (built — see spec)
 
 - [x] Operator-initiated: `m` composes a message to the selected live agent,
       delivered over its socket via `session/prompt` (`prompt::send_prompt`,
       fire-and-forget). Spawn-in-dir-then-send is folded into the
       agent-initiated routing below.
-- [ ] Agent-initiated transport: `message_agent` tool writes
-      `~/.corral/outbox/<id>.json`; corral watches the outbox and routes
-      (async, survives board-down). Address by target dir; spawn there if
-      absent; `force_new` flag.
-- [ ] Provenance + auth: inject with `[from agent in <dir>]` tag (+ `_meta` if
-      possible); whitelist of `(sender-dir -> target-dir)` in `~/.corral` plus
-      operator popup for the rest. v1 fire-and-forget; response-to-A is v2.
-- [ ] OPEN: delivery-target policy when the target is Running (reuse+queue vs
-      never-inject-Running vs always-new). Settle with real use.
+- [x] Agent-initiated transport: `message_agent` tool writes
+      `~/.corral/outbox/<id>.json`; corral routes each tick (`mailbox.rs` +
+      `route_outbox`), async and board-down-tolerant. Address by target dir;
+      spawns there if absent; `force_new` spawns a dedicated agent (targets the
+      socket that appears after the spawn).
+- [x] Provenance + auth: injects with the `[from agent in <dir>]` tag;
+      whitelist of `(sender-dir -> target-dir)` in `~/.corral/whitelist` plus an
+      operator popup (a allow once / A allow always / d deny / esc later). v1
+      fire-and-forget. `_meta` not added (send path is plain text).
+- [ ] v2: response channel back to the sender (capture the target's final
+      message into the sender's inbox).
+- [ ] OPEN: delivery-target policy when the target is Running. v1 reuses +
+      queues as follow-up; never-inject-Running and always-new are the
+      alternatives. Settle with real use.
 
 ## Validation
 

@@ -165,6 +165,15 @@ impl Board {
         self.live.values().filter(|a| a.state == state).collect()
     }
 
+    /// Live agents whose working directory is `dir`, in stable order (socket
+    /// path). Used to route an inter-agent message to its target directory.
+    pub fn live_in_dir(&self, dir: &str) -> Vec<&Agent> {
+        self.live
+            .values()
+            .filter(|a| a.cwd.as_deref() == Some(dir))
+            .collect()
+    }
+
     /// The dormant column, latest-per-cwd, newest first.
     pub fn dormant(&self) -> Vec<&Agent> {
         self.dormant.iter().collect()
@@ -323,6 +332,20 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].session_id.as_deref(), Some("crashed"));
         assert_eq!(d[0].origin, Origin::Dormant);
+    }
+
+    #[test]
+    fn live_in_dir_filters_by_cwd() {
+        let mut b = Board::default();
+        let mut a1 = agent("/s/1.sock", State::Idle);
+        a1.cwd = Some("/p".into());
+        let mut a2 = agent("/s/2.sock", State::Idle);
+        a2.cwd = Some("/q".into());
+        b.apply(Update::Upsert(a1));
+        b.apply(Update::Upsert(a2));
+        let got = b.live_in_dir("/p");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].cwd.as_deref(), Some("/p"));
     }
 
     #[test]

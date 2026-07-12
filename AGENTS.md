@@ -48,7 +48,12 @@ your terminal (pi, interactive TUI)              another terminal
     |    initialize, session/list, prompt, cancel    |  Enter -> focus (sway) or resume
     |  broadcasts activity + state_update            |  n -> spawn agent (kitty)
     |  clears socket + unlinks on session_shutdown   |  m -> send prompt to agent
-    |  clears socket + unlinks on session_shutdown   |
+    |                                                |
+  message_agent tool -> ~/.corral/outbox/<id>.json --+  routes each mailbox file:
+    (another agent asks to message a target dir)         authorize (whitelist +
+                                                         operator popup), resolve
+                                                         target dir (spawn if none),
+                                                         inject with provenance tag
 ```
 
 ## Crates
@@ -77,6 +82,9 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Unit-tested against a throwaway listener.
+  - `src/mailbox.rs` — the outbox: parse `message_agent` mailbox files, add the
+    `[from agent in <dir>]` provenance tag, and read/append the
+    `(sender -> target)` whitelist. Pure, unit-tested.
   - `src/ui.rs` — ratatui: four columns (Requires Action, Idle, Running,
     Dormant) in attention priority, plus a help footer. Dormant cards dimmed.
   - `src/picker.rs` — the `c` spawn directory picker: candidate dirs (board
@@ -102,8 +110,23 @@ your terminal (pi, interactive TUI)              another terminal
   the standard `state_update` (running/idle/requires_action) on
   `turn_start`/`turn_end` and while the interactive `question` tool blocks on
   the user. A newly connected client is seeded with the current `state_update`.
-  Serves multiple concurrent clients. Install: symlink into
+  Serves multiple concurrent clients. Also registers a `message_agent` tool
+  (`target_dir`, `message`, `force_new`) that queues a cross-session message as
+  `~/.corral/outbox/<id>.json` for corral to route. Install: symlink into
   `~/.pi/agent/extensions/`.
+
+## Inter-Agent Messaging
+
+Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
+corral is the sole trusted cross-workdir router. An agent calls `message_agent`,
+which drops a mailbox file in `~/.corral/outbox`; corral picks it up on the next
+tick, authorizes the `(sender-dir -> target-dir)` pair against the whitelist (or
+asks the operator: `a` allow once, `A` allow always, `d` deny, `esc` later),
+resolves the target directory to a live agent (spawning one there if none runs,
+or a dedicated one for `force_new`), and injects the message over that agent's
+socket with a `[from agent in <dir>]` provenance tag. Delivery reuses
+`prompt::send_prompt`, the same path as operator messaging (`m`). Fire-and-
+forget: no reply is routed back (a response channel is a planned v2).
 
 ## ACP Conformance
 
@@ -137,6 +160,9 @@ message/tool updates) is ACP v1.
   `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /
   `$CORRAL_SOCKET_DIR`). No TCP ports, no network exposure. Peer authentication
   relies on the directory permissions.
+- Inter-agent messaging: `message_agent` writes `$HOME/.corral/outbox/` (override
+  `$CORRAL_OUTBOX_DIR`); corral authorizes `(sender -> target)` dir pairs against
+  `$HOME/.corral/whitelist` (override `$CORRAL_WHITELIST`) plus an operator popup.
 
 ## Known Limitations (v1, deliberate)
 
@@ -157,8 +183,15 @@ message/tool updates) is ACP v1.
   at once when the queue drains (no per-message turn attribution).
 - Approvals stay in the pi TUI; socket clients never receive
   `session/request_permission`.
-- Agent-to-agent communication (opening a channel between two agents) is a
-  planned later layer, not built.
+- Inter-agent messaging is fire-and-forget (v1): corral injects the message and
+  does not capture a reply back to the sender. A response channel is a clean v2.
+- Delivery policy when the target dir's agent is Running: v1 reuses it and lets
+  the extension queue the message as a follow-up (it can intrude on a
+  human-driven session; the provenance tag makes that visible). Alternatives
+  (never-inject-Running, always-new) are deferred until real use decides.
+- `force_new` targets the agent that appears after corral's spawn (a socket not
+  present before it); if several agents start in one dir at once the newcomer
+  is picked arbitrarily. Adequate for v1.
 - Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
   socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
   to a global gitignore if the stray dir bothers you.
