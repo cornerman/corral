@@ -1,7 +1,9 @@
 //! corral: an attention board for locally running pi agents.
 //!
-//! Discovers ACP sockets under $HOME/.corral/sockets/ (override with
-//! $CORRAL_ACP_DIR), watches each for its running/idle/requires_action state,
+//! Discovers sessions from the registry under $HOME/.corral/registry/
+//! (override with $CORRAL_REGISTRY_DIR): each `<sessionId>.json` names a
+//! workdir-local ACP socket. Corral watches each live socket for its
+//! running/idle/requires_action state,
 //! and shows them in three columns. Enter or a mouse click focuses an agent's
 //! window (sway), `n` spawns a new agent (kitty), `N` opens a fuzzy directory
 //! picker to spawn elsewhere, `q` quits. Up/Down (or scroll) move within a
@@ -39,8 +41,8 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
 
 fn main() {
-    let Some(dir) = acp_dir() else {
-        eprintln!("corral: set $CORRAL_ACP_DIR or $HOME");
+    let Some(dir) = registry_dir() else {
+        eprintln!("corral: set $CORRAL_REGISTRY_DIR or $HOME");
         std::process::exit(1);
     };
 
@@ -55,12 +57,12 @@ fn main() {
     }
 }
 
-/// The socket discovery directory: $CORRAL_ACP_DIR, else $HOME/.corral/sockets.
-fn acp_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("CORRAL_ACP_DIR") {
+/// The registry directory: $CORRAL_REGISTRY_DIR, else $HOME/.corral/registry.
+fn registry_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("CORRAL_REGISTRY_DIR") {
         return Some(PathBuf::from(d));
     }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("sockets"))
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join("registry"))
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::io::Result<()> {
@@ -78,9 +80,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
 
     loop {
         if last_scan.elapsed() >= SCAN_INTERVAL {
-            for entry in discovery::scan(dir) {
-                if known.insert(entry.path.clone()) {
-                    watch::spawn(entry, tx.clone());
+            // The registry is the single store: each live record names a
+            // workdir-local socket to watch. Dormant records (no socket) are
+            // skipped here; rendering them is a later stage.
+            for entry in discovery::scan_registry(dir) {
+                if let Some(sock) = discovery::live_socket(&entry) {
+                    if known.insert(sock.path.clone()) {
+                        watch::spawn(sock, tx.clone());
+                    }
                 }
             }
             last_scan = Instant::now();

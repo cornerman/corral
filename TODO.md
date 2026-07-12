@@ -13,8 +13,11 @@ The attention board is shipped and working:
   columns, Enter/left-click focus, `n` spawn in selected cwd, `N` fuzzy dir
   picker (board cwds + `$CORRAL_PROJECT_ROOTS` subdirs, skips dotdirs), `q`
   quit. 20 tests, clippy clean.
-- Discovery today: flat `~/.corral/sockets/pi-<pid>.sock` (override
-  `$CORRAL_ACP_DIR`). Will be replaced by the Unified Session Registry below.
+- Discovery: per-session registry `~/.corral/registry/<sessionId>.json`
+  (override dir `$CORRAL_REGISTRY_DIR`) naming a workdir-local socket
+  `<cwd>/.corral/pi-<pid>.sock` (override `$CORRAL_SOCKET_DIR`). The board
+  watches live sockets; dormant records (socket cleared on clean shutdown) are
+  written but not yet rendered.
 - `corral-announce`: serves initialize / session/list / session/prompt /
   session/cancel; broadcasts message + tool events, `state_update`
   (running/idle from turn events; requires_action while the `question` tool
@@ -23,21 +26,22 @@ The attention board is shipped and working:
 
 ## Unified Session Registry (designed, not built — see spec)
 
-Supersedes the current flat `~/.corral/sockets` discovery and the idea of a
-separate history store: one per-session file drives discovery, isolation, and
-resume.
+One per-session file drives discovery, isolation, and resume.
 
-- [ ] corral-announce: bind the socket at `$WORKDIR/.corral/pi-<pid>.sock`
-      (workdir-local = sandbox-isolated, verified); write
+- [x] corral-announce: bind the socket at `<cwd>/.corral/pi-<pid>.sock`
+      (workdir-local = sandbox-isolated); write
       `~/.corral/registry/<sessionId>.json`
-      `{ sessionId, cwd, label, socket, resume, lastSeen }` on session_start;
-      refresh on rename + turn_end; on clean shutdown unlink socket + clear
-      `socket`. Skip ephemeral (no session file).
-- [ ] board discovery: scan `~/.corral/registry/*.json`; `socket` connectable
-      → live (persistent watch), else dormant. Identity = `sessionId`.
-- [ ] board: dormant sessions dimmed in Idle (latest-per-cwd); `Agent.origin`
-      Live|Dormant; Enter/click resumes via the Launcher seam (`resume`); `d`
-      dismisses. Prune dead-target / >14-day / dismissed.
+      `{ sessionId, cwd, title, socket, resume, lastSeen }` on session_start;
+      refresh `lastSeen` on turn_end + `title` on rename; on clean shutdown
+      unlink socket + clear `socket`. `resume` = session-file path (null for
+      ephemeral).
+- [x] board discovery: scan `~/.corral/registry/*.json`; a record with a
+      socket → live (persistent watch), else skipped for now.
+- [ ] board: dormant sessions (socket == null, resume != null) dimmed in Idle
+      (latest-per-cwd); `Agent.origin` Live|Dormant; Enter/click resumes via
+      the Launcher seam (`pi --session <resume>` in `kitty --directory cwd`);
+      `d` dismisses. Prune dead-target / >14-day / dismissed. Identity becomes
+      `sessionId` (today the board still keys by socket path).
 
 ## Inter-Agent Messaging (designed, not built — see spec)
 

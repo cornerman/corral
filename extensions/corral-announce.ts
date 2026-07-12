@@ -2,8 +2,14 @@
  * corral-announce: make this pi session discoverable and drivable by ACP
  * clients while the interactive TUI keeps running.
  *
- * Binds an ACP socket at $HOME/.corral/sockets/pi-<pid>.sock (override the
- * directory with $CORRAL_ACP_DIR). Served surface:
+ * Binds an ACP socket inside this session's own workdir at
+ * <cwd>/.corral/pi-<pid>.sock (override the dir with $CORRAL_SOCKET_DIR) and
+ * writes a registry record at $HOME/.corral/registry/<sessionId>.json
+ * (override with $CORRAL_REGISTRY_DIR) pointing at that socket. The socket is
+ * workdir-local so only this session (and unsandboxed tools like corral) can
+ * reach it; the registry is corral's single discovery store. On clean
+ * shutdown the socket is unlinked and the record's `socket` is cleared to
+ * null, leaving a dormant, resumable record. Served surface:
  *   initialize            identity (agentInfo)
  *   session/list          this session: id, title, cwd
  *   session/prompt        inject a user message (queued as follow-up while
@@ -35,6 +41,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 export default function (pi: ExtensionAPI) {
 	let server: net.Server | undefined;
 	let socketPath: string | undefined;
+	let registryFile: string | undefined;
 	let currentCtx: ExtensionContext | undefined;
 	// Triage state in ACP v2 vocabulary (running/idle/requires_action), broadcast
 	// as the standard state_update session/update so corral (and any ACP client)
@@ -54,6 +61,9 @@ export default function (pi: ExtensionAPI) {
 		clients.clear();
 		server?.close();
 		server = undefined;
+		// Clear the socket in the registry before unlinking it: the record
+		// stays as a dormant, resumable entry.
+		if (currentCtx && registryFile) writeRegistry(currentCtx, null);
 		if (socketPath) {
 			fs.rmSync(socketPath, { force: true });
 			socketPath = undefined;
@@ -65,17 +75,17 @@ export default function (pi: ExtensionAPI) {
 		currentCtx = ctx;
 		currentState = "idle";
 		questionCallId = undefined;
-		// Discovery dir: $CORRAL_ACP_DIR, else $HOME/.corral. Not
-		// $XDG_RUNTIME_DIR: sandboxed pi sessions cannot reach it.
-		const home = process.env.HOME;
-		const dir = process.env.CORRAL_ACP_DIR ?? (home ? path.join(home, ".corral", "sockets") : undefined);
-		if (!dir) return; // nowhere to announce -- stay silent
+		// Socket lives inside this session's own workdir: only this session
+		// (and unsandboxed tools like corral) can reach it. Not
+		// $XDG_RUNTIME_DIR: sandboxed pi sessions cannot reach that.
+		const socketDir = process.env.CORRAL_SOCKET_DIR ?? path.join(ctx.cwd, ".corral");
 
 		// 0700: the socket grants prompt access to this session; directory
 		// permissions are the only peer authentication we rely on.
-		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-		socketPath = path.join(dir, `pi-${process.pid}.sock`);
+		fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+		socketPath = path.join(socketDir, `pi-${process.pid}.sock`);
 		fs.rmSync(socketPath, { force: true }); // stale leftover from a crashed pid reuse
+		writeRegistry(ctx, socketPath); // announce in the registry store
 
 		server = net.createServer((conn) => {
 			clients.add(conn);
@@ -116,6 +126,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async () => {
 		currentState = "idle";
 		broadcastState();
+		// Refresh lastSeen so age-based pruning of dormant records is accurate.
+		if (currentCtx) writeRegistry(currentCtx, socketPath ?? null);
 	});
 
 	pi.on("message_end", async (event) => {
@@ -165,6 +177,8 @@ export default function (pi: ExtensionAPI) {
 			sessionUpdate: "session_info_update",
 			title: currentCtx ? sessionTitle(currentCtx) : null,
 		});
+		// Persist the new title so dormant records show the current name.
+		if (currentCtx) writeRegistry(currentCtx, socketPath ?? null);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
@@ -297,6 +311,37 @@ export default function (pi: ExtensionAPI) {
 		if (!raw) return null;
 		const clean = raw.replace(/\s+/g, " ").trim();
 		return clean.length > MAX_TITLE ? `${clean.slice(0, MAX_TITLE - 1)}…` : clean;
+	}
+
+	// Registry store: $CORRAL_REGISTRY_DIR, else $HOME/.corral/registry.
+	function registryDir(): string | undefined {
+		if (process.env.CORRAL_REGISTRY_DIR) return process.env.CORRAL_REGISTRY_DIR;
+		const home = process.env.HOME;
+		return home ? path.join(home, ".corral", "registry") : undefined;
+	}
+
+	// corral's single discovery store: `<sessionId>.json` names the live socket
+	// (or null when dormant) plus enough to resume. Written atomically
+	// (tmp + rename) so a scanning corral never reads a half-written file.
+	function writeRegistry(ctx: ExtensionContext, socket: string | null) {
+		const dir = registryDir();
+		if (!dir) return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+		registryFile = path.join(dir, `${sessionId}.json`);
+		const record = {
+			sessionId,
+			cwd: ctx.cwd,
+			title: sessionTitle(ctx),
+			socket,
+			// The session file path is what `pi --session <path>` resumes; null
+			// for an ephemeral (--no-session) session, which is not resumable.
+			resume: ctx.sessionManager.getSessionFile() ?? null,
+			lastSeen: new Date().toISOString(),
+		};
+		const tmp = `${registryFile}.${process.pid}.tmp`;
+		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
+		fs.renameSync(tmp, registryFile);
 	}
 
 	function sessionInfo(ctx: ExtensionContext) {

@@ -11,40 +11,50 @@ terminals, never through a manager. Corral shows which agent needs attention
 and jumps the user to its real window; it never drives an agent.
 
 Agent-agnostic by design; pi is the current proof of concept, announced via the
-`corral-announce` extension. The board discovers any `<label>-<pid>.sock` and
-reads agent identity generically, so other ACP agents are a matter of giving
-them a way to announce (see Future).
+`corral-announce` extension. The board reads agent identity generically, so
+other ACP agents are a matter of giving them a way to announce (see Future).
 
-Discovery works through a filesystem convention, not a registry service:
+Discovery works through a per-session registry on the filesystem, not a
+registry service. One record per session names a workdir-local socket:
 
 ```
-$HOME/.corral/sockets/pi-<pid>.sock   (dir 0700; override $CORRAL_ACP_DIR)
+$HOME/.corral/registry/<sessionId>.json   (dir 0700; override $CORRAL_REGISTRY_DIR)
+  { sessionId, cwd, title, socket, resume, lastSeen }
+<cwd>/.corral/<label>-<pid>.sock           (dir 0700; override $CORRAL_SOCKET_DIR)
 ```
 
-A pi extension binds a socket there and unlinks it on exit. Not
-$XDG_RUNTIME_DIR: sandboxed agents cannot reach it. The filesystem is the
-registry: `ls` enumerates sessions, connecting to a socket talks plain ACP
-(JSON-RPC, newline-delimited, as on stdio) to that agent.
+A pi extension writes the record and binds the socket on `session_start`, then
+on clean shutdown unlinks the socket and clears the record's `socket` to null
+(leaving a dormant, resumable entry). The socket lives inside the session's own
+working directory, so only that session (and unsandboxed tools like corral) can
+reach it; that workdir-local isolation is the primitive a later messaging layer
+relies on. Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it. Corral scans
+the registry to find each socket (it could never scan the scattered workdirs
+directly), then talks plain ACP (JSON-RPC, newline-delimited, as on stdio) to
+that agent. A record with `socket == null` is dormant (rendering dormant
+sessions is a later stage).
 
 ## Data Flow
 
 ```
 your terminal (pi, interactive TUI)              another terminal
   pi -e extensions/corral-announce.ts              corral (attention board)
-    |  binds $HOME/.corral/sockets/pi-<pid>.sock     |  scans the same dir (1s)
-    |    on session_start                            |  one watch connection per socket:
-    |  serves ACP beside the live TUI:               |    initialize + session/list (seed)
-    |    initialize, session/list, prompt, cancel    |    streams state_update -> column
-    |  broadcasts activity + state_update            |  Enter -> focus window (sway)
-    |  unlinks socket on session_shutdown            |  n -> spawn agent (kitty)
+    |  writes ~/.corral/registry/<id>.json           |  scans the registry (1s)
+    |  binds <cwd>/.corral/pi-<pid>.sock              |  one watch connection per live socket:
+    |    on session_start                            |    initialize + session/list (seed)
+    |  serves ACP beside the live TUI:               |    streams state_update -> column
+    |    initialize, session/list, prompt, cancel    |  Enter -> focus window (sway)
+    |  broadcasts activity + state_update            |  n -> spawn agent (kitty)
+    |  clears socket + unlinks on session_shutdown   |
 ```
 
 ## Crates
 
 - `crates/board` — the attention board (binary name `corral`). The triage core
   (`model`, `watch`, `ui`) never names sway or kitty; both sit behind traits.
-  - `src/discovery.rs` — scan the socket dir, parse `<label>-<pid>.sock`
-    (pure, unit-tested).
+  - `src/discovery.rs` — scan the registry dir, parse each `<sessionId>.json`
+    record, and resolve a live record to its socket (parsing the
+    `<label>-<pid>.sock` filename). Pure, unit-tested.
   - `src/model.rs` — `Agent` (keyed by socket path) and `Board`, the state the
     UI renders; `State` is Running, Idle, or RequiresAction (the ACP v2
     `state_update` vocabulary). Pure, unit-tested.
@@ -70,7 +80,10 @@ your terminal (pi, interactive TUI)              another terminal
 ## Extensions
 
 - `extensions/corral-announce.ts` — pi extension announcing an interactive pi
-  session on the socket dir. Serves `initialize`, `session/list` (id, title,
+  session: on `session_start` it writes the registry record and binds the
+  workdir-local socket; on `session_shutdown` it clears the record's `socket`
+  and unlinks. The record's `lastSeen` refreshes on `turn_end` and its `title`
+  on rename. Serves `initialize`, `session/list` (id, title,
   cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
   while busy; responds with stopReason once the message queue drains, coarse,
   documented in-file), `session/cancel` -> abort. Broadcasts to all connected
@@ -101,12 +114,13 @@ message/tool updates) is ACP v1.
   column; Left/Right (or h/l) switch columns; Enter or left-click focus the
   selected agent's window; `n` spawn in the selected agent's cwd; `N` open a
   fuzzy directory picker to spawn elsewhere; `q`/Esc quit. Reads `$HOME` (or
-  `$CORRAL_ACP_DIR`) for the socket dir and `$CORRAL_PROJECT_ROOTS`
+  `$CORRAL_REGISTRY_DIR`) for the registry dir and `$CORRAL_PROJECT_ROOTS`
   (colon-separated, default `~/projects`) for picker candidates; uses `swaymsg`
   and `kitty` for focus and spawn.
 - pi extension `corral-announce` — see Extensions above.
-- Unix sockets in `$HOME/.corral/sockets/` (created 0700; override with
-  `$CORRAL_ACP_DIR`). No TCP ports, no network exposure. Peer authentication
+- Registry records in `$HOME/.corral/registry/` and unix sockets in each
+  `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /
+  `$CORRAL_SOCKET_DIR`). No TCP ports, no network exposure. Peer authentication
   relies on the directory permissions.
 
 ## Known Limitations (v1, deliberate)
@@ -130,6 +144,12 @@ message/tool updates) is ACP v1.
   `session/request_permission`.
 - Agent-to-agent communication (opening a channel between two agents) is a
   planned later layer, not built.
+- Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
+  socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
+  to a global gitignore if the stray dir bothers you.
+- Dormant records (cleanly shut-down sessions) are written but not yet
+  rendered; the board still shows only live sessions. Resuming from a dormant
+  record and pruning stale ones is the next stage.
 
 ## Future
 

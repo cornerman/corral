@@ -9,21 +9,26 @@ on you. Press Enter to focus that
 agent's window, `n` to spawn a new agent, `q` to quit. Corral never drives an
 agent; it routes your attention and jumps you to the real window.
 
-Discovery works through a filesystem convention, not a registry service. A pi
-extension publishes each session on a unix socket in a well-known directory:
+Discovery works through a per-session registry on the filesystem, not a
+registry service. A pi extension writes one record per session and binds an ACP
+socket inside that session's own working directory:
 
 ```
-$HOME/.corral/sockets/pi-<pid>.sock   # override the dir with $CORRAL_ACP_DIR
+$HOME/.corral/registry/<sessionId>.json   # the record (override dir: $CORRAL_REGISTRY_DIR)
+<cwd>/.corral/pi-<pid>.sock                # the socket it points at (override dir: $CORRAL_SOCKET_DIR)
 ```
 
-The socket speaks the [Agent Client Protocol](https://agentclientprotocol.com/)
-(ACP) as newline-delimited JSON-RPC. `ls` enumerates sessions; connecting to a
-socket talks ACP to that agent.
+The record names the socket while the session is live and clears it on clean
+shutdown, leaving a dormant, resumable entry. The socket is workdir-local so
+only that session (and unsandboxed tools like corral) can reach it. The socket
+speaks the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) as
+newline-delimited JSON-RPC: corral reads the registry to find each socket, then
+talks ACP to that agent.
 
 ## Components
 
 - **corral** (`crates/board`) — the attention board TUI. Scans
-  `$HOME/.corral/sockets/`, holds a live watch connection per agent, and columns
+  `$HOME/.corral/registry/`, holds a live watch connection per live socket, and columns
   each by Requires Action / Idle / Running. Enter focuses the agent's window
   via sway; `n` spawns a new agent via kitty in the selected agent's cwd; `N`
   opens a fuzzy directory picker (roots from `$CORRAL_PROJECT_ROOTS`, default
@@ -31,7 +36,7 @@ socket talks ACP to that agent.
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them.
 - **corral-announce** (pi extension, `extensions/corral-announce.ts`) —
-  announces an interactive pi session on the socket dir, no wrapper needed. The
+  announces an interactive pi session via the registry, no wrapper needed. The
   TUI stays in your terminal while ACP clients discover the session
   (`initialize`, `session/list`), watch its activity (message and tool
   broadcasts), send prompts, and cancel turns. It reports run state via the
