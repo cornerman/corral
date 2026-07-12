@@ -103,11 +103,12 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/nav.rs` — pure selection math: move the flat selection index within a
     column (up/down) or across columns (left/right) over the per-column
     counts. Unit-tested.
-  - `src/ui.rs` — ratatui: a flat board (no boxes) of four equal columns
-    separated by gutters, derived from `Column::ALL`: three live triage
-    columns (Requires Action, Idle, Running) with bold headings, then a fully
-    dim-gray Dormant column (resumable history). Plus a help footer. Owns the
-    card, heading, and age/focus-label formatting.
+  - `src/ui.rs` — ratatui: four equal columns (from `Column::ALL`) divided by
+    dim vertical rules, each with a bold heading over an underline and padded
+    cards spaced for air (title + dim meta, ellipsis-truncated), a `▍`
+    selection bar. Three live triage columns (Requires Action, Idle, Running)
+    then a dim-gray Dormant column (resumable history). Plus a help footer.
+    Owns the card, heading, separator, and age/focus-label formatting.
   - `src/picker.rs` — the `c` spawn directory picker: candidates are exactly
     the cwds of sessions on the board (every dir ever opened, live or
     dormant; no filesystem scan) narrowed by a subsequence fuzzy filter.

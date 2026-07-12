@@ -1,11 +1,19 @@
-//! Rendering. A flat board: columns of cards under bold headings, no boxes,
-//! separated by gutters. Three live triage columns in attention priority
-//! (Requires Action, Idle, Running) then a dimmed Dormant column (resumable
-//! history). A one-line status/help footer sits at the bottom.
+//! Rendering. A clean board: columns separated by dim vertical rules, each with
+//! a bold heading over an underline, then cards spaced for air. Three live
+//! triage columns in attention priority (Requires Action, Idle, Running) and a
+//! dim-gray Dormant column (resumable history). A status/help footer sits at
+//! the bottom.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
+
+/// Left/right padding inside every column, so text never touches a separator.
+const PAD: u16 = 1;
+/// Rows above a column's cards: the heading and its underline rule.
+const HEAD_ROWS: u16 = 2;
+/// Rows one card spans: title, meta, and a blank spacer for air.
+const CARD_ROWS: u16 = 3;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use std::collections::HashMap;
@@ -32,17 +40,16 @@ fn heading(column: Column) -> &'static str {
 fn column_layout(area: Rect) -> [Rect; 4] {
     let content = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area)[0];
     let cols = Layout::horizontal([Constraint::Ratio(1, 4); 4])
-        .spacing(2)
+        .spacing(3)
         .split(content);
     [cols[0], cols[1], cols[2], cols[3]]
 }
 
 /// Map a mouse cell (col,row) to a selectable index, using the same layout as
-/// `render`. Returns None for clicks on borders, headings, empty rows, or the
-/// footer. Cards are two rows tall; the block's top border occupies one row.
-/// `scroll` is each column's first-visible-item index (the persisted
-/// `ListState` offset from the last render), so clicks in a scrolled column
-/// map to the right agent.
+/// `render`. Returns None for clicks on the heading/rule rows, gutters, empty
+/// rows, or the footer. A column reserves `HEAD_ROWS` at the top; each card is
+/// `CARD_ROWS` tall. `scroll` is each column's first-visible-item index (the
+/// persisted `ListState` offset), so clicks in a scrolled column map right.
 pub fn hit_test(
     area: Rect,
     board: &Board,
@@ -54,12 +61,13 @@ pub fn hit_test(
     let counts = board.column_counts();
     let mut flat_start = 0;
     for (i, rect) in cols.iter().enumerate() {
+        let cards_top = rect.y + HEAD_ROWS;
         let inside = col >= rect.x
             && col < rect.x + rect.width
-            && row > rect.y
+            && row >= cards_top
             && row < rect.y + rect.height;
         if inside {
-            let item = scroll[i] + ((row - rect.y - 1) / 2) as usize;
+            let item = scroll[i] + ((row - cards_top) / CARD_ROWS) as usize;
             return (item < counts[i]).then_some(flat_start + item);
         }
         flat_start += counts[i];
@@ -213,6 +221,18 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Truncate to `width` columns, adding an ellipsis when it does not fit, so a
+/// long title is cut cleanly rather than hard-clipped mid-word by the renderer.
+fn truncate(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    match width {
+        0 => String::new(),
+        _ => s.chars().take(width - 1).collect::<String>() + "…",
+    }
+}
+
 /// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
 pub fn age_label(d: Duration) -> String {
     let s = d.as_secs();
@@ -235,8 +255,8 @@ pub fn focus_label(agent: &Agent) -> String {
     format!("{title} · {}", basename(cwd))
 }
 
-fn card(agent: &Agent, age: Option<&str>) -> ListItem<'static> {
-    let title = agent.title.clone().unwrap_or_else(|| "(unnamed)".into());
+fn card(agent: &Agent, age: Option<&str>, width: usize) -> ListItem<'static> {
+    let title = truncate(agent.title.as_deref().unwrap_or("(unnamed)"), width);
     let cwd = agent
         .cwd
         .as_deref()
@@ -250,16 +270,20 @@ fn card(agent: &Agent, age: Option<&str>) -> ListItem<'static> {
     };
     // Time in the current state sharpens triage ("blocked for 8m"). Only live
     // agents have a running timer.
-    let meta = match age {
-        Some(a) => format!("{} · {} · {}", agent.label, cwd, a),
-        None => format!("{} · {}", agent.label, cwd),
-    };
+    let meta = truncate(
+        &match age {
+            Some(a) => format!("{} · {} · {}", agent.label, cwd, a),
+            None => format!("{} · {}", agent.label, cwd),
+        },
+        width,
+    );
     ListItem::new(vec![
         Line::from(Span::styled(title, title_style)),
         Line::from(Span::styled(
             meta,
             Style::default().add_modifier(Modifier::DIM),
         )),
+        Line::from(""), // blank spacer: air between cards
     ])
 }
 
@@ -272,18 +296,26 @@ fn column(
     state: &mut ListState,
     ages: &HashMap<PathBuf, String>,
 ) {
-    // The dormant column is fully dim gray, setting it apart from the live
-    // columns in an otherwise uniform flat layout.
     let secondary = matches!(col, Column::Dormant);
-    let items: Vec<ListItem> = agents
-        .iter()
-        .map(|a| card(a, ages.get(&a.socket_path).map(String::as_str)))
-        .collect();
     let dim_gray = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM);
-    // Flat heading: bold uppercase name + dim count, no box. Columns are set
-    // apart by gutters (layout spacing), not borders.
+
+    // Pad the column so nothing touches the separators.
+    let inner = Rect {
+        x: area.x + PAD,
+        y: area.y,
+        width: area.width.saturating_sub(2 * PAD),
+        height: area.height,
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(1), // heading
+        Constraint::Length(1), // underline rule
+        Constraint::Min(0),    // cards
+    ])
+    .split(inner);
+
+    // Heading: bold uppercase name + dim count; the dormant column is dim gray.
     let (name_style, count_style) = if secondary {
         (dim_gray, dim_gray)
     } else {
@@ -292,17 +324,41 @@ fn column(
             Style::default().add_modifier(Modifier::DIM),
         )
     };
-    let heading_line = Line::from(vec![
-        Span::styled(heading(col).to_uppercase(), name_style),
-        Span::styled(format!("  {}", agents.len()), count_style),
-    ]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(heading(col).to_uppercase(), name_style),
+            Span::styled(format!("  {}", agents.len()), count_style),
+        ])),
+        rows[0],
+    );
+
+    // Underline rule anchoring the heading.
+    let rule_style = if secondary {
+        dim_gray
+    } else {
+        Style::default().add_modifier(Modifier::DIM)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(rows[1].width as usize),
+            rule_style,
+        ))),
+        rows[1],
+    );
+
+    // Cards. The persisted state scrolls long columns and its offset feeds
+    // `hit_test`; the left bar marks the selection.
+    // Card text width, minus the 1-col selection bar the list reserves.
+    let card_w = rows[2].width.saturating_sub(1) as usize;
+    let items: Vec<ListItem> = agents
+        .iter()
+        .map(|a| card(a, ages.get(&a.socket_path).map(String::as_str), card_w))
+        .collect();
     let list = List::new(items)
-        .block(Block::default().title(heading_line))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    // The state persists across frames, so ratatui keeps the selected card in
-    // view (scrolling long columns) and its offset feeds `hit_test`.
+        .highlight_symbol("▍")
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
     state.select(selected_row);
-    frame.render_stateful_widget(list, area, state);
+    frame.render_stateful_widget(list, rows[2], state);
 }
 
 /// Render the whole board. `selected` indexes `board.selectable()`
@@ -328,6 +384,21 @@ pub fn render(
         let sel = selected.checked_sub(start).filter(|&r| r < agents.len());
         column(frame, cols[i], col, &agents, sel, &mut states[i], ages);
         start += agents.len();
+    }
+
+    // Dim vertical rules between columns, in the middle of each gutter.
+    for pair in cols.windows(2) {
+        let sep = Rect {
+            x: pair[0].x + pair[0].width + 1,
+            y: pair[0].y,
+            width: 1,
+            height: pair[0].height,
+        };
+        let bar = Text::from(vec![Line::from("│"); sep.height as usize]);
+        frame.render_widget(
+            Paragraph::new(bar).style(Style::default().add_modifier(Modifier::DIM)),
+            sep,
+        );
     }
 
     let help =
@@ -378,23 +449,22 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
         let no_scroll = [0usize; 4];
 
-        // Left column (x<25): cards are two rows, first content row is 1.
-        assert_eq!(hit_test(area, &b, 5, 1, no_scroll), Some(0));
-        assert_eq!(hit_test(area, &b, 5, 3, no_scroll), Some(1));
-        assert_eq!(hit_test(area, &b, 5, 0, no_scroll), None); // top border
-        assert_eq!(hit_test(area, &b, 5, 9, no_scroll), None); // past the two cards
+        // Left column: HEAD_ROWS=2 (heading+rule), then 3-row cards.
+        assert_eq!(hit_test(area, &b, 5, 2, no_scroll), Some(0));
+        assert_eq!(hit_test(area, &b, 5, 5, no_scroll), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 1, no_scroll), None); // heading/rule row
+        assert_eq!(hit_test(area, &b, 5, 12, no_scroll), None); // past the two cards
 
         // Second column (Idle) is empty.
-        assert_eq!(hit_test(area, &b, 30, 1, no_scroll), None);
+        assert_eq!(hit_test(area, &b, 30, 2, no_scroll), None);
 
         // Third live column (Running): index continues after the two left cards.
-        // (Live columns are 3 equal thirds of the area left of the dormant rail.)
-        assert_eq!(hit_test(area, &b, 60, 1, no_scroll), Some(2));
+        assert_eq!(hit_test(area, &b, 60, 2, no_scroll), Some(2));
 
         // Footer row is outside every column.
         assert_eq!(hit_test(area, &b, 5, 19, no_scroll), None);
 
         // A scrolled left column maps the first visible row to the offset item.
-        assert_eq!(hit_test(area, &b, 5, 1, [1, 0, 0, 0]), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 2, [1, 0, 0, 0]), Some(1));
     }
 }
