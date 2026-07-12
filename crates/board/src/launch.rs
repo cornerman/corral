@@ -9,6 +9,10 @@ use crate::model::Agent;
 pub trait Launcher {
     /// Start a fresh pi agent in its own window, rooted at `cwd`.
     fn spawn(&self, cwd: &Path) -> Result<(), String>;
+
+    /// Resume a dormant session in its own window: `resume` is the session-file
+    /// path (`pi --session <resume>`), rooted at the session's original `cwd`.
+    fn resume(&self, cwd: &Path, resume: &str) -> Result<(), String>;
 }
 
 pub struct KittyLauncher;
@@ -23,6 +27,18 @@ impl Launcher for KittyLauncher {
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("kitty spawn failed: {e}"))
+    }
+
+    fn resume(&self, cwd: &Path, resume: &str) -> Result<(), String> {
+        // `pi --session <path|id>` reloads that session, keeping its sessionId,
+        // so the resumed process reconnects live under the same identity.
+        Command::new("kitty")
+            .arg("--directory")
+            .arg(cwd)
+            .args(["-e", "pi", "--session", resume])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("kitty resume failed: {e}"))
     }
 }
 

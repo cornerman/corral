@@ -43,7 +43,7 @@ your terminal (pi, interactive TUI)              another terminal
     |  binds <cwd>/.corral/pi-<pid>.sock              |  one watch connection per live socket:
     |    on session_start                            |    initialize + session/list (seed)
     |  serves ACP beside the live TUI:               |    streams state_update -> column
-    |    initialize, session/list, prompt, cancel    |  Enter -> focus window (sway)
+    |    initialize, session/list, prompt, cancel    |  Enter -> focus (sway) or resume
     |  broadcasts activity + state_update            |  n -> spawn agent (kitty)
     |  clears socket + unlinks on session_shutdown   |
 ```
@@ -55,9 +55,11 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/discovery.rs` — scan the registry dir, parse each `<sessionId>.json`
     record, and resolve a live record to its socket (parsing the
     `<label>-<pid>.sock` filename). Pure, unit-tested.
-  - `src/model.rs` — `Agent` (keyed by socket path) and `Board`, the state the
-    UI renders; `State` is Running, Idle, or RequiresAction (the ACP v2
-    `state_update` vocabulary). Pure, unit-tested.
+  - `src/model.rs` — `Agent` (`Origin` Live or Dormant) and `Board`. Live
+    agents are keyed by socket path (driven by watchers); dormant agents are a
+    derived view of the registry (cleanly shut-down, resumable, not-live
+    records, latest-per-cwd). `State` is Running, Idle, or RequiresAction (the
+    ACP v2 `state_update` vocabulary). Pure, unit-tested.
   - `src/watch.rs` — one reader thread per socket. Connects (stays fully open,
     never half-closes), seeds from `initialize` + `session/list`, then streams
     `state_update` notifications. Socket EOF reports the agent gone. Pure
@@ -67,15 +69,17 @@ your terminal (pi, interactive TUI)              another terminal
     hits the kitty process whose pid sway reports (works because the pi sandbox
     does not unshare the PID namespace), then `swaymsg [con_id=..] focus`. The
     tree walk is unit-tested.
-  - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`.
-  - `src/ui.rs` — ratatui: three columns (Requires Action, Idle, Running) in
-    attention priority, plus a help footer.
+  - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
+    (spawn) or `kitty -e pi --session <path>` (resume a dormant session).
+  - `src/ui.rs` — ratatui: four columns (Requires Action, Idle, Running,
+    Dormant) in attention priority, plus a help footer. Dormant cards dimmed.
   - `src/picker.rs` — the `N` spawn directory picker: candidate dirs (board
     cwds + `$CORRAL_PROJECT_ROOTS` subdirs, default ~/projects) and a
     subsequence fuzzy filter. Unit-tested.
-  - `src/main.rs` — orchestration: scan, spawn watchers, drain updates, handle
-    keys and mouse (Up/Down within a column, Left/Right across columns, Enter
-    or click focus, `n`/`N` spawn, `q` quit).
+  - `src/main.rs` — orchestration: scan + prune the registry, spawn watchers,
+    rebuild the dormant view, drain updates, handle keys and mouse (Up/Down
+    within a column, Left/Right across columns, Enter or click focus/resume,
+    `n`/`N` spawn, `d` dismiss dormant, `q` quit).
 
 ## Extensions
 
@@ -110,10 +114,12 @@ message/tool updates) is ACP v1.
 
 ## Interfaces to the Outside World
 
-- CLI `corral` — full-screen TUI. Up/Down (or j/k, or scroll) move within a
-  column; Left/Right (or h/l) switch columns; Enter or left-click focus the
-  selected agent's window; `n` spawn in the selected agent's cwd; `N` open a
-  fuzzy directory picker to spawn elsewhere; `q`/Esc quit. Reads `$HOME` (or
+- CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
+  Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
+  h/l) switch columns; Enter or left-click focuses a live agent's window or
+  resumes a dormant session (`pi --session`); `n` spawn in the selected agent's
+  cwd; `N` open a fuzzy directory picker to spawn elsewhere; `d` dismiss the
+  selected dormant record; `q`/Esc quit. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir and `$CORRAL_PROJECT_ROOTS`
   (colon-separated, default `~/projects`) for picker candidates; uses `swaymsg`
   and `kitty` for focus and spawn.
@@ -147,9 +153,12 @@ message/tool updates) is ACP v1.
 - Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
   socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
   to a global gitignore if the stray dir bothers you.
-- Dormant records (cleanly shut-down sessions) are written but not yet
-  rendered; the board still shows only live sessions. Resuming from a dormant
-  record and pruning stale ones is the next stage.
+- A crashed session (no clean shutdown) leaves its registry `socket` set but
+  dead, so it renders as neither live (watch fails) nor dormant (dormant
+  requires `socket == null`); it simply disappears until a staleness sweep
+  (socket set but unreachable -> dormant) is added. Cleanly shut-down sessions
+  do render as dormant (latest-per-cwd), resume on Enter, dismiss on `d`, and
+  are pruned when their session file is gone or the record is >14 days stale.
 
 ## Future
 

@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::discovery::SocketEntry;
-use crate::model::{Agent, State, Update};
+use crate::model::{Agent, Origin, State, Update};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -116,6 +116,8 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 title,
                 cwd,
                 state: DEFAULT_STATE,
+                origin: Origin::Live,
+                resume: None,
             }));
             seeded = true;
             continue;

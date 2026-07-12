@@ -3,11 +3,12 @@
 An attention board for coding-agent sessions running on your machine.
 
 You launch pi agents from your own terminals. Corral shows every running agent
-as a card in one of three columns, Requires Action, Idle, or Running (the ACP
-v2 state vocabulary), so you can see at a glance which agent is blocked waiting
-on you. Press Enter to focus that
-agent's window, `n` to spawn a new agent, `q` to quit. Corral never drives an
-agent; it routes your attention and jumps you to the real window.
+as a card in one of four columns, Requires Action, Idle, Running (the ACP v2
+state vocabulary), or Dormant (cleanly shut-down, resumable sessions), so you
+can see at a glance which agent is blocked waiting on you. Press Enter to focus
+a live agent's window or resume a dormant session, `n` to spawn a new agent,
+`d` to dismiss a dormant record, `q` to quit. Corral never drives an agent; it
+routes your attention and jumps you to the real window.
 
 Discovery works through a per-session registry on the filesystem, not a
 registry service. A pi extension writes one record per session and binds an ACP
@@ -29,8 +30,9 @@ talks ACP to that agent.
 
 - **corral** (`crates/board`) — the attention board TUI. Scans
   `$HOME/.corral/registry/`, holds a live watch connection per live socket, and columns
-  each by Requires Action / Idle / Running. Enter focuses the agent's window
-  via sway; `n` spawns a new agent via kitty in the selected agent's cwd; `N`
+  each by Requires Action / Idle / Running / Dormant. Enter focuses a live
+  agent's window via sway or resumes a dormant session; `n` spawns a new agent
+  via kitty in the selected agent's cwd; `N`
   opens a fuzzy directory picker (roots from `$CORRAL_PROJECT_ROOTS`, default
   `~/projects`). Window focus and agent spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable

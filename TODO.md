@@ -37,11 +37,15 @@ One per-session file drives discovery, isolation, and resume.
       ephemeral).
 - [x] board discovery: scan `~/.corral/registry/*.json`; a record with a
       socket → live (persistent watch), else skipped for now.
-- [ ] board: dormant sessions (socket == null, resume != null) dimmed in Idle
-      (latest-per-cwd); `Agent.origin` Live|Dormant; Enter/click resumes via
-      the Launcher seam (`pi --session <resume>` in `kitty --directory cwd`);
-      `d` dismisses. Prune dead-target / >14-day / dismissed. Identity becomes
-      `sessionId` (today the board still keys by socket path).
+- [x] board: dormant sessions in a dedicated dimmed Dormant column
+      (latest-per-cwd); `Agent.origin` Live|Dormant, dormant is a derived view
+      of the registry (no socket-path re-keying needed); Enter/click resumes
+      via the Launcher seam (`pi --session <resume>` in `kitty --directory
+      cwd`); `d` dismisses; prune dead-target / >14-day (by registry-file
+      mtime).
+- [ ] Staleness sweep: a crashed session leaves `socket` set but dead, so it
+      renders as neither live nor dormant and vanishes. Detect socket-set but
+      unreachable and fall back to dormant.
 
 ## Inter-Agent Messaging (designed, not built — see spec)
 

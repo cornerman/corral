@@ -25,6 +25,9 @@ pub struct RegistryEntry {
     pub title: Option<String>,
     pub socket: Option<PathBuf>,
     pub resume: Option<String>,
+    /// ISO-8601 timestamp of the last observed activity. ISO-8601 sorts
+    /// correctly as a plain string, so it doubles as the latest-per-cwd key.
+    pub last_seen: Option<String>,
 }
 
 /// Parse one registry JSON document. Requires `sessionId`; everything else is
@@ -38,6 +41,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         title: str_field("title"),
         socket: str_field("socket").map(PathBuf::from),
         resume: str_field("resume"),
+        last_seen: str_field("lastSeen"),
     })
 }
 

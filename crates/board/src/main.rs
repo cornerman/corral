@@ -13,7 +13,7 @@
 //! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -32,13 +32,18 @@ mod picker;
 mod ui;
 mod watch;
 
+use discovery::RegistryEntry;
 use focus::{SwayFocuser, WindowFocuser};
 use launch::{KittyLauncher, Launcher};
-use model::{Board, State, Update};
+use model::{Board, Origin, State, Update};
 use picker::Picker;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
+/// A dormant record untouched for this long is pruned (its session file is
+/// stale or abandoned). Measured from the registry file's mtime, which the
+/// extension refreshes on every turn and on clean shutdown.
+const DORMANT_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 fn main() {
     let Some(dir) = registry_dir() else {
@@ -80,16 +85,18 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
 
     loop {
         if last_scan.elapsed() >= SCAN_INTERVAL {
-            // The registry is the single store: each live record names a
-            // workdir-local socket to watch. Dormant records (no socket) are
-            // skipped here; rendering them is a later stage.
-            for entry in discovery::scan_registry(dir) {
-                if let Some(sock) = discovery::live_socket(&entry) {
+            // The registry is the single store. Prune stale dormant records,
+            // watch each live socket, and hand the survivors to the board so it
+            // can rebuild the dormant column.
+            let entries = prune(dir, discovery::scan_registry(dir));
+            for entry in &entries {
+                if let Some(sock) = discovery::live_socket(entry) {
                     if known.insert(sock.path.clone()) {
                         watch::spawn(sock, tx.clone());
                     }
                 }
             }
+            board.sync_registry(&entries);
             last_scan = Instant::now();
         }
 
@@ -174,7 +181,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     KeyCode::Right | KeyCode::Char('l') => {
                         selected = move_col(selected, &counts, true);
                     }
-                    KeyCode::Enter => focus_selected(&focuser, &board, selected, &mut status),
+                    KeyCode::Enter => {
+                        activate_selected(&focuser, &launcher, &board, selected, &mut status)
+                    }
+                    KeyCode::Char('d') => {
+                        dismiss_selected(dir, &board, selected, &mut status);
+                    }
                     KeyCode::Char('n') => {
                         status.clear();
                         let cwd = launch::default_cwd(board.selectable().get(selected).copied());
@@ -196,7 +208,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         let area = Rect::new(0, 0, s.width, s.height);
                         if let Some(idx) = ui::hit_test(area, &board, m.column, m.row) {
                             selected = idx;
-                            focus_selected(&focuser, &board, selected, &mut status);
+                            activate_selected(&focuser, &launcher, &board, selected, &mut status);
                         }
                     }
                     _ => {}
@@ -208,34 +220,91 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     Ok(())
 }
 
-/// Focus the selected agent's window, recording any error in the status line.
-/// Shared by the Enter key and a left click.
-fn focus_selected(
+/// Enter/click on the selected agent: focus a live window, or resume a dormant
+/// session. Errors land in the status line.
+fn activate_selected(
     focuser: &dyn WindowFocuser,
+    launcher: &dyn Launcher,
     board: &Board,
     selected: usize,
     status: &mut String,
 ) {
     status.clear();
-    if let Some(agent) = board.selectable().get(selected) {
-        if let Err(e) = focuser.focus(agent) {
-            *status = format!("focus: {e}");
+    let Some(agent) = board.selectable().get(selected).copied() else {
+        return;
+    };
+    let result = match agent.origin {
+        Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
+        Origin::Dormant => match (&agent.cwd, &agent.resume) {
+            (Some(cwd), Some(resume)) => launcher
+                .resume(Path::new(cwd), resume)
+                .map_err(|e| format!("resume: {e}")),
+            _ => Err("resume: dormant record missing cwd/resume".into()),
+        },
+    };
+    if let Err(e) = result {
+        *status = e;
+    }
+}
+
+/// `d`: dismiss the selected dormant session by deleting its registry record.
+/// A no-op on live agents (they are not the operator's to forget).
+fn dismiss_selected(dir: &Path, board: &Board, selected: usize, status: &mut String) {
+    status.clear();
+    let Some(agent) = board.selectable().get(selected).copied() else {
+        return;
+    };
+    if agent.origin != Origin::Dormant {
+        return;
+    }
+    if let Some(id) = &agent.session_id {
+        let file = dir.join(format!("{id}.json"));
+        if let Err(e) = std::fs::remove_file(&file) {
+            *status = format!("dismiss: {e}");
         }
     }
 }
 
-/// Column agent counts in board order: RequiresAction, Idle, Running. This
-/// matches `Board::selectable()`, so a flat index maps cleanly to (column,row).
-fn column_counts(board: &Board) -> [usize; 3] {
+/// Prune dormant records whose resume target is gone or that have not been
+/// touched in `DORMANT_MAX_AGE`. Live records (socket set) are never pruned.
+/// Returns the surviving entries.
+fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
+    entries
+        .into_iter()
+        .filter(|e| {
+            if e.socket.is_some() {
+                return true; // live: not ours to prune
+            }
+            let dead = e.resume.as_deref().is_none_or(|r| !Path::new(r).exists());
+            let file = dir.join(format!("{}.json", e.session_id));
+            let stale = std::fs::metadata(&file)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > DORMANT_MAX_AGE);
+            if dead || stale {
+                let _ = std::fs::remove_file(&file);
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// Column agent counts in board order: RequiresAction, Idle, Running, Dormant.
+/// This matches `Board::selectable()`, so a flat index maps cleanly to
+/// (column, row).
+fn column_counts(board: &Board) -> [usize; 4] {
     [
         board.in_state(State::RequiresAction).len(),
         board.in_state(State::Idle).len(),
         board.in_state(State::Running).len(),
+        board.dormant().len(),
     ]
 }
 
 /// Flat selectable index -> (column, row).
-fn locate(index: usize, counts: &[usize; 3]) -> (usize, usize) {
+fn locate(index: usize, counts: &[usize; 4]) -> (usize, usize) {
     let mut i = index;
     for (c, &n) in counts.iter().enumerate() {
         if i < n {
@@ -247,12 +316,12 @@ fn locate(index: usize, counts: &[usize; 3]) -> (usize, usize) {
 }
 
 /// (column, row) -> flat selectable index.
-fn flat(col: usize, row: usize, counts: &[usize; 3]) -> usize {
+fn flat(col: usize, row: usize, counts: &[usize; 4]) -> usize {
     counts[..col].iter().sum::<usize>() + row
 }
 
 /// Move within the current column (Up/Down), clamped to that column.
-fn move_row(index: usize, counts: &[usize; 3], down: bool) -> usize {
+fn move_row(index: usize, counts: &[usize; 4], down: bool) -> usize {
     let (c, r) = locate(index, counts);
     if counts[c] == 0 {
         return index;
@@ -267,7 +336,7 @@ fn move_row(index: usize, counts: &[usize; 3], down: bool) -> usize {
 
 /// Jump to the nearest non-empty column in a direction (Left/Right), keeping
 /// the row where possible.
-fn move_col(index: usize, counts: &[usize; 3], right: bool) -> usize {
+fn move_col(index: usize, counts: &[usize; 4], right: bool) -> usize {
     let (c, r) = locate(index, counts);
     let candidates: Vec<usize> = if right {
         (c + 1..counts.len()).collect()
@@ -288,8 +357,8 @@ mod tests {
 
     #[test]
     fn navigation_maps_flat_index_to_columns() {
-        // RequiresAction=2, Idle=0, Running=1. selectable order: RA0, RA1, Run0.
-        let counts = [2usize, 0, 1];
+        // RequiresAction=2, Idle=0, Running=1, Dormant=0. order: RA0, RA1, Run0.
+        let counts = [2usize, 0, 1, 0];
         assert_eq!(locate(0, &counts), (0, 0));
         assert_eq!(locate(2, &counts), (2, 0));
         // Down within the column, clamped.
