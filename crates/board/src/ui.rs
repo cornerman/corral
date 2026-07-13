@@ -134,10 +134,8 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker) {
     for row in picker.rows() {
         match row {
             Row::Header(dir) => {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    dir.to_string(),
-                    dim,
-                ))));
+                let shown = abbrev_cwd(dir, rows[1].width as usize);
+                items.push(ListItem::new(Line::from(Span::styled(shown, dim))));
             }
             Row::Agent(a) => {
                 if agent_seen == picker.selected {
@@ -355,6 +353,79 @@ fn truncate(s: &str, width: usize) -> String {
     }
 }
 
+/// Middle-ellipsize `s` to at most `width` columns: keep a head and a tail with
+/// `…` between, so both ends stay readable. Never overflows.
+fn middle_ellipsis(s: &str, width: usize) -> String {
+    let n = s.chars().count();
+    if n <= width {
+        return s.to_string();
+    }
+    if width <= 1 {
+        return "…".repeat(width);
+    }
+    let keep = width - 1; // one column for the ellipsis
+    let tail = keep / 2;
+    let head = keep - tail; // head takes the odd extra column
+    let chars: Vec<char> = s.chars().collect();
+    let head_str: String = chars[..head].iter().collect();
+    let tail_str: String = chars[n - tail..].iter().collect();
+    format!("{head_str}…{tail_str}")
+}
+
+/// Replace a `$HOME` prefix of `path` with `~`.
+fn tilde(path: &str, home: Option<&str>) -> String {
+    match home {
+        Some(h) if !h.is_empty() && path == h => "~".to_string(),
+        Some(h) if !h.is_empty() => match path.strip_prefix(&format!("{h}/")) {
+            Some(rest) => format!("~/{rest}"),
+            None => path.to_string(),
+        },
+        _ => path.to_string(),
+    }
+}
+
+/// Abbreviate a filesystem path to fit `width` columns, never overflowing.
+/// Replaces the home prefix with `~`, then shortens leading components to their
+/// first character (leftmost first, keeping the leaf whole) until it fits, and
+/// finally middle-ellipsizes as a hard backstop. Keeps the root anchor and the
+/// leaf — the most meaningful parts — readable. Pure, unit-tested.
+fn abbreviate_path(path: &str, home: Option<&str>, width: usize) -> String {
+    let tilded = tilde(path, home);
+    if tilded.chars().count() <= width {
+        return tilded;
+    }
+    let segs: Vec<&str> = tilded.split('/').collect();
+    // Shorten the middle components (between the anchor at 0 and the leaf) to a
+    // single char, adding one more from the left each pass until it fits.
+    let leaf = segs.len() - 1;
+    let mut best = tilded.clone();
+    for depth in 1..leaf {
+        let shortened: Vec<String> = segs
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                if (1..=depth).contains(&i) && i < leaf {
+                    seg.chars().next().map(String::from).unwrap_or_default()
+                } else {
+                    (*seg).to_string()
+                }
+            })
+            .collect();
+        best = shortened.join("/");
+        if best.chars().count() <= width {
+            return best;
+        }
+    }
+    // Even fully shortened it overflows (a deep tree or a long leaf): clamp.
+    middle_ellipsis(&best, width)
+}
+
+/// Abbreviate a working-directory path to `width`, reading `$HOME` for the
+/// tilde. Thin wrapper over the pure `abbreviate_path`.
+fn abbrev_cwd(path: &str, width: usize) -> String {
+    abbreviate_path(path, std::env::var("HOME").ok().as_deref(), width)
+}
+
 /// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
 pub fn age_label(d: Duration) -> String {
     let s = d.as_secs();
@@ -426,13 +497,15 @@ fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
 /// Pure, unit-tested.
 fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 3] {
     let name = agent.title.as_deref().unwrap_or("(unnamed)");
-    let dir = agent.cwd.as_deref().map(basename).unwrap_or("");
+    // The full working directory (~-abbreviated, shortened to fit) on its own
+    // line, so same-named leaves under different roots stay distinguishable.
+    let dir = agent
+        .cwd
+        .as_deref()
+        .map(|c| abbrev_cwd(c, width))
+        .unwrap_or_default();
     let info = card_meta_line(agent, col, meta);
-    [
-        truncate(name, width),
-        truncate(dir, width),
-        truncate(&info, width),
-    ]
+    [truncate(name, width), dir, truncate(&info, width)]
 }
 
 fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {
@@ -692,9 +765,14 @@ mod card_tests {
             dormant_age: &d,
         };
         let a = agent(State::Idle, Some("edit model.rs"));
+        // The path is not under the test HOME, so it shows in full (fits 40).
         assert_eq!(
             card_lines(&a, Column::Idle, &m, 40),
-            ["fix the auth flow", "corral", "edit model.rs · 5m"]
+            [
+                "fix the auth flow",
+                "/home/u/projects/corral",
+                "edit model.rs · 5m"
+            ]
         );
     }
 
@@ -721,8 +799,45 @@ mod card_tests {
         let a = agent(State::RequiresAction, Some("Which branch?"));
         assert_eq!(
             card_lines(&a, Column::RequiresAction, &m, 40),
-            ["fix the auth flow", "corral", "Which branch? · 3m"]
+            [
+                "fix the auth flow",
+                "/home/u/projects/corral",
+                "Which branch? · 3m"
+            ]
         );
+    }
+
+    #[test]
+    fn path_fits_shows_tilde_form() {
+        assert_eq!(
+            abbreviate_path("/home/u/projects/corral", Some("/home/u"), 40),
+            "~/projects/corral"
+        );
+        assert_eq!(abbreviate_path("/home/u", Some("/home/u"), 40), "~");
+    }
+
+    #[test]
+    fn path_shortens_leading_components_leftmost_first() {
+        // "~/projects/corral/crates/board" is 30 cols; at 20 it shortens the two
+        // leftmost components to one letter each, keeping the leaf whole.
+        assert_eq!(
+            abbreviate_path("/home/u/projects/corral/crates/board", Some("/home/u"), 20),
+            "~/p/c/crates/board"
+        );
+    }
+
+    #[test]
+    fn path_never_overflows_even_when_fully_shortened() {
+        for w in 1..30 {
+            let out = abbreviate_path("/home/u/projects/corral/crates/board", Some("/home/u"), w);
+            assert!(out.chars().count() <= w, "width {w}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn middle_ellipsis_keeps_both_ends() {
+        assert_eq!(middle_ellipsis("abcdefgh", 5), "ab…gh");
+        assert_eq!(middle_ellipsis("short", 10), "short");
     }
 
     #[test]

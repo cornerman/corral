@@ -140,8 +140,9 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/ui.rs` — ratatui: four equal columns (from `Column::ALL`) divided by
     dim vertical rules, each with a bold heading over an underline and padded
     cards spaced for air, a `▍` selection bar. Each card is fixed height: a
-    full-width title line, the working-directory basename on its own dim line,
-    then a column-specific info line: what the agent is doing (from `tool_call`)
+    full-width title line, the working-directory path (~-abbreviated, shortened
+    to never overflow) on its own dim line, then a column-specific info line:
+    what the agent is doing (from `tool_call`)
     or last did, plus an age whose meaning follows the column (time blocked in
     Requires Action, time since the last activity in Running, time idle in Idle,
     record age in Dormant). Fixed height keeps `hit_test` a `CARD_ROWS`
@@ -150,15 +151,17 @@ your terminal (pi, interactive TUI)              another terminal
     then a dim-gray Dormant column (resumable history). Plus a footer of
     clickable key-hint buttons (`footer_hit_test`, same pattern as the approval
     dialog) with any status on the spacer row above it. Owns the card, heading,
-    separator, footer, and age/focus-label formatting.
+    separator, footer, path abbreviation (~-relative, component-shortening), and
+    age/focus-label formatting.
   - `src/picker.rs` — the `/` jump picker: holds the board's agents
-    (`board.selectable()`), grouped under dim directory-basename headers.
-    Subsequence fuzzy filter matches title, path, or basename (so a directory
-    query keeps every agent under it); a Tab scope filter cycles All/Live/
-    Dormant. `selected_agent` maps the selection (which counts only agent rows,
-    skipping headers) back to its agent. Enter goes to one, Shift+Enter spawns
-    a fresh agent in its dir. Styling (state glyph + color) lives in `ui.rs`;
-    picker stays free of ratatui. Unit-tested.
+    (`board.selectable()`), grouped by full cwd under dim directory-path
+    headers (same-named leaves under different roots stay distinct). Subsequence
+    fuzzy filter matches title or path (so a directory query keeps every agent
+    under it); a Tab scope filter cycles All/Live/Dormant. `selected_agent` maps
+    the selection (which counts only agent rows, skipping headers) back to its
+    agent. Enter goes to one, Shift+Enter spawns a fresh agent in its dir.
+    Styling (state glyph + color) and path abbreviation live in `ui.rs`; picker
+    stays free of ratatui. Unit-tested.
   - `src/main.rs` — the imperative shell: the event loop that scans + prunes
     the registry, spawns watchers, drains updates, polls the `Router`, draws,
     and dispatches input. Input modes are one `Overlay` enum (the `/` jump

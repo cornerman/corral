@@ -1,10 +1,9 @@
 //! Fuzzy picker for the `/` jump overlay. Holds the board's agents, groups them
-//! by their directory basename, and fuzzy-filters on path or title as the
+//! by their working directory, and fuzzy-filters on path or title as the
 //! operator types. A Tab scope filter narrows to Live or Dormant. Pure logic:
-//! all glyph and color styling lives in `ui.rs`.
+//! all glyph and color styling (and path abbreviation) lives in `ui.rs`.
 
 use crate::model::{Agent, Origin};
-use crate::ui::basename;
 
 /// Scope filter cycled by Tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +54,11 @@ pub struct Picker {
     agents: Vec<Agent>,
 }
 
-/// The directory group an agent belongs to: its cwd basename, or a fallback.
+/// The directory group an agent belongs to: its full cwd, or a fallback. Full
+/// path (not basename) so same-named leaves under different roots stay distinct
+/// groups; `ui.rs` abbreviates it for display.
 fn group_of(a: &Agent) -> &str {
-    a.cwd.as_deref().map(basename).unwrap_or("(no dir)")
+    a.cwd.as_deref().unwrap_or("(no dir)")
 }
 
 impl Picker {
@@ -71,18 +72,18 @@ impl Picker {
     }
 
     /// Whether an agent survives the current filter and query. The query is a
-    /// subsequence match against the title, the full path, or the basename, so
-    /// typing a directory name keeps every agent under it.
+    /// subsequence match against the title or the full path, so typing a
+    /// directory name keeps every agent under it.
     fn survives(&self, a: &Agent) -> bool {
         if !self.filter.accepts(a.origin) {
             return false;
         }
         let title = a.title.as_deref().unwrap_or("(unnamed)");
         let path = a.cwd.as_deref().unwrap_or("");
-        fuzzy(&self.query, title) || fuzzy(&self.query, path) || fuzzy(&self.query, group_of(a))
+        fuzzy(&self.query, title) || fuzzy(&self.query, path)
     }
 
-    /// Surviving agents grouped by basename, groups in first-appearance order,
+    /// Surviving agents grouped by directory, groups in first-appearance order,
     /// agents within a group in original (attention) order. Each entry is the
     /// group name and the indices into `self.agents`.
     fn grouped(&self) -> Vec<(&str, Vec<usize>)> {
@@ -201,14 +202,14 @@ mod tests {
     }
 
     #[test]
-    fn groups_by_basename_in_first_appearance_order() {
+    fn groups_by_directory_in_first_appearance_order() {
         let p = sample();
         let rows = p.rows();
-        // corral (alpha, gamma) appears before nixos (beta).
-        assert!(matches!(rows[0], Row::Header("corral")));
+        // corral (alpha, gamma) appears before nixos (beta); headers are full paths.
+        assert!(matches!(rows[0], Row::Header("/home/u/projects/corral")));
         assert!(matches!(rows[1], Row::Agent(a) if a.title.as_deref() == Some("alpha")));
         assert!(matches!(rows[2], Row::Agent(a) if a.title.as_deref() == Some("gamma")));
-        assert!(matches!(rows[3], Row::Header("nixos")));
+        assert!(matches!(rows[3], Row::Header("/home/u/projects/nixos")));
         assert!(matches!(rows[4], Row::Agent(a) if a.title.as_deref() == Some("beta")));
     }
 
@@ -220,7 +221,7 @@ mod tests {
         p.push('t'); // "bet" matches title beta only
         let rows = p.rows();
         assert_eq!(rows.len(), 2); // nixos header + beta
-        assert!(matches!(rows[0], Row::Header("nixos")));
+        assert!(matches!(rows[0], Row::Header("/home/u/projects/nixos")));
     }
 
     #[test]
@@ -231,7 +232,7 @@ mod tests {
         }
         let rows = p.rows();
         // both corral agents survive; nixos group is gone.
-        assert!(matches!(rows[0], Row::Header("corral")));
+        assert!(matches!(rows[0], Row::Header("/home/u/projects/corral")));
         assert_eq!(rows.len(), 3);
     }
 
