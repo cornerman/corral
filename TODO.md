@@ -57,7 +57,7 @@ One per-session file drives discovery, isolation, and resume.
 - [x] Agent-initiated transport: `corral_message_agent` submits over the
       `~/.corral/corrald.sock` control socket (`crates/daemon/src/control.rs`);
       the `corrald` daemon parses, finds the recipient, acks synchronously
-      (accepted / blocked / recipient_not_found / directory_not_known), and
+      (accepted / approval_needed / recipient_not_found / directory_not_known), and
       enqueues routable messages into `router.rs`. A connect failure fails loud
       (corrald down); accepted messages are in-memory only until routed (no
       on-disk spool).

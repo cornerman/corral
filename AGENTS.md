@@ -12,13 +12,17 @@ and jumps the user to its real window. It never drives an agent autonomously;
 the operator may deliver a message to a selected agent (`m`), which the board
 injects over that agent's socket.
 
-Two binaries ship from this workspace. `corral` is the board — a pure viewer of
+Three binaries ship from this workspace, over a shared `corral-core` library.
+`corral` is the board as a terminal TUI, and `corral-gui` is the same board as a
+desktop (egui) window — two parallel presentation shells, both pure viewers of
 the registry, launchable many times over. `corrald` is a headless singleton
 daemon that owns inter-agent messaging (the control socket, the whitelist gate,
 the approval tray). They share only the filesystem registry and never talk to
 each other. The split falls out of two facts: exactly one process can own the
 control socket (so messaging must be a singleton), while a registry reflector is
-harmless to run many times over.
+harmless to run many times over. The TUI is the zero-friction path (the terminal
+supplies font, theme and flatness, runs over SSH, one tiny binary); the GUI is
+the no-terminal launcher window.
 
 Agent-agnostic by design; pi is the current proof of concept, announced via the
 `corral-announce` extension. The board reads agent identity generically, so
@@ -68,7 +72,7 @@ your terminal (pi, interactive TUI)              another terminal
     |
   corral_message_agent tool -> ~/.corral/corrald.sock ----+  corrald (daemon, ONE singleton)
     (asks to message a target dir or session)            per submission (control.rs):
-    <- ack: accepted / blocked /                         parse, find recipient, ack, then
+    <- ack: accepted / approval_needed /                 parse, find recipient, ack, then
        recipient_not_found / directory_not_known         enqueue to the router: authorize
                                                          (whitelist + tray/notify popup),
                                                          resolve dir/session (spawn/resume
@@ -84,8 +88,10 @@ control socket; the board is a pure registry reflector, so any number may run.
 
 ## Crates
 
-Three workspace crates. `core` holds only what both binaries share, so neither
-links the other's dependencies (the board keeps ratatui; the daemon keeps ksni).
+Four workspace crates: `core` (shared logic), `board` (TUI `corral`), `gui`
+(desktop `corral-gui`), `daemon` (`corrald`). `core` holds everything the three
+binaries share, so no UI links another's dependencies (board + gui keep
+ratatui / egui, the daemon keeps ksni).
 
 - `crates/core` — `corral-core` (lib): the shared foundation, UI-free
   (`serde_json` only).
@@ -110,77 +116,58 @@ links the other's dependencies (the board keeps ratatui; the daemon keeps ksni).
     (agent delivery to a live target). Unit-tested against a throwaway listener.
   - `src/paths.rs` — the well-known on-disk locations (`registry_dir`,
     `control_socket`, `whitelist_file`), each the `env` override or a fixed name
-    under `~/.corral`. Shared so both binaries agree on where things live.
+    under `~/.corral`. Shared so all binaries agree on where things live.
+  - `src/model.rs` — `Agent`/`Board`/`Column`/`State` (the ACP v2
+    `state_update` vocabulary; `Column::ALL` is the single source of column
+    order). `Board.set_filter` + `Agent::matches_query` power the inline content
+    filter (matches title / cwd / activity / state), applied inside `column` so
+    counts, selection, rendering and hit-testing all narrow together. Pure,
+    unit-tested.
+  - `src/watch.rs` — one reader thread per live socket: seeds from
+    `initialize` + `session/list`, then streams `state_update`, `tool_call`
+    (summarized to a card activity string), and title updates; EOF = gone.
+  - `src/engine.rs` — the shared registry-reflect loop: on a ~1s cadence
+    scan + prune the registry, spawn a watcher per live socket, fold updates
+    into the `Board`, and track per-agent age timers. A shell calls `tick`
+    then renders `board()` + the age maps. (The TUI still runs an equivalent
+    loop inline; converging it onto the engine, or retiring it, is a TODO.)
+  - `src/nav.rs` — pure selection math: move within a column or across columns
+    over the per-column counts. Unit-tested.
+  - `src/focus.rs` — `WindowFocuser` seam. `SwayFocuser` correlates an agent to
+    its window by a `/proc` parent-walk (socket pid up the PPid chain to the
+    terminal pid sway reports), then `swaymsg [con_id=..] focus`; `close` kills
+    that terminal pid. The tree walk is unit-tested.
+  - `src/picker.rs` — a directory-grouped fuzzy picker (library module,
+    unit-tested). No longer wired to a shell now that both filter inline; kept
+    for reuse.
 
-- `crates/board` — the attention board (binary name `corral`), a pure viewer of
-  the registry plus the operator's own actions. Holds no messaging state (that
-  is the daemon's); launch it as many times as you like. The triage core
-  (`model`, `watch`, `ui`) never names sway or kitty; both sit behind traits.
-  - `src/model.rs` — `Agent` (`Origin` Live or Dormant) and `Board`. Live
-    agents are keyed by socket path (driven by watchers); dormant agents are a
-    derived view of the registry (cleanly shut-down, resumable, not-live
-    records, one card per session, newest first). `State` is Running, Idle, or RequiresAction (the
-    ACP v2 `state_update` vocabulary). `Column::ALL` is the single source of
-    truth for the column set and order; navigation, hit-testing, and rendering
-    all derive from it. Pure, unit-tested.
-  - `src/watch.rs` — one reader thread per socket. Connects (stays fully open,
-    never half-closes), seeds from `initialize` + `session/list`, then streams
-    `state_update` notifications, plus `session_info_update` (title) and
-    `tool_call` broadcasts, the latter summarized into a short card activity
-    string ("edit model.rs"). Socket EOF reports the agent gone. Pure parse
-    helpers are unit-tested.
-  - `src/focus.rs` — `WindowFocuser` seam (focus and close a window).
-    `SwayFocuser` correlates agent to window by a `/proc` parent-walk: the
-    socket pid, walked up its PPid chain, hits the terminal process whose pid
-    sway reports (works because the pi sandbox does not unshare the PID
-    namespace). `focus` then runs `swaymsg [con_id=..] focus`; `close` kills
-    that terminal pid (not a window-close request, which kitty's
-    `confirm_os_window_close` would block). The tree walk is unit-tested.
-  - `src/nav.rs` — pure selection math: move the flat selection index within a
-    column (up/down) or across columns (left/right) over the per-column
-    counts. Unit-tested.
-  - `src/ui.rs` — ratatui: four equal columns (from `Column::ALL`) divided by
-    dim vertical rules, each with a bold heading over an underline and padded
-    cards spaced for air, a `▍` selection bar. Each card is fixed height: a
-    full-width title line, the working-directory path (~-abbreviated, shortened
-    to never overflow) on its own dim line, then a column-specific info line:
-    what the agent is doing (from `tool_call`)
-    or last did, plus an age whose meaning follows the column (time blocked in
-    Requires Action, time since the last activity in Running, time idle in Idle,
-    record age in Dormant). Fixed height keeps `hit_test` a `CARD_ROWS`
-    division. Three
-    live triage columns (Requires Action, Idle, Running)
-    then a dim-gray Dormant column (resumable history). Plus a footer of
-    clickable key-hint buttons (`footer_hit_test`) with any status on the
-    spacer row above it. Owns the card, heading,
-    separator, footer, path abbreviation (~-relative, component-shortening), and
-    age/focus-label formatting.
-  - `src/picker.rs` — the `/` jump picker: holds the board's agents
-    (`board.selectable()`), grouped by full cwd under dim directory-path
-    headers (same-named leaves under different roots stay distinct). Subsequence
-    fuzzy filter matches title or path (so a directory query keeps every agent
-    under it); a Tab scope filter cycles All/Live/Dormant. `selected_agent` maps
-    the selection (which counts only agent rows, skipping headers) back to its
-    agent. Enter goes to one, Shift+Enter spawns a fresh agent in its dir.
-    Styling (state glyph + color) and path abbreviation live in `ui.rs`; picker
-    stays free of ratatui. Unit-tested.
-  - `src/main.rs` — the imperative shell: the event loop that scans + prunes
-    the registry, spawns watchers, drains updates, draws, and dispatches input.
-    Operator `m` delivers directly and ungated (live over the socket via
-    `core::prompt`, dormant by resume-with-message via `core::launch`); the
-    board holds no router. Input modes are one `Overlay` enum (the `/` jump
-    picker or message compose), exclusive by construction. Two verbs chosen by
-    a modifier, on both the board and the picker: Enter goes to the selection
-    (focus a live window, resume a dormant session), Shift+Enter spawns a new
-    agent in the selection's dir. Keys: Up/Down within a column, Left/Right
-    across columns, Enter/Shift+Enter as above, `/` open the jump picker, `m`
-    message an agent (resume a dormant one to deliver), `d` close a live
-    agent's window or forget a dormant record, `q` quit. A left click is
-    two-stage (`click_action`): first click selects, a click on the
-    already-selected card goes; the footer key-hints are also clickable buttons
-    (go / new / jump / msg / delete / quit), sharing the key dispatch via
-    `open_jump`/`open_compose`/`spawn_new`. Shift+Enter needs the kitty keyboard
-    protocol (`main` pushes `DISAMBIGUATE_ESCAPE_CODES` where supported).
+- `crates/board` — the TUI attention board (binary name `corral`), a pure
+  viewer of the registry plus the operator's own actions. Holds no messaging
+  state; launch it as many times as you like.
+  - `src/ui.rs` — ratatui: a prominent centered filter box (underline, top
+    padding) over four columns (Requires Action / Idle / Running / Dormant) of
+    fixed-height cards, and a clickable key-hint footer. Owns card / heading /
+    footer / filter-box / path-abbreviation / age formatting; `column_layout`
+    and `hit_test` share one geometry (top rows reserved for the filter).
+  - `src/main.rs` — the imperative shell: scan/prune/watch/draw/dispatch. `/`
+    focuses the inline filter (narrows cards by whole content); while filtering
+    Enter goes / Shift+Enter spawns directly, arrows navigate, Esc clears then
+    exits. Command keys: Up/Down or j/k, Left/Right or h/l, Enter go,
+    Shift+Enter spawn, `m` message (compose overlay), `d` dismiss, `q` quit; a
+    two-stage left click and a clickable footer. Operator `m` delivers ungated
+    via `core::prompt` / `core::launch`; no router.
+
+- `crates/gui` — the desktop attention board (binary name `corral-gui`,
+  egui/eframe), a second parallel viewer over the same registry via
+  `core::engine::Engine`. Flat and base16-Solarized (dark/light polled from the
+  freedesktop appearance portal and applied per frame, so egui's defaults never
+  leak); a centered filter line over the four columns of cards; click a card to
+  go, `+ new` to spawn, a bottom key-hint footer, the same keys as the TUI.
+  `src/theme.rs` maps a base16 palette onto egui `Visuals` (Solarized dark +
+  light); `src/dashboard.rs` renders and drives the actions (focus/resume via
+  `core::focus`/`core::launch`, message compose, dismiss). Links `eframe`/`egui`
+  plus the graphics libs (libGL/wayland/X11/xkbcommon); the TUI and daemon do
+  not.
 
 - `crates/daemon` — the message-routing daemon (binary name `corrald`), a
   headless singleton. Owns the control socket and every gated (agent-initiated)
@@ -189,8 +176,8 @@ links the other's dependencies (the board keeps ratatui; the daemon keeps ksni).
   job).
   - `src/mailbox.rs` — cross-session message types: parse a submitted message (a
     `Target` is a directory or an exact session id), `classify` it into an `Ack`
-    (accepted / blocked / recipient_not_found / directory_not_known) from
-    resolved facts, add the `[from agent in <dir> (session <id>)]`
+    (accepted / approval_needed / recipient_not_found / directory_not_known)
+    from resolved facts, add the `[from agent in <dir> (session <id>)]`
     provenance/reply-handle tag, and read/append the `(sender -> target)`
     whitelist. Pure, unit-tested.
   - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
@@ -253,7 +240,7 @@ links the other's dependencies (the board keeps ratatui; the daemon keeps ksni).
   (`target_dir` or `target_session`, `message`, `force_new`) that submits a
   cross-session message over `~/.corral/corrald.sock` (stamped with the
   sender's `fromSession` as a reply handle) and reports corral's ack (accepted
-  / blocked / recipient_not_found / directory_not_known); a connect failure is
+  / approval_needed / recipient_not_found / directory_not_known); a connect failure is
   surfaced as "corrald not running" (fail loud, no silent queue). Install:
   symlink into
   `~/.pi/agent/extensions/`.
@@ -265,7 +252,7 @@ the `corrald` daemon is the sole trusted cross-workdir router. An agent calls
 `corral_message_agent`, which submits the message over `~/.corral/corrald.sock`
 (reachable because `~/.corral` is on the sandbox allowlist). corrald parses it,
 finds the recipient, and returns a synchronous ack: `recipient_not_found` /
-`directory_not_known` if there is nowhere to send, `blocked` if the
+`directory_not_known` if there is nowhere to send, `approval_needed` if the
 `(sender-dir -> target-dir)` pair needs approval, else `accepted`. A connect
 failure means corrald is down, so submission fails loud instead of queuing
 silently. Routable messages are then routed asynchronously: corrald authorizes
@@ -273,8 +260,8 @@ the pair against the whitelist (or asks the operator on its tray menu — Allow
 once / Allow always / Deny), resolves the target, and injects the message over
 that agent's socket with a `[from agent in <dir> (session <id>)]` provenance
 tag. The approval gate is not awaited by the sender (a human is unbounded): a
-`blocked` message is acked at once and delivered after approval, without a
-delivery ack. Delivery reuses `core::prompt::send_prompt`, the same path as the
+`approval_needed` message is acked at once and delivered after approval, without
+a delivery ack. Delivery reuses `core::prompt::send_prompt`, the same path as the
 board's operator messaging (`m`). A pending approval is also mirrored to a
 desktop notification (`notify-send -A`) whose Allow/Deny buttons resolve it
 without opening the tray; best-effort, and the tray menu stays available. The
@@ -318,9 +305,10 @@ message/tool updates) is ACP v1.
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
   h/l) switch columns; Enter or left-click goes to the selected agent (focus a
   live window, resume a dormant session with `pi --session`); Shift+Enter
-  spawns a new agent in the selected agent's cwd; `/` opens a fuzzy jump picker
-  over all agents, grouped by directory with a state-colored glyph per row and
-  a Tab scope filter (All/Live/Dormant) (Enter goes, Shift+Enter spawns beside);
+  spawns a new agent in the selected agent's cwd; `/` focuses a prominent
+  centered filter box that narrows the cards by their whole content (title /
+  cwd / activity / state); while filtering, Enter goes and Shift+Enter spawns
+  directly, arrows still navigate, Esc clears then exits;
   `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant
   one by resuming it with the message as its first prompt; `d` close the
@@ -330,9 +318,16 @@ message/tool updates) is ACP v1.
   already-selected card goes. Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
   visible; live cards show time-in-state. Reads `$HOME` (or
-  `$CORRAL_REGISTRY_DIR`) for the registry dir; the `/` picker offers only the
-  agents already on the board; uses `swaymsg` and `kitty` for focus
-  and spawn.
+  `$CORRAL_REGISTRY_DIR`) for the registry dir; uses `swaymsg` and `kitty` for
+  focus and spawn.
+- CLI `corral-gui` — the same attention board as a desktop (egui/eframe) window,
+  a second parallel viewer for when no terminal is wanted. Flat,
+  base16-Solarized, follows the system light/dark (freedesktop appearance
+  portal). A centered filter line over the four columns; click a card to go,
+  `+ new` to spawn, arrows / Enter / Shift+Enter / `m` / `d` / `/` as in the
+  TUI, a bottom key-hint footer. Links the graphics libs (libGL / wayland / X11
+  / xkbcommon); on NixOS the flake wraps it with the driver library path. The
+  tray's “Open board” launches this.
 - CLI `corrald` — the headless message-routing daemon. No TUI; run under a
   systemd user service (see Development Setup). Binds `$HOME/.corral/corrald.sock`
   (override `$CORRAL_CONTROL_SOCKET`); refuses to start if another corrald is
@@ -378,7 +373,7 @@ message/tool updates) is ACP v1.
 - Inter-agent messaging is fire-and-forget (v1): corrald injects the message and
   does not capture a reply back to the sender. A response channel is a clean v2.
 - Approvals need either a StatusNotifierHost (tray) or a notification daemon. If
-  neither runs, a `blocked` message stays pending in corrald's memory with no
+  neither runs, an `approval_needed` message stays pending in corrald's memory with no
   way to answer it (the tray is the reliable path, so a tray host is the
   expectation). No auto-deny; the tray count shows what is waiting.
 - Delivery policy when the target dir's agent is Running: v1 reuses it and lets
@@ -426,12 +421,17 @@ message/tool updates) is ACP v1.
 ## Development Setup
 
 - Nix flake (nixpkgs-unstable) + direnv; Rust pinned via rust-toolchain.toml
-  through rust-overlay. Three workspace crates: `corral-core` (lib), `corral`
-  (board bin), `corral-daemon` (`corrald` bin). `just` for commands: `just
-  test`, `just lint`, `just board`, `just daemon`, `just watch` (cargo-watch),
-  `just nix-build`.
+  through rust-overlay. Four workspace crates: `corral-core` (lib), `corral`
+  (TUI board bin), `corral-gui` (desktop board bin), `corral-daemon` (`corrald`
+  bin). The flake's devShell + package carry the GUI graphics libs (`libGL`,
+  `libxkbcommon`, `wayland`, X11) and `wrapProgram` the `corral-gui` binary with
+  the driver library path for NixOS. `just` commands: `test`, `lint`, `board`,
+  `gui`, `daemon`, `watch` (cargo-watch tests), and `watch-board` / `watch-gui`
+  / `watch-daemon` (rebuild + rerun on change), `nix-build`. GUI builds need the
+  devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`.
 - Lifecycle is deployment glue in `~/nixos`, not corral code: a systemd user
-  service runs `corrald` (restart-on-failure) so messaging survives a crash,
-  and a WM keybind summons the board window. corrald owns behavior; nixos/WM
-  own keep-alive and visibility.
+  service runs `corrald` (restart-on-failure) so messaging survives a crash;
+  a WM keybind summons a board window — either a floating/borderless `kitty -e
+  corral` scratchpad (the TUI as a launcher popup) or `corral-gui`. corrald owns
+  behavior; nixos/WM own keep-alive and visibility.
 - CI: GitHub Action runs `nix flake check` (build + tests via nix).

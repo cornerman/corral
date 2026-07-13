@@ -40,14 +40,19 @@ harness-neutral convention, specified independently of pi and corral in
   `$HOME/.corral/registry/`, holds a live watch connection per live socket, and columns
   each by Requires Action / Idle / Running / Dormant. Enter goes to the
   selected agent (focus a live window via sway, or resume a dormant session);
-  Shift+Enter spawns a new agent via kitty in its cwd; `/` opens a fuzzy jump
-  picker over the board's agents, grouped by directory with a state-colored
-  glyph per row and a Tab scope filter (Enter goes, Shift+Enter spawns beside).
-  Shift+Enter relies on the kitty keyboard protocol. Window focus and agent
-  spawn sit behind traits
+  Shift+Enter spawns a new agent via kitty in its cwd; `/` focuses a prominent
+  centered filter box that narrows the cards by their whole content (title /
+  cwd / activity / state) — while filtering, Enter goes and Shift+Enter spawns
+  directly. Window focus and agent spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them. `m` messages the selected agent directly and
   ungated (the operator is trusted).
+- **corral-gui** (`crates/gui`) — the same attention board as a desktop
+  (egui/eframe) window: a second parallel viewer for when no terminal is
+  wanted. Flat, base16-Solarized, follows the system light/dark; a centered
+  filter line over the four columns, click a card to go, `+ new` to spawn, the
+  same keys as the TUI. Drives the shared `corral-core::engine`. The daemon's
+  tray “Open board” launches it.
 - **corrald** (`crates/daemon`) — the headless message-routing daemon, a
   singleton owning inter-agent messaging: it binds the control socket
   (`$HOME/.corral/corrald.sock`), authorizes `(sender -> target)` directory

@@ -30,7 +30,7 @@
  * message over corral's control socket $HOME/.corral/corrald.sock (override
  * with $CORRAL_CONTROL_SOCKET) for corral to route; the agent never reaches
  * another session directly. Submission gets a synchronous ack (accepted /
- * blocked / recipient_not_found / directory_not_known), and a connect failure
+ * approval_needed / recipient_not_found / directory_not_known), and a connect failure
  * means corral is down (fail loud, no silent queue). A message is addressed by
  * target_dir (whoever works there) or target_session (an exact agent, e.g. to
  * reply), and is stamped with the sender's session id so the receiver can
@@ -518,8 +518,8 @@ function describeAck(status: string, dest: string): string {
 	switch (status) {
 		case "accepted":
 			return `Accepted for routing by corral (to ${dest}).`;
-		case "blocked":
-			return `Submitted to ${dest}; blocked pending operator approval.`;
+		case "approval_needed":
+			return `Submitted to ${dest}; approval needed, delivered once approved.`;
 		case "recipient_not_found":
 			return `Not sent: recipient not found (${dest}).`;
 		case "directory_not_known":

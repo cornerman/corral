@@ -7,7 +7,7 @@
 //! fails) instead of piling up a silent file queue.
 //!
 //! The ack is synchronous and says only what is knowable at once (found /
-//! blocked / not-found); the actual delivery and the operator approval gate
+//! approval_needed / not-found); the actual delivery and the operator approval gate
 //! run later in the router. There is no wait for delivery.
 
 use std::io::{BufRead, BufReader, Write};
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn resolvable_but_unlisted_is_blocked_and_still_enqueued() {
+    fn resolvable_but_unlisted_needs_approval_and_still_enqueued() {
         let (tmp, socket, registry, whitelist) = setup();
         let dir = tmp.path().to_str().unwrap().to_string();
         let (tx, rx) = mpsc::channel();
@@ -191,11 +191,11 @@ mod tests {
             &socket,
             &format!(r#"{{"id":"1","fromCwd":"/a","targetDir":"{dir}","message":"hi"}}"#),
         );
-        assert_eq!(ack, r#"{"status":"blocked"}"#);
+        assert_eq!(ack, r#"{"status":"approval_needed"}"#);
         assert_eq!(
             rx.recv().unwrap().id,
             "1",
-            "blocked still routes (for approval)"
+            "approval_needed still routes (for approval)"
         );
     }
 

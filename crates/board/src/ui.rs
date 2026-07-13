@@ -622,26 +622,27 @@ mod tests {
         upsert(&mut b, "/s/a.sock", State::RequiresAction);
         upsert(&mut b, "/s/b.sock", State::RequiresAction);
         upsert(&mut b, "/s/c.sock", State::Running);
-        let area = Rect::new(0, 0, 100, 20);
+        let area = Rect::new(0, 0, 100, 28);
         let no_scroll = [0usize; 4];
 
-        // Left column: HEAD_ROWS=2 (heading+rule), then 4-row cards.
-        assert_eq!(hit_test(area, &b, 5, 2, no_scroll), Some(0));
-        assert_eq!(hit_test(area, &b, 5, 6, no_scroll), Some(1));
-        assert_eq!(hit_test(area, &b, 5, 1, no_scroll), None); // heading/rule row
-        assert_eq!(hit_test(area, &b, 5, 12, no_scroll), None); // past the two cards
+        // Columns start below FILTER_ROWS=4; then HEAD_ROWS=2 (heading+rule),
+        // so the first card's top row is 4 + 2 = 6, and cards are 4 rows tall.
+        assert_eq!(hit_test(area, &b, 5, 6, no_scroll), Some(0));
+        assert_eq!(hit_test(area, &b, 5, 10, no_scroll), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 5, no_scroll), None); // heading/rule row
+        assert_eq!(hit_test(area, &b, 5, 18, no_scroll), None); // past the two cards
 
         // Second column (Idle) is empty.
-        assert_eq!(hit_test(area, &b, 30, 2, no_scroll), None);
+        assert_eq!(hit_test(area, &b, 30, 6, no_scroll), None);
 
         // Third live column (Running): index continues after the two left cards.
-        assert_eq!(hit_test(area, &b, 60, 2, no_scroll), Some(2));
+        assert_eq!(hit_test(area, &b, 60, 6, no_scroll), Some(2));
 
         // Footer row is outside every column.
-        assert_eq!(hit_test(area, &b, 5, 19, no_scroll), None);
+        assert_eq!(hit_test(area, &b, 5, 27, no_scroll), None);
 
         // A scrolled left column maps the first visible row to the offset item.
-        assert_eq!(hit_test(area, &b, 5, 2, [1, 0, 0, 0]), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 6, [1, 0, 0, 0]), Some(1));
     }
 }
 

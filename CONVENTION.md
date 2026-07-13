@@ -280,7 +280,7 @@ whitelist:
 | `status`              | Meaning |
 |-----------------------|---------|
 | `accepted`            | Recipient found and the `(sender -> target)` pair is authorized; will route. |
-| `blocked`             | Recipient found but not authorized; held for the operator's approval (not awaited). |
+| `approval_needed`     | Recipient found but not yet authorized; held for the operator's approval (not awaited). |
 | `recipient_not_found` | `targetSession` is not in the registry. |
 | `directory_not_known` | `targetDir` is not an existing directory. |
 | `malformed`           | Unparseable request. |
@@ -289,8 +289,8 @@ The consumer authorizes the `(fromCwd -> target directory)` pair, resolves the
 target (reusing, spawning, or resuming as needed), and injects the message with
 a provenance tag naming the sender directory and session. The receiver replies
 by addressing `targetSession` = the sender's `fromSession`. The ack confirms
-receipt and resolution, not delivery; a `blocked` message is delivered after
-approval without a further ack.
+receipt and resolution, not delivery; an `approval_needed` message is delivered
+after approval without a further ack.
 
 ## Appendix B — Reference Implementation (non-normative)
 

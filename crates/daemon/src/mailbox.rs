@@ -84,8 +84,10 @@ pub enum Ack {
     /// router will deliver it.
     Accepted,
     /// Target resolves but the pair is not whitelisted: held for the operator's
-    /// approval. The sender is told now, not made to wait on a human.
-    Blocked,
+    /// approval. The sender is told now, not made to wait on a human. (The
+    /// whitelist has no explicit deny, so this is "not yet approved", not
+    /// "blocked".)
+    ApprovalNeeded,
     /// A `target_session` that is not in the registry: nowhere to send.
     RecipientNotFound,
     /// A `target_dir` that is not an existing directory: nowhere to spawn.
@@ -97,7 +99,7 @@ impl Ack {
     pub fn wire(self) -> &'static str {
         match self {
             Ack::Accepted => "accepted",
-            Ack::Blocked => "blocked",
+            Ack::ApprovalNeeded => "approval_needed",
             Ack::RecipientNotFound => "recipient_not_found",
             Ack::DirectoryNotKnown => "directory_not_known",
         }
@@ -105,7 +107,7 @@ impl Ack {
 
     /// Whether the router should route this message (only resolvable targets).
     pub fn routable(self) -> bool {
-        matches!(self, Ack::Accepted | Ack::Blocked)
+        matches!(self, Ack::Accepted | Ack::ApprovalNeeded)
     }
 }
 
@@ -120,7 +122,7 @@ pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) ->
             Target::Dir(_) => Ack::DirectoryNotKnown,
         },
         Some(_) if whitelisted => Ack::Accepted,
-        Some(_) => Ack::Blocked,
+        Some(_) => Ack::ApprovalNeeded,
     }
 }
 
@@ -228,16 +230,16 @@ mod tests {
     fn classify_covers_every_ack() {
         let sess = Target::Session("sid".into());
         let dir = Target::Dir("/b".into());
-        // Recipient found -> whitelisted decides accepted vs blocked.
+        // Recipient found -> whitelisted decides accepted vs approval_needed.
         assert_eq!(classify(&sess, Some("/b"), true), Ack::Accepted);
-        assert_eq!(classify(&sess, Some("/b"), false), Ack::Blocked);
+        assert_eq!(classify(&sess, Some("/b"), false), Ack::ApprovalNeeded);
         assert_eq!(classify(&dir, Some("/b"), true), Ack::Accepted);
         // Recipient not found -> reason depends on the target kind.
         assert_eq!(classify(&sess, None, false), Ack::RecipientNotFound);
         assert_eq!(classify(&dir, None, false), Ack::DirectoryNotKnown);
         // Only resolvable targets are routed onward.
         assert!(Ack::Accepted.routable());
-        assert!(Ack::Blocked.routable());
+        assert!(Ack::ApprovalNeeded.routable());
         assert!(!Ack::RecipientNotFound.routable());
         assert!(!Ack::DirectoryNotKnown.routable());
     }

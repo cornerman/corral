@@ -217,7 +217,7 @@ daily-use ergonomics.
    diffing, and `OpDelivery`/`pump_operator` from the router.
 4. **outbox to socket** (done): submission moved from `~/.corral/outbox` files
    to the `~/.corral/corrald.sock` control socket. corral acks synchronously
-   (accepted / blocked / recipient_not_found / directory_not_known); a connect
+   (accepted / approval_needed / recipient_not_found / directory_not_known); a connect
    failure fails loud instead of queuing silently. Accepted messages live in
    corral's memory (no on-disk spool) until routed.
 5. **corrald daemon + tray** (done): messaging split into a singleton `corrald`
