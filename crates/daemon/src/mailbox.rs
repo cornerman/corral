@@ -44,13 +44,33 @@ impl Message {
         }
     }
 
-    /// Human label for the target, shown in the approval overlay.
+    /// Full human label for the target (used in the detail popup).
     pub fn target_label(&self) -> String {
         match &self.target {
             Target::Dir(d) => d.clone(),
             Target::Session(s) => format!("session {s}"),
         }
     }
+
+    /// Compact target label for the tray menu: a directory target shows only
+    /// its basename, so the `from → to` line stays short and symmetric with the
+    /// basenamed sender.
+    pub fn target_label_short(&self) -> String {
+        match &self.target {
+            Target::Dir(d) => basename(d).to_string(),
+            Target::Session(s) => format!("session {s}"),
+        }
+    }
+}
+
+/// Last path component (ignoring a trailing slash); the whole string if there
+/// is no slash.
+pub fn basename(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path)
 }
 
 /// The synchronous verdict corral returns to a message submitter over the

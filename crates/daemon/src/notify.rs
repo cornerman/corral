@@ -43,6 +43,26 @@ fn parse_action(name: &str) -> Option<ApprovalAction> {
     }
 }
 
+/// Pop a full detail view of a pending message — from, to, and the whole body —
+/// as a desktop notification with no action buttons (informational only),
+/// triggered from the tray's "Show details". Critical urgency keeps it on
+/// screen; best-effort and non-blocking like the approval notification.
+pub fn show_detail(from: String, target: String, body: String) {
+    thread::spawn(move || {
+        let text = format!("from: {from}\nto:   {target}\n\n{body}");
+        let _ = Command::new("notify-send")
+            .args([
+                "-u",
+                "critical",
+                "-a",
+                "corral",
+                "corral: message details",
+                &text,
+            ])
+            .output();
+    });
+}
+
 pub struct NotifySendNotifier;
 
 impl ApprovalNotifier for NotifySendNotifier {

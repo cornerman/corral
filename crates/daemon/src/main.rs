@@ -97,10 +97,10 @@ fn main() {
         // Reflect a newly pending approval to the tray and a notification (once).
         match router.pending() {
             Some(msg) if announced.as_deref() != Some(&msg.id) => {
-                let from = msg.from_cwd.rsplit('/').next().unwrap_or(&msg.from_cwd);
+                let from = mailbox::basename(&msg.from_cwd);
                 tray.set_pending(Some((
                     msg.id.clone(),
-                    format!("{from} → {}", msg.target_label()),
+                    format!("{from} → {}", msg.target_label_short()),
                 )));
                 notifier.notify(
                     msg.id.clone(),
@@ -124,6 +124,15 @@ fn main() {
         while let Ok(cmd) = tray.commands.try_recv() {
             match cmd {
                 TrayCommand::Decide(id, action) => apply_decision(&mut router, &id, action),
+                TrayCommand::ShowDetails(id) => {
+                    if let Some(msg) = router.pending().filter(|m| m.id == id) {
+                        notify::show_detail(
+                            msg.from_cwd.clone(),
+                            msg.target_label(),
+                            msg.message.clone(),
+                        );
+                    }
+                }
                 TrayCommand::OpenBoard => tray::open_board(),
                 TrayCommand::Quit => {
                     eprintln!("corrald: quit");

@@ -21,6 +21,8 @@ use crate::router::ApprovalAction;
 pub enum TrayCommand {
     /// Decide the pending approval identified by this message id.
     Decide(String, ApprovalAction),
+    /// Pop a full detail view (from, to, body) of the pending message.
+    ShowDetails(String),
     /// Open the attention board (`kitty -e corral`).
     OpenBoard,
     /// Stop the daemon.
@@ -91,6 +93,18 @@ impl ksni::Tray for CorralTray {
                     StandardItem {
                         label: format!("Pending: {}", p.summary),
                         enabled: false,
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(
+                    StandardItem {
+                        label: "Show details…".into(),
+                        activate: Box::new(|t: &mut Self| {
+                            if let Some(p) = &t.pending {
+                                let _ = t.tx.send(TrayCommand::ShowDetails(p.id.clone()));
+                            }
+                        }),
                         ..Default::default()
                     }
                     .into(),
