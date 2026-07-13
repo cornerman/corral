@@ -613,9 +613,9 @@ pub fn render(
     );
 }
 
-/// The minimal corral wordmark shown in the board's bottom-right corner: a pen
-/// (`⟦ ⟧`) enclosing three dots (`∴`), matching the tray icon.
-const LOGO: &str = "⟦∴⟧ corral";
+/// The minimal corral mark shown in the board's bottom-right corner: a pen
+/// (`⟦ ⟧`) enclosing three dots (`∴`), matching the tray icon. Glyph only.
+const LOGO: &str = "⟦∴⟧";
 
 #[cfg(test)]
 mod tests {
