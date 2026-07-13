@@ -135,7 +135,10 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker) {
         match row {
             Row::Header(dir) => {
                 let shown = abbrev_cwd(dir, rows[1].width as usize);
-                items.push(ListItem::new(Line::from(Span::styled(shown, dim))));
+                let faint = Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM);
+                items.push(ListItem::new(path_line(&shown, dim, faint)));
             }
             Row::Agent(a) => {
                 if agent_seen == picker.selected {
@@ -426,6 +429,28 @@ fn abbrev_cwd(path: &str, width: usize) -> String {
     abbreviate_path(path, std::env::var("HOME").ok().as_deref(), width)
 }
 
+/// Split a path into its prefix (up to and including the last `/`) and its leaf
+/// (the basename). No slash: empty prefix, the whole string is the leaf.
+fn split_at_leaf(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(i) => (&path[..=i], &path[i + 1..]),
+        None => ("", path),
+    }
+}
+
+/// Render a path so the basename stays legible while the leading path recedes:
+/// the prefix in `prefix` style (dimmer), the leaf in `leaf` style. Neither is
+/// bold.
+fn path_line(path: &str, leaf: Style, prefix: Style) -> Line<'static> {
+    let (p, l) = split_at_leaf(path);
+    let mut spans = Vec::new();
+    if !p.is_empty() {
+        spans.push(Span::styled(p.to_string(), prefix));
+    }
+    spans.push(Span::styled(l.to_string(), leaf));
+    Line::from(spans)
+}
+
 /// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
 pub fn age_label(d: Duration) -> String {
     let s = d.as_secs();
@@ -515,11 +540,14 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         Origin::Live => Style::default(),
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    // Title owns a full line; the basename gets its own dim line below it.
+    // The leading path recedes (dark gray) so the basename reads first.
+    let faint = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
     let [name, dir, info] = card_lines(agent, col, meta, width);
     ListItem::new(vec![
         Line::from(Span::styled(name, title_style)),
-        Line::from(Span::styled(dir, dim)),
+        path_line(&dir, dim, faint),
         Line::from(Span::styled(info, dim)),
         Line::from(""), // blank spacer: air between cards
     ])
@@ -832,6 +860,13 @@ mod card_tests {
             let out = abbreviate_path("/home/u/projects/corral/crates/board", Some("/home/u"), w);
             assert!(out.chars().count() <= w, "width {w}: {out:?}");
         }
+    }
+
+    #[test]
+    fn split_at_leaf_separates_prefix_and_basename() {
+        assert_eq!(split_at_leaf("~/p/c/board"), ("~/p/c/", "board"));
+        assert_eq!(split_at_leaf("board"), ("", "board"));
+        assert_eq!(split_at_leaf("~"), ("", "~"));
     }
 
     #[test]
