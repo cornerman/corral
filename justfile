@@ -40,3 +40,15 @@ daemon *ARGS:
 # Run the desktop (egui) attention board
 gui *ARGS:
     cargo run -p corral-gui -- {{ARGS}}
+
+# Watch + rebuild-and-rerun the board (TUI) on every change
+watch-board *ARGS:
+    cargo watch -c -x 'run -p corral -- {{ARGS}}'
+
+# Watch + rebuild-and-rerun the desktop GUI on every change
+watch-gui *ARGS:
+    cargo watch -c -x 'run -p corral-gui -- {{ARGS}}'
+
+# Watch + rebuild-and-rerun the daemon on every change
+watch-daemon *ARGS:
+    cargo watch -c -x 'run -p corral-daemon -- {{ARGS}}'
