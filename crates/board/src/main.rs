@@ -301,7 +301,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                 spawn_new(&launcher, &board, selected, &mut status);
                             }
                             KeyCode::Enter => {
-                                activate_selected(&focuser, &launcher, &board, selected, &mut status);
+                                activate_selected(
+                                    &focuser,
+                                    &launcher,
+                                    &board,
+                                    selected,
+                                    &mut status,
+                                );
                             }
                             KeyCode::Backspace => {
                                 filter.pop();
