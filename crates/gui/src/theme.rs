@@ -20,9 +20,7 @@ pub struct Base16 {
 /// indices. Attention = red, running = green, links/selection = blue. RED and
 /// GREEN are consumed by the card badges once the dashboard lands.
 impl Base16 {
-    #[allow(dead_code)]
     pub const RED: usize = 0; // base08
-    #[allow(dead_code)]
     pub const GREEN: usize = 3; // base0B
     pub const BLUE: usize = 5; // base0D
 }
@@ -73,9 +71,8 @@ pub const SOLARIZED_LIGHT: Base16 = Base16 {
     accent: SOLARIZED_ACCENT,
 };
 
-/// The scheme for a given system appearance. (Used once the dashboard picks a
-/// scheme dynamically; the spike sets both variants up front.)
-#[allow(dead_code)]
+/// The scheme for a given system appearance. Cards read accents from it; the
+/// window's visuals are set from both variants up front.
 pub fn scheme(dark: bool) -> Base16 {
     if dark {
         SOLARIZED_DARK

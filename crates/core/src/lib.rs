@@ -5,6 +5,7 @@
 //! in its own crate; this crate stays dependency-light on purpose.
 
 pub mod discovery;
+pub mod engine;
 pub mod focus;
 pub mod launch;
 pub mod model;

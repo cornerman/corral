@@ -3,11 +3,14 @@
 //! window (base16 Solarized, following the system light/dark preference). The
 //! dashboard (columns of cards over the registry) builds on top of it.
 
+mod dashboard;
 mod theme;
+
+use dashboard::Dashboard;
 
 /// The corral mark: a pen (⟦ ⟧) enclosing three dots (∴), matching the TUI
 /// footer glyph and the tray icon.
-const MARK: &str = "⟦∴⟧";
+pub const MARK: &str = "⟦∴⟧";
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -31,27 +34,19 @@ fn main() -> eframe::Result {
                 egui::Theme::Light,
                 theme::visuals(&theme::SOLARIZED_LIGHT, false),
             );
-            Ok(Box::new(App))
+            Ok(Box::new(App {
+                dashboard: Dashboard::new(),
+            }))
         }),
     )
 }
 
-struct App;
+struct App {
+    dashboard: Dashboard,
+}
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let dark = ui.ctx().theme() == egui::Theme::Dark;
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.35);
-            ui.heading(egui::RichText::new(format!("{MARK} corral")).size(48.0));
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(format!(
-                    "desktop attention board — solarized {}",
-                    if dark { "dark" } else { "light" }
-                ))
-                .weak(),
-            );
-        });
+        self.dashboard.ui(ui);
     }
 }

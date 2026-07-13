@@ -59,6 +59,16 @@ impl Column {
         Column::Running,
         Column::Dormant,
     ];
+
+    /// The column heading shown by any presentation shell.
+    pub fn title(&self) -> &'static str {
+        match self {
+            Column::RequiresAction => "Requires Action",
+            Column::Idle => "Idle",
+            Column::Running => "Running",
+            Column::Dormant => "Dormant",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
