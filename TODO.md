@@ -116,6 +116,24 @@ One per-session file drives discovery, isolation, and resume.
       (agentclientprotocol.com/rfds/v2/prompt). When `state_update` stabilizes,
       corral already speaks it; retire any interim shim.
 
+## Desktop GUI (corral-gui, egui/eframe)
+
+- [x] Spike + packaging: themed eframe window (base16 Solarized, follows system
+      light/dark), flake graphics deps (`libGL`/`libxkbcommon`/`wayland`/X11)
+      and a NixOS `wrapProgram` LD_LIBRARY_PATH on the binary. `just gui`.
+- [x] `core::engine::Engine`: the shared registry-reflect loop (scan/prune/
+      watch/drain/timers), so both shells stay thin. `model`/`watch`/`nav`/
+      `picker`/`focus` lifted into `corral-core`.
+- [x] Dashboard v1: four columns of cards over the engine, state-colored dot,
+      `~`-path, activity·age; click a card to go (focus/resume); `+ new agent`.
+- [ ] Parity with the TUI: `m` message compose, `/` fuzzy jump (reuse
+      `core::picker`), `d` dismiss, keyboard navigation + selection highlight,
+      two-stage click (select then go), path abbreviation polish.
+- [ ] DEBT: the ratatui board still runs its own inline copy of the reflect
+      loop and `age_label`/`prune`; converge it onto `core::engine`, or retire
+      the TUI once the GUI is the daily driver. Duplication is temporary and
+      deliberate (kept the working TUI untouched during the GUI build).
+
 ## Board Polish
 
 - [x] Column scrolling: each column keeps a persistent `ListState`, so ratatui
