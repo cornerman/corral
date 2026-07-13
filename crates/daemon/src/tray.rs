@@ -205,5 +205,22 @@ impl Tray {
 /// so it outlives the daemon and is not a child of it. The GUI is a native
 /// window, so no terminal is needed (unlike the TUI `kitty -e corral`).
 pub fn open_board() {
-    let _ = Command::new("setsid").arg("--fork").arg("corral-gui").status();
+    let _ = Command::new("setsid")
+        .arg("--fork")
+        .arg(gui_binary())
+        .status();
+}
+
+/// Resolve the `corral-gui` binary: prefer one sitting beside `corrald` (the
+/// same cargo target or install dir), so the tray works without `corral-gui`
+/// being on `$PATH`; fall back to the bare name for a PATH lookup.
+fn gui_binary() -> std::ffi::OsString {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(sibling) = exe.parent().map(|d| d.join("corral-gui")) {
+            if sibling.is_file() {
+                return sibling.into_os_string();
+            }
+        }
+    }
+    "corral-gui".into()
 }
