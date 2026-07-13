@@ -4,6 +4,7 @@
 //! filter line that narrows cards by their whole content.
 
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 mod dashboard;
 mod theme;
@@ -22,17 +23,11 @@ fn main() -> eframe::Result {
         "corral",
         options,
         Box::new(|cc| {
-            // Install the flat Solarized dark+light visuals, then pick the one
-            // the desktop prefers.
-            theme::install(&cc.egui_ctx);
-            let pref = if system_prefers_dark() {
-                egui::ThemePreference::Dark
-            } else {
-                egui::ThemePreference::Light
-            };
-            cc.egui_ctx.set_theme(pref);
+            theme::install(&cc.egui_ctx); // flat, airy spacing (once)
             Ok(Box::new(App {
                 dashboard: Dashboard::new(),
+                dark: system_prefers_dark(),
+                last_theme_check: Instant::now(),
             }))
         }),
     )
@@ -65,13 +60,31 @@ fn system_prefers_dark() -> bool {
 
 struct App {
     dashboard: Dashboard,
+    /// The current system appearance; re-polled on an interval so a desktop
+    /// light/dark switch is picked up live.
+    dark: bool,
+    last_theme_check: Instant,
+}
+
+impl App {
+    /// Force the Solarized + flat visuals every frame (so egui's rounded,
+    /// shadowed defaults can never leak), re-polling the system appearance
+    /// every couple of seconds.
+    fn sync_theme(&mut self, ctx: &egui::Context) {
+        if self.last_theme_check.elapsed() >= Duration::from_secs(2) {
+            self.dark = system_prefers_dark();
+            self.last_theme_check = Instant::now();
+        }
+        ctx.set_visuals(theme::visuals(&theme::scheme(self.dark), self.dark));
+    }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.sync_theme(ui.ctx());
         // A uniform breathing margin so content never touches the window edge.
         egui::Frame::default()
             .inner_margin(egui::Margin::symmetric(18, 12))
-            .show(ui, |ui| self.dashboard.ui(ui));
+            .show(ui, |ui| self.dashboard.ui(ui, self.dark));
     }
 }

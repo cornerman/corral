@@ -140,14 +140,16 @@ pub fn visuals(p: &Base16, dark: bool) -> Visuals {
         w.bg_stroke = Stroke::NONE;
         w.expansion = 0.0;
     }
+    // Matte, not material: no drop shadows anywhere.
+    v.window_shadow = egui::epaint::Shadow::NONE;
+    v.popup_shadow = egui::epaint::Shadow::NONE;
     v
 }
 
-/// Install the corral look on a context: the Solarized dark and light visuals
-/// (egui follows the system appearance) plus airy, flat spacing.
+/// Install the flat, airy spacing (once). Colors are applied per frame via
+/// `visuals` + `Context::set_visuals`, so they can never be overridden by
+/// egui's defaults or the system theme follower.
 pub fn install(ctx: &egui::Context) {
-    ctx.set_visuals_of(egui::Theme::Dark, visuals(&SOLARIZED_DARK, true));
-    ctx.set_visuals_of(egui::Theme::Light, visuals(&SOLARIZED_LIGHT, false));
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(10.0, 8.0);
         s.spacing.button_padding = egui::vec2(10.0, 6.0);

@@ -74,7 +74,7 @@ impl Dashboard {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, dark: bool) {
         self.engine.tick();
         ui.ctx().request_repaint_after(Duration::from_millis(500));
 
@@ -100,7 +100,6 @@ impl Dashboard {
                 );
             });
 
-        let dark = ui.ctx().theme() == egui::Theme::Dark;
         let scheme = theme::scheme(dark);
         let in_state = self.engine.in_state_ages();
         let quiet = self.engine.quiet_ages();
