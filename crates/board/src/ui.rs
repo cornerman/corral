@@ -509,6 +509,9 @@ fn column(
         // (each column is its own list; the default only reserves it when that
         // list has the selection).
         .highlight_spacing(HighlightSpacing::Always)
+        // Selection is the `▍` bar plus bold. No background fill: a fixed shade
+        // looked wrong in one terminal mode and the 16-color palette has no
+        // faint-enough adaptive gray, so the bar (theme foreground) is the mark.
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
     state.select(selected_row);
     frame.render_stateful_widget(list, rows[2], state);
