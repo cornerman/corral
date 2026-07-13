@@ -297,7 +297,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                 filtering = false;
                                 filter.clear();
                             }
-                            KeyCode::Enter => filtering = false,
+                            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                spawn_new(&launcher, &board, selected, &mut status);
+                            }
+                            KeyCode::Enter => {
+                                activate_selected(&focuser, &launcher, &board, selected, &mut status);
+                            }
                             KeyCode::Backspace => {
                                 filter.pop();
                             }
