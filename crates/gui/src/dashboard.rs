@@ -21,7 +21,6 @@ use corral_core::{engine::Engine, nav, paths, prompt};
 use egui::{Color32, FontId, Frame, Key, Margin, Modifiers, Rect, RichText, Sense, TextEdit};
 
 use crate::theme;
-use crate::MARK;
 
 /// An operator message being composed (opened with `m`).
 struct Compose {
@@ -85,6 +84,22 @@ impl Dashboard {
             return;
         }
 
+        // Key hints along the bottom, like the TUI footer. Reserved first so
+        // the columns fill the space above it.
+        let _hints = egui::Panel::bottom(egui::Id::new("hints"))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "arrows move  ·  Enter go  ·  Shift+Enter new  ·  \
+                         m message  ·  d dismiss  ·  / filter  ·  q quit",
+                    )
+                    .weak()
+                    .small(),
+                );
+            });
+
         let dark = ui.ctx().theme() == egui::Theme::Dark;
         let scheme = theme::scheme(dark);
         let in_state = self.engine.in_state_ages();
@@ -117,7 +132,7 @@ impl Dashboard {
         // --- top: mark + status, then the centered filter bar ---
         let mut want_focus_filter = false;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(MARK).weak());
+            ui.label(RichText::new("corral").weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ new").clicked() {
                     let cwd = launch::default_cwd(self.selected_agent(&columns).and_then(|a| a.cwd.as_deref()));
@@ -131,23 +146,30 @@ impl Dashboard {
                 }
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(8.0);
         let mut filter_resp = None;
         ui.vertical_centered(|ui| {
-            let w = (ui.available_width() * 0.55).clamp(240.0, 620.0);
+            let w = (ui.available_width() * 0.5).clamp(240.0, 560.0);
+            // Frameless, left-aligned text (centering the text makes the caret
+            // jump); the field itself is centered on screen, with a thin
+            // underline instead of a filled box.
             let r = ui.add_sized(
-                [w, 34.0],
+                [w, 28.0],
                 TextEdit::singleline(&mut self.filter)
+                    .frame(egui::Frame::NONE)
                     .hint_text("filter…")
-                    .font(FontId::proportional(17.0))
-                    .margin(Margin::symmetric(10, 8))
-                    .horizontal_align(egui::Align::Center),
+                    .font(FontId::proportional(18.0)),
+            );
+            ui.painter().hline(
+                r.rect.left()..=r.rect.right(),
+                r.rect.bottom() + 2.0,
+                egui::Stroke::new(1.0, scheme.base[2]),
             );
             filter_resp = Some(r);
         });
         let filter_resp = filter_resp.unwrap();
         let filtering = filter_resp.has_focus();
-        ui.add_space(8.0);
+        ui.add_space(14.0);
 
         // --- keyboard ---
         let mut act = Act::None;
@@ -437,18 +459,20 @@ fn card(
     selected: bool,
 ) -> egui::Response {
     let accent = state_color(agent, scheme);
+    // Faint accent tint for the selected row (not the saturated Solarized
+    // base01, which reads as a heavy teal block).
     let fill = if selected {
-        scheme.base[1]
+        Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 28)
     } else {
         Color32::TRANSPARENT
     };
     let inner = Frame::default()
         .fill(fill)
         .inner_margin(Margin {
-            left: 12,
-            right: 8,
-            top: 5,
-            bottom: 5,
+            left: 14,
+            right: 10,
+            top: 8,
+            bottom: 8,
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -477,7 +501,7 @@ fn card(
         0.0,
         accent,
     );
-    ui.add_space(3.0);
+    ui.add_space(6.0);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

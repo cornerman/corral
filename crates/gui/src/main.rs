@@ -10,10 +10,6 @@ mod theme;
 
 use dashboard::Dashboard;
 
-/// The corral mark: a pen (⟦ ⟧) enclosing three dots (∴), matching the TUI
-/// footer glyph and the tray icon.
-pub const MARK: &str = "⟦∴⟧";
-
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -73,6 +69,9 @@ struct App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.dashboard.ui(ui);
+        // A uniform breathing margin so content never touches the window edge.
+        egui::Frame::default()
+            .inner_margin(egui::Margin::symmetric(18, 12))
+            .show(ui, |ui| self.dashboard.ui(ui));
     }
 }

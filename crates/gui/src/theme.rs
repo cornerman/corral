@@ -149,9 +149,9 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&SOLARIZED_DARK, true));
     ctx.set_visuals_of(egui::Theme::Light, visuals(&SOLARIZED_LIGHT, false));
     ctx.all_styles_mut(|s| {
-        s.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        s.spacing.button_padding = egui::vec2(10.0, 5.0);
-        s.spacing.window_margin = egui::Margin::same(10);
+        s.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        s.spacing.button_padding = egui::vec2(10.0, 6.0);
+        s.spacing.window_margin = egui::Margin::same(12);
     });
 }
 
