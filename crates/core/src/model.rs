@@ -90,6 +90,35 @@ pub struct Agent {
     pub activity: Option<String>,
 }
 
+impl Agent {
+    /// Whether this agent's whole card content matches a filter query: every
+    /// whitespace-separated term must appear (case-insensitive) in the title,
+    /// cwd, activity, or state word. An empty query matches everything.
+    pub fn matches_query(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        let state = match self.origin {
+            Origin::Dormant => "dormant",
+            Origin::Live => match self.state {
+                State::RequiresAction => "requires action",
+                State::Running => "running",
+                State::Idle => "idle",
+            },
+        };
+        let hay = format!(
+            "{} {} {} {}",
+            self.title.as_deref().unwrap_or(""),
+            self.cwd.as_deref().unwrap_or(""),
+            self.activity.as_deref().unwrap_or(""),
+            state,
+        )
+        .to_lowercase();
+        q.split_whitespace().all(|term| hay.contains(term))
+    }
+}
+
 /// A change pushed from a watcher thread to the UI thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Update {
@@ -113,6 +142,9 @@ pub enum Update {
 pub struct Board {
     live: BTreeMap<PathBuf, Agent>,
     dormant: Vec<Agent>,
+    /// Content filter: when non-empty, `column` (and thus counts, selection,
+    /// rendering, hit-testing) shows only cards whose whole content matches.
+    filter: String,
 }
 
 impl Board {
@@ -208,13 +240,25 @@ impl Board {
         self.dormant.iter().collect()
     }
 
-    /// The agents in one column.
+    /// Set the content filter. Empty clears it.
+    pub fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+    }
+
+    /// The agents in one column, narrowed by the content filter if set.
     pub fn column(&self, column: Column) -> Vec<&Agent> {
-        match column {
+        let base = match column {
             Column::RequiresAction => self.in_state(State::RequiresAction),
             Column::Idle => self.in_state(State::Idle),
             Column::Running => self.in_state(State::Running),
             Column::Dormant => self.dormant(),
+        };
+        if self.filter.trim().is_empty() {
+            base
+        } else {
+            base.into_iter()
+                .filter(|a| a.matches_query(&self.filter))
+                .collect()
         }
     }
 

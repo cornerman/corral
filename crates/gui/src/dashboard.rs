@@ -116,7 +116,7 @@ impl Dashboard {
                     board
                         .column(*c)
                         .into_iter()
-                        .filter(|a| matches(a, &filter))
+                        .filter(|a| a.matches_query(&filter))
                         .cloned()
                         .collect()
                 })
@@ -135,7 +135,9 @@ impl Dashboard {
             ui.label(RichText::new("corral").weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ new").clicked() {
-                    let cwd = launch::default_cwd(self.selected_agent(&columns).and_then(|a| a.cwd.as_deref()));
+                    let cwd = launch::default_cwd(
+                        self.selected_agent(&columns).and_then(|a| a.cwd.as_deref()),
+                    );
                     self.status = match self.launcher.spawn(&cwd, None) {
                         Ok(()) => format!("spawned in {}", tilde(&cwd.to_string_lossy())),
                         Err(e) => format!("spawn: {e}"),
@@ -401,36 +403,6 @@ fn compose_for(agent: &Agent) -> Option<Compose> {
     })
 }
 
-/// Whether an agent's card matches the filter: every whitespace-separated term
-/// must appear (case-insensitive) somewhere in the card's content.
-fn matches(agent: &Agent, filter: &str) -> bool {
-    let q = filter.trim().to_lowercase();
-    if q.is_empty() {
-        return true;
-    }
-    let hay = format!(
-        "{} {} {} {}",
-        agent.title.as_deref().unwrap_or(""),
-        agent.cwd.as_deref().unwrap_or(""),
-        agent.activity.as_deref().unwrap_or(""),
-        state_word(agent),
-    )
-    .to_lowercase();
-    q.split_whitespace().all(|term| hay.contains(term))
-}
-
-/// The state word used for filtering (so "running"/"dormant" narrows).
-fn state_word(agent: &Agent) -> &'static str {
-    match agent.origin {
-        Origin::Dormant => "dormant",
-        Origin::Live => match agent.state {
-            State::RequiresAction => "requires action",
-            State::Running => "running",
-            State::Idle => "idle",
-        },
-    }
-}
-
 /// Go to an agent: focus a live window, or resume a dormant session.
 fn activate(
     agent: &Agent,
@@ -515,9 +487,10 @@ fn card_age(
 ) -> String {
     match column {
         Column::Running => quiet.get(&agent.socket_path).cloned().unwrap_or_default(),
-        Column::RequiresAction | Column::Idle => {
-            in_state.get(&agent.socket_path).cloned().unwrap_or_default()
-        }
+        Column::RequiresAction | Column::Idle => in_state
+            .get(&agent.socket_path)
+            .cloned()
+            .unwrap_or_default(),
         Column::Dormant => agent
             .session_id
             .as_deref()

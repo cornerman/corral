@@ -22,8 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use corral_core::model::{Agent, Board, Column, Origin, State};
-use corral_core::picker::{Picker, Row};
+use corral_core::model::{Agent, Board, Column, Origin};
 
 /// The heading shown above each column. Bound to the column identity (not a
 /// parallel array), so it cannot drift from `Column::ALL`.
@@ -93,97 +92,29 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
     .split(v[1])[1]
 }
 
-/// Glyph, color, and title emphasis for an agent's state in the picker. Color
-/// carries state here because the picker groups by directory, not by state, so
-/// position can no longer encode it (as it does on the board).
-fn badge(a: &Agent) -> (&'static str, Color, bool) {
-    match a.origin {
-        Origin::Dormant => ("·", Color::DarkGray, false),
-        Origin::Live => match a.state {
-            State::RequiresAction => ("●", Color::Red, true),
-            State::Running => ("●", Color::Green, false),
-            State::Idle => ("○", Color::White, false),
-        },
+/// Draw the inline content filter on the row above the footer: `/` plus the
+/// query, with a block cursor while editing. Draws nothing when idle and empty,
+/// so the status line shows through.
+pub fn render_filter(frame: &mut Frame, filter: &str, filtering: bool) {
+    if !filtering && filter.is_empty() {
+        return;
     }
-}
-
-/// Draw the `/` jump picker: a query line and scope label, then agents grouped
-/// under dim directory headers, each row a colored state glyph + title + dim
-/// activity. Enter goes, Shift+Enter spawns, Tab cycles the scope.
-pub fn render_picker(frame: &mut Frame, picker: &Picker) {
-    let area = centered(frame.area(), 70, 60);
-    frame.render_widget(Clear, area);
-    let block = Block::default()
-        .title(format!(
-            " jump [{}] — filter, tab scope, ⏎ go, ⇧⏎ new, esc cancel ",
-            picker.filter_label()
-        ))
-        .borders(Borders::ALL);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
-    frame.render_widget(Paragraph::new(format!("> {}", picker.query)), rows[0]);
-
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut items: Vec<ListItem> = Vec::new();
-    // The list index of the selected agent row (headers are interleaved, so it
-    // differs from `picker.selected`, which counts only agent rows).
-    let mut highlight: Option<usize> = None;
-    let mut agent_seen = 0usize;
-    for row in picker.rows() {
-        match row {
-            Row::Header(dir) => {
-                let shown = abbrev_cwd(dir, rows[1].width as usize);
-                let faint = Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM);
-                // Blank line before each group (except the first) sets the
-                // directory groups apart without bloating every row.
-                let mut lines = Vec::new();
-                if !items.is_empty() {
-                    lines.push(Line::from(""));
-                }
-                lines.push(path_line(&shown, dim, faint));
-                items.push(ListItem::new(lines));
-            }
-            Row::Agent(a) => {
-                let selected = agent_seen == picker.selected;
-                if selected {
-                    highlight = Some(items.len());
-                }
-                agent_seen += 1;
-                let (glyph, color, bold) = badge(a);
-                let mut title_style = Style::default().fg(color);
-                if bold {
-                    title_style = title_style.add_modifier(Modifier::BOLD);
-                }
-                if a.origin == Origin::Dormant {
-                    title_style = title_style.add_modifier(Modifier::DIM);
-                }
-                let name = a.title.as_deref().unwrap_or("(unnamed)");
-                // A colored bar marks the selected entry (the board's motif);
-                // others get matching blank width so titles stay aligned.
-                let bar = if selected { "▍ " } else { "  " };
-                let mut spans = vec![
-                    Span::styled(bar.to_string(), Style::default().fg(color)),
-                    Span::styled(format!("{glyph} "), Style::default().fg(color)),
-                    Span::styled(name.to_string(), title_style),
-                ];
-                if let Some(act) = a.activity.as_deref() {
-                    spans.push(Span::styled(format!("   {act}"), dim));
-                }
-                items.push(ListItem::new(Line::from(spans)));
-            }
-        }
-    }
-    // A uniform dark background marks the selection in one clean shade,
-    // keeping each span's own color (REVERSED would invert them piecemeal into
-    // a patchy two-tone bar).
-    let list = List::new(items).highlight_style(Style::default().bg(Color::Indexed(238)));
-    let mut state = ListState::default();
-    state.select(highlight);
-    frame.render_stateful_widget(list, rows[1], &mut state);
+    let footer = footer_rect(frame.area());
+    let row = Rect {
+        y: footer.y.saturating_sub(1),
+        height: 1,
+        ..footer
+    };
+    let cursor = if filtering { "\u{2588}" } else { "" };
+    let style = if filtering {
+        Style::default()
+    } else {
+        Style::default().add_modifier(Modifier::DIM)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(format!("/{filter}{cursor}")).style(style)),
+        row,
+    );
 }
 
 /// Draw the `m` message composer as a centered overlay: the target agent in
@@ -220,7 +151,7 @@ fn footer_items() -> [(Option<FooterAction>, &'static str); 7] {
         (None, "↑↓←→ move"),
         (Some(FooterAction::Go), "⏎ go"),
         (Some(FooterAction::New), "⇧⏎ new"),
-        (Some(FooterAction::Jump), "/ jump"),
+        (Some(FooterAction::Jump), "/ filter"),
         (Some(FooterAction::Msg), "m msg"),
         (Some(FooterAction::Delete), "d delete"),
         (Some(FooterAction::Quit), "q quit"),

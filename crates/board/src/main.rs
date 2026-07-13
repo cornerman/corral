@@ -19,9 +19,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use ratatui::layout::Rect;
@@ -33,7 +33,6 @@ use corral_core::discovery::{self, RegistryEntry};
 use corral_core::focus::{SwayFocuser, WindowFocuser};
 use corral_core::launch::{self, KittyLauncher, Launcher};
 use corral_core::model::{Board, Origin, Update};
-use corral_core::picker::Picker;
 use corral_core::prompt;
 use corral_core::{model, nav, paths, watch};
 
@@ -93,51 +92,8 @@ struct Compose {
 /// The active input overlay. Exactly one can be open, so the modes are
 /// exclusive by construction: no parallel `Option`s to keep consistent.
 enum Overlay {
-    /// `/`: fuzzy-pick any agent to go to (Enter) or spawn beside (Shift+Enter).
-    Jump(Picker),
     /// `m`: compose a message to a live agent.
     Compose(Compose),
-}
-
-/// The outcome of a key press inside a picker overlay.
-enum PickerInput {
-    /// The query or selection changed; keep the picker open.
-    Continue,
-    /// Esc: close without acting.
-    Cancel,
-    /// Enter: go to the current selection, then close.
-    Submit,
-    /// Shift+Enter: spawn a new agent in the selection's dir, then close.
-    SubmitSpawn,
-}
-
-fn picker_input(p: &mut Picker, key: KeyEvent) -> PickerInput {
-    match key.code {
-        KeyCode::Esc => PickerInput::Cancel,
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => PickerInput::SubmitSpawn,
-        KeyCode::Enter => PickerInput::Submit,
-        KeyCode::Up => {
-            p.up();
-            PickerInput::Continue
-        }
-        KeyCode::Down => {
-            p.down();
-            PickerInput::Continue
-        }
-        KeyCode::Backspace => {
-            p.backspace();
-            PickerInput::Continue
-        }
-        KeyCode::Char(c) => {
-            p.push(c);
-            PickerInput::Continue
-        }
-        KeyCode::Tab => {
-            p.cycle_filter();
-            PickerInput::Continue
-        }
-        _ => PickerInput::Continue,
-    }
 }
 
 /// Feed one event to the open overlay. Returns the overlay to keep it open, or
@@ -145,7 +101,6 @@ fn picker_input(p: &mut Picker, key: KeyEvent) -> PickerInput {
 fn handle_overlay(
     mut ov: Overlay,
     ev: Event,
-    focuser: &dyn WindowFocuser,
     launcher: &dyn Launcher,
     status: &mut String,
 ) -> Option<Overlay> {
@@ -156,27 +111,6 @@ fn handle_overlay(
         return Some(ov);
     }
     match &mut ov {
-        Overlay::Jump(p) => match picker_input(p, key) {
-            PickerInput::Continue => Some(ov),
-            PickerInput::Cancel => None,
-            PickerInput::Submit => {
-                if let Some(a) = p.selected_agent() {
-                    if let Err(e) = activate(a, focuser, launcher) {
-                        *status = e;
-                    }
-                }
-                None
-            }
-            PickerInput::SubmitSpawn => {
-                if let Some(a) = p.selected_agent() {
-                    let cwd = launch::default_cwd(a.cwd.as_deref());
-                    if let Err(e) = launcher.spawn(&cwd, None) {
-                        *status = format!("spawn: {e}");
-                    }
-                }
-                None
-            }
-        },
         Overlay::Compose(c) => match key.code {
             KeyCode::Esc => None,
             KeyCode::Enter => {
@@ -227,8 +161,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let mut dead_sockets: HashSet<PathBuf> = HashSet::new();
     let mut selected: usize = 0;
     let mut status = String::new();
-    // The active input overlay, if any (`c` spawn dir, `f` focus agent, `m`
-    // compose a message). One at a time by construction.
+    // Inline content filter (`/` focuses it). When non-empty the board shows
+    // only matching cards; `filtering` is the text-edit mode.
+    let mut filter = String::new();
+    let mut filtering = false;
+    // The active input overlay, if any (`m` compose a message).
     let mut overlay: Option<Overlay> = None;
     // Inter-agent messaging lives entirely in the corrald daemon now; the board
     // is a pure viewer of the registry plus the operator's own actions (focus,
@@ -319,6 +256,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             board.apply(update);
         }
 
+        board.set_filter(filter.clone());
         let counts = board.column_counts();
         let count: usize = counts.iter().sum();
         if selected >= count {
@@ -340,8 +278,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         };
         terminal.draw(|f| {
             ui::render(f, &board, selected, &status, &mut list_states, &meta);
+            ui::render_filter(f, &filter, filtering);
             match &overlay {
-                Some(Overlay::Jump(p)) => ui::render_picker(f, p),
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
                 None => {}
             }
@@ -349,14 +287,45 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
 
         if event::poll(POLL)? {
             let ev = event::read()?;
+            // Filter edit mode: printable keys edit the query, arrows still
+            // navigate, Enter keeps it, Esc clears and exits.
+            if filtering {
+                if let Event::Key(key) = ev {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Esc => {
+                                filtering = false;
+                                filter.clear();
+                            }
+                            KeyCode::Enter => filtering = false,
+                            KeyCode::Backspace => {
+                                filter.pop();
+                            }
+                            KeyCode::Down => selected = nav::move_row(selected, &counts, true),
+                            KeyCode::Up => selected = nav::move_row(selected, &counts, false),
+                            KeyCode::Left => selected = nav::move_col(selected, &counts, false),
+                            KeyCode::Right => selected = nav::move_col(selected, &counts, true),
+                            KeyCode::Char(c) => filter.push(c),
+                            _ => {}
+                        }
+                    }
+                }
+                continue;
+            }
             // Any open overlay captures all input until it closes.
             if let Some(ov) = overlay.take() {
-                overlay = handle_overlay(ov, ev, &focuser, &launcher, &mut status);
+                overlay = handle_overlay(ov, ev, &launcher, &mut status);
                 continue;
             }
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('q') => break,
+                    KeyCode::Esc => {
+                        if filter.is_empty() {
+                            break;
+                        }
+                        filter.clear();
+                    }
                     KeyCode::Down | KeyCode::Char('j') => {
                         selected = nav::move_row(selected, &counts, true);
                     }
@@ -379,10 +348,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         dismiss_selected(dir, &focuser, &board, selected, &mut status);
                     }
                     KeyCode::Char('/') => {
-                        // Fuzzy-pick any agent: Enter goes to it, Shift+Enter
-                        // spawns a fresh agent in its dir.
+                        // Focus the inline filter; typing narrows the cards.
                         status.clear();
-                        overlay = open_jump(&board);
+                        filtering = true;
                     }
                     KeyCode::Char('m') => {
                         // Message any agent: a live one over its socket, a
@@ -413,7 +381,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                 }
                                 ui::FooterAction::Jump => {
                                     status.clear();
-                                    overlay = open_jump(&board);
+                                    filtering = true;
                                 }
                                 ui::FooterAction::Msg => {
                                     status.clear();
@@ -501,12 +469,6 @@ fn activate(
             _ => Err("resume: dormant record missing cwd/resume".into()),
         },
     }
-}
-
-/// Open the `/` jump picker over all agents (Enter goes, Shift+Enter spawns).
-fn open_jump(board: &Board) -> Option<Overlay> {
-    let agents: Vec<model::Agent> = board.selectable().into_iter().cloned().collect();
-    (!agents.is_empty()).then(|| Overlay::Jump(Picker::new(agents)))
 }
 
 /// Open the compose overlay to message the selected agent, if any.
@@ -612,28 +574,5 @@ mod tests {
         assert!(matches!(click_action(3, 3), Click::Go));
         assert!(matches!(click_action(3, 1), Click::Select));
         assert!(matches!(click_action(0, 5), Click::Select));
-    }
-
-    #[test]
-    fn shift_enter_in_picker_is_spawn() {
-        let mut p = Picker::new(vec![model::Agent {
-            socket_path: std::path::PathBuf::from("/s/a.sock"),
-            pid: 1,
-            label: "pi".into(),
-            session_id: Some("a".into()),
-            title: Some("a".into()),
-            cwd: Some("/tmp".into()),
-            state: model::State::Idle,
-            origin: model::Origin::Live,
-            resume: None,
-            activity: None,
-        }]);
-        let plain = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let shift = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        assert!(matches!(picker_input(&mut p, plain), PickerInput::Submit));
-        assert!(matches!(
-            picker_input(&mut p, shift),
-            PickerInput::SubmitSpawn
-        ));
     }
 }
