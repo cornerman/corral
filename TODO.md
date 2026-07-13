@@ -70,6 +70,14 @@ One per-session file drives discovery, isolation, and resume.
       to start.
 - [ ] nixos: a systemd user service to keep `corrald` alive
       (restart-on-failure), and a WM keybind to summon the board window.
+- [ ] "Show details" proper window: today the tray's Show details pops a
+      `notify-send` notification (from / to / body). Replace it with a small,
+      clean native window. This is corral's first pixel surface, so it is gated
+      on the bigger "should the board become a GUI app / a launcher" decision.
+      Design branches if built standalone: an external dialog
+      (`zenity`/`kdialog`/`yad`, zero Rust deps, generic look) vs a tiny spawned
+      helper binary (`fltk` small / `egui` nicer, designed look, +dep +crate).
+      Do NOT embed a windowing toolkit in the headless `corrald` process.
 - [x] Addressing by target dir (spawn if absent; `force_new` for a dedicated
       agent) OR by exact `target_session` (deliver if live, else resume its
       dormant record). Session addressing makes replies land on the precise
