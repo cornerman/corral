@@ -88,7 +88,11 @@ your terminal (pi, interactive TUI)              another terminal
     (spawn) or `kitty -e pi --session <path>` (resume a dormant session),
     always via `setsid --fork` so the window is detached from corral (survives
     the board exiting, no zombie, and — since it is not a descendant of corral
-    — the focus parent-walk cannot climb into the board's own window).
+    — the focus parent-walk cannot climb into the board's own window). Both
+    take an optional initial `message` submitted as pi's first prompt (a
+    positional arg), so a message can be delivered atomically at launch. pi's
+    parser has no `--` marker and treats a leading `-`/`@` as a flag/file, so
+    such a message is space-guarded (pi trims it); `pi_args` is unit-tested.
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Unit-tested against a throwaway listener.
@@ -97,11 +101,15 @@ your terminal (pi, interactive TUI)              another terminal
     <dir> (session <id>)]` provenance/reply-handle tag, and read/append the
     `(sender -> target)` whitelist. Pure, unit-tested.
   - `src/router.rs` — `Router`: routes agent-initiated messages from the
-    outbox to a target directory (reuse or spawn) or an exact session (deliver
-    if live, else resume its dormant record). Owns the authorization
-    decisions, in-flight spawns/resumes, and the one message awaiting operator
-    approval; the event loop polls it and forwards the decision (key or click).
-    Unit-tested (gating, spawn, session delivery, unknown-session drop).
+    outbox to a target directory (reuse a live agent or spawn one) or an exact
+    session (deliver if live, else resume its dormant record). Delivery to a
+    not-yet-live target hands the message to the launcher as the new session's
+    first prompt (launch-with-message), so a spawn/resume delivers atomically
+    with no wait-for-announce state; an already-live target gets it over its
+    socket. Owns the authorization decisions and the one message awaiting
+    operator approval; the event loop polls it and forwards the decision (key
+    or click). Unit-tested (gating, spawn-with-message, session delivery,
+    unknown-session drop).
   - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
     pending approval to a desktop notification with Allow once / Allow always /
     Deny buttons (`notify-send -A`), reporting the choice back on a channel
@@ -216,7 +224,7 @@ message/tool updates) is ACP v1.
   spawns a new agent in the selected agent's cwd; `/` opens a fuzzy jump picker
   over all agents (Enter goes, Shift+Enter spawns beside); `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant
-  one by resuming it first, then delivering when it announces; `d` close the
+  one by resuming it with the message as its first prompt; `d` close the
   selected live agent (kill its terminal process, closing the window; pi then
   goes dormant and resumable) or forget the selected dormant record; `q`/Esc
   quit. A left click is two-stage: first click selects, a click on the

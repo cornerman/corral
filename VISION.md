@@ -201,8 +201,10 @@ daily-use ergonomics.
 2. **Prove cross-harness with a second adapter.** A Claude Code (or Codex)
    announce shim beside `corral-announce`. Two harnesses on one board is the
    demonstration that makes the claim real; one harness is just a tool.
-3. **launch-with-message** (in progress on branch
-   `corral-launch-with-message`): delete the wait-for-announce machinery.
+3. **launch-with-message** (done): the launcher takes an optional initial
+   message submitted as the new session's first prompt, so delivery to a
+   not-yet-live target is atomic. Deleted `RouteState`, the pre-existing-socket
+   diffing, and `OpDelivery`/`pump_operator` from the router.
 4. **outbox to socket**: fail-loud ack on submit.
 5. **systemd unit for the scratchpad** plus a hide behavior (nixos side for the
    unit; corral side for hide). The real reliability fix.

@@ -115,8 +115,8 @@ fn whitelist_file() -> Option<PathBuf> {
 enum ComposeTarget {
     /// A live agent: deliver straight to its socket.
     Live(PathBuf),
-    /// A dormant session (by id): resume it, then deliver.
-    Dormant(String),
+    /// A dormant session: resume it with the message as its first prompt.
+    Dormant { cwd: String, resume: String },
 }
 
 /// The operator composing a message (opened with `m`): the target, a display
@@ -180,7 +180,6 @@ fn handle_overlay(
     ev: Event,
     focuser: &dyn WindowFocuser,
     launcher: &dyn Launcher,
-    router: Option<&mut Router>,
     status: &mut String,
 ) -> Option<Overlay> {
     let Event::Key(key) = ev else {
@@ -204,7 +203,7 @@ fn handle_overlay(
             PickerInput::SubmitSpawn => {
                 if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
                     let cwd = launch::default_cwd(Some(a));
-                    if let Err(e) = launcher.spawn(&cwd) {
+                    if let Err(e) = launcher.spawn(&cwd, None) {
                         *status = format!("spawn: {e}");
                     }
                 }
@@ -223,15 +222,14 @@ fn handle_overlay(
                                 Err(e) => format!("send: {e}"),
                             };
                         }
-                        // Dormant: hand it to the router, which resumes the
-                        // session and delivers once it announces.
-                        ComposeTarget::Dormant(session_id) => match router {
-                            Some(r) => {
-                                r.operator_send(session_id.clone(), text.to_string());
-                                *status = format!("resuming {} to deliver", c.label);
-                            }
-                            None => *status = "send: unavailable (no HOME)".into(),
-                        },
+                        // Dormant: resume the session with the message as its
+                        // first prompt (atomic, no wait-for-announce).
+                        ComposeTarget::Dormant { cwd, resume } => {
+                            *status = match launcher.resume(Path::new(cwd), resume, Some(text)) {
+                                Ok(()) => format!("resuming {} to deliver", c.label),
+                                Err(e) => format!("resume: {e}"),
+                            };
+                        }
                     }
                 }
                 None
@@ -478,7 +476,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             }
             // Any open overlay captures all input until it closes.
             if let Some(ov) = overlay.take() {
-                overlay = handle_overlay(ov, ev, &focuser, &launcher, router.as_mut(), &mut status);
+                overlay = handle_overlay(ov, ev, &focuser, &launcher, &mut status);
                 continue;
             }
             match ev {
@@ -623,7 +621,7 @@ fn activate(
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume) {
             (Some(cwd), Some(resume)) => launcher
-                .resume(Path::new(cwd), resume)
+                .resume(Path::new(cwd), resume, None)
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume".into()),
         },
@@ -667,7 +665,13 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
     let a = board.selectable().get(selected).copied()?;
     let target = match a.origin {
         Origin::Live => Some(ComposeTarget::Live(a.socket_path.clone())),
-        Origin::Dormant => a.session_id.clone().map(ComposeTarget::Dormant),
+        Origin::Dormant => match (&a.cwd, &a.resume) {
+            (Some(cwd), Some(resume)) => Some(ComposeTarget::Dormant {
+                cwd: cwd.clone(),
+                resume: resume.clone(),
+            }),
+            _ => None,
+        },
     }?;
     Some(Overlay::Compose(Compose {
         target,
@@ -680,7 +684,7 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
 fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &mut String) {
     status.clear();
     let cwd = launch::default_cwd(board.selectable().get(selected).copied());
-    if let Err(e) = launcher.spawn(&cwd) {
+    if let Err(e) = launcher.spawn(&cwd, None) {
         *status = format!("spawn: {e}");
     }
 }
