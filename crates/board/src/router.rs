@@ -101,8 +101,11 @@ impl Router {
         let mut status = op_status.take();
         for (file, msg) in pending {
             let Some(target_cwd) = target_cwd(&msg, board) else {
-                // A session target corral has never seen: nothing to deliver
-                // to. Drop it rather than prompt for an undeliverable message.
+                // A session target absent from the registry: nothing to
+                // deliver to. Drop it rather than prompt for an undeliverable
+                // message. A session that exists but is not yet discovered (a
+                // live socket whose watcher has not announced) resolves its cwd
+                // through the registry, so it is not dropped here.
                 let _ = std::fs::remove_file(&file);
                 self.routing.remove(&msg.id);
                 status = Some("route: unknown target session".into());
@@ -259,6 +262,13 @@ impl Router {
         let (cwd, resume) = match board.dormant_by_session(session_id) {
             Some(d) => (d.cwd.clone(), d.resume.clone()),
             None => {
+                // Known to the registry but neither live nor dormant yet: a
+                // live socket whose watcher has not announced (e.g. right
+                // after corral starts). Wait; a later poll's live_by_session
+                // branch delivers it. Only a session truly absent is dropped.
+                if board.registry_has_session(session_id) {
+                    return None;
+                }
                 let _ = std::fs::remove_file(file);
                 self.routing.remove(&msg.id);
                 return Some(format!("route: session {session_id} not found"));
@@ -305,7 +315,13 @@ impl Router {
 fn target_cwd(msg: &Message, board: &Board) -> Option<String> {
     match &msg.target {
         Target::Dir(d) => Some(d.clone()),
-        Target::Session(sid) => board.by_session(sid).and_then(|a| a.cwd.clone()),
+        // A discovered agent's own cwd first, then the registry, so a live
+        // session whose watcher has not announced yet still resolves its cwd
+        // (and is not dropped as unknown).
+        Target::Session(sid) => board
+            .by_session(sid)
+            .and_then(|a| a.cwd.clone())
+            .or_else(|| board.registry_session_cwd(sid)),
     }
 }
 
@@ -412,6 +428,49 @@ mod tests {
         r.poll(&Board::default(), &launcher);
         assert!(r.pending().is_none(), "no one to ask about");
         assert!(!outbox.join("1.json").exists(), "dropped as undeliverable");
+    }
+
+    #[test]
+    fn known_but_undiscovered_session_is_kept_not_dropped() {
+        // Regression: right after corral starts, watchers have not announced,
+        // so a currently-live session is neither on the live board nor dormant
+        // (its record still names a socket). A session-addressed message must
+        // wait for the watcher, not be dropped as "unknown target".
+        let tmp = tempfile::tempdir().unwrap();
+        let outbox = outbox_in(tmp.path());
+        let mut board = Board::default();
+        board.sync_registry(
+            &[crate::discovery::RegistryEntry {
+                session_id: "sid-7".into(),
+                cwd: Some("/b".into()),
+                title: None,
+                // A live socket, but no watcher Upsert has arrived yet.
+                socket: Some(tmp.path().join("pi-1.sock")),
+                resume: Some("/s/sid-7.jsonl".into()),
+                label: Some("pi".into()),
+                last_seen: None,
+            }],
+            &HashSet::new(),
+        );
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        std::fs::write(
+            outbox.join("1.json"),
+            r#"{"id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
+        )
+        .unwrap();
+        let mut r = Router::new(outbox.clone(), whitelist);
+        let launcher = StubLauncher {
+            spawns: Cell::new(0),
+        };
+
+        r.poll(&board, &launcher);
+        assert!(
+            outbox.join("1.json").exists(),
+            "kept: session known to the registry, just not yet discovered"
+        );
+        assert_eq!(launcher.spawns.get(), 0, "live socket needs no resume");
+        assert!(r.pending().is_none(), "whitelisted: no operator prompt");
     }
 
     #[test]
