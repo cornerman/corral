@@ -53,8 +53,11 @@ your terminal (pi, interactive TUI)              another terminal
     |  broadcasts activity + state_update            |  shift+enter -> spawn agent (kitty)
     |  clears socket + unlinks on session_shutdown   |  m -> send prompt to agent
     |                                                |
-  corral_message_agent tool -> ~/.corral/outbox/<id>.json --+  routes each mailbox file:
-    (asks to message a target dir or session)            authorize (whitelist +
+  corral_message_agent tool -> ~/.corral/corrald.sock ----+  per submission (control.rs):
+    (asks to message a target dir or session)            parse, find recipient,
+    <- ack: accepted / blocked /                         ack the verdict, then
+       recipient_not_found / directory_not_known         enqueue to the router:
+                                                         authorize (whitelist +
                                                          operator popup), resolve
                                                          target dir/session (spawn
                                                          or resume if needed),
@@ -100,20 +103,31 @@ your terminal (pi, interactive TUI)              another terminal
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Unit-tested against a throwaway listener.
-  - `src/mailbox.rs` — the outbox: parse `corral_message_agent` mailbox files (a
-    `Target` is a directory or an exact session id), add the `[from agent in
-    <dir> (session <id>)]` provenance/reply-handle tag, and read/append the
-    `(sender -> target)` whitelist. Pure, unit-tested.
-  - `src/router.rs` — `Router`: routes agent-initiated messages from the
-    outbox to a target directory (reuse a live agent or spawn one) or an exact
-    session (deliver if live, else resume its dormant record). Delivery to a
-    not-yet-live target hands the message to the launcher as the new session's
-    first prompt (launch-with-message), so a spawn/resume delivers atomically
-    with no wait-for-announce state; an already-live target gets it over its
-    socket. Owns the authorization decisions and the one message awaiting
-    operator approval; the event loop polls it and forwards the decision (key
-    or click). Unit-tested (gating, spawn-with-message, session delivery,
-    unknown-session drop).
+  - `src/mailbox.rs` — cross-session message types: parse a submitted message (a
+    `Target` is a directory or an exact session id), `classify` it into an `Ack`
+    (accepted / blocked / recipient_not_found / directory_not_known) from
+    resolved facts, add the `[from agent in <dir> (session <id>)]`
+    provenance/reply-handle tag, and read/append the `(sender -> target)`
+    whitelist. Pure, unit-tested.
+  - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
+    `$CORRAL_CONTROL_SOCKET`). A background thread accepts one submission per
+    connection: read the request line, parse, find the recipient (registry
+    scan for a session, dir-exists for a directory), ack the verdict, and (if
+    routable) hand the message to the router over a channel. Submission thus
+    fails loud when corral is down (connect fails) rather than piling up a
+    silent file queue. Ack is synchronous; delivery and the approval gate run
+    later in the router. Unit-tested against a throwaway socket.
+  - `src/router.rs` — `Router`: routes agent-initiated messages (enqueued from
+    the control socket) to a target directory (reuse a live agent or spawn one)
+    or an exact session (deliver if live, else resume its dormant record).
+    Delivery to a not-yet-live target hands the message to the launcher as the
+    new session's first prompt (launch-with-message), so a spawn/resume
+    delivers atomically with no wait-for-announce state; an already-live target
+    gets it over its socket. Holds an in-memory queue (no file spool), the
+    authorization decisions, and the one message awaiting operator approval;
+    the event loop enqueues, polls, and forwards the decision (key or click).
+    A live-but-undiscovered session defers for a later poll. Unit-tested
+    (gating, spawn-with-message, session delivery, allow/deny, defer).
   - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
     pending approval to a desktop notification with Allow once / Allow always /
     Deny buttons (`notify-send -A`), reporting the choice back on a channel
@@ -173,22 +187,31 @@ your terminal (pi, interactive TUI)              another terminal
   `turn_start`/`turn_end` and while the interactive `question` tool blocks on
   the user. A newly connected client is seeded with the current `state_update`.
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
-  (`target_dir` or `target_session`, `message`, `force_new`) that queues a
-  cross-session message as `~/.corral/outbox/<id>.json` (stamped with the
-  sender's `fromSession` as a reply handle) for corral to route. Install:
+  (`target_dir` or `target_session`, `message`, `force_new`) that submits a
+  cross-session message over `~/.corral/corrald.sock` (stamped with the
+  sender's `fromSession` as a reply handle) and reports corral's ack (accepted
+  / blocked / recipient_not_found / directory_not_known); a connect failure is
+  surfaced as "corral not running" (fail loud, no silent queue). Install:
   symlink into
   `~/.pi/agent/extensions/`.
 
 ## Inter-Agent Messaging
 
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
-corral is the sole trusted cross-workdir router. An agent calls `corral_message_agent`,
-which drops a mailbox file in `~/.corral/outbox`; corral picks it up on the next
-tick, authorizes the `(sender-dir -> target-dir)` pair against the whitelist (or
-asks the operator, by key or mouse click: Enter allow once, `a` allow always,
-Esc deny),
-resolves the target, and injects the message over that agent's socket with a
-`[from agent in <dir> (session <id>)]` provenance tag. Delivery reuses
+corral is the sole trusted cross-workdir router. An agent calls
+`corral_message_agent`, which submits the message over `~/.corral/corrald.sock`
+(reachable because `~/.corral` is on the sandbox allowlist). corral parses it,
+finds the recipient, and returns a synchronous ack: `recipient_not_found` /
+`directory_not_known` if there is nowhere to send, `blocked` if the
+`(sender-dir -> target-dir)` pair needs approval, else `accepted`. A connect
+failure means corral is down, so submission fails loud instead of queuing
+silently. Routable messages are then routed asynchronously: corral authorizes
+the pair against the whitelist (or asks the operator, by key or mouse click:
+Enter allow once, `a` allow always, Esc deny), resolves the target, and injects
+the message over that agent's socket with a `[from agent in <dir> (session
+<id>)]` provenance tag. The approval gate is not awaited by the sender (a
+human is unbounded): a `blocked` message is acked at once and delivered after
+approval, without a delivery ack. Delivery reuses
 `prompt::send_prompt`, the same path as operator messaging (`m`). A pending
 approval is also mirrored to a desktop notification (`notify-send -A`) whose
 Allow/Deny buttons resolve it without switching to the board; best-effort, and
@@ -243,9 +266,14 @@ message/tool updates) is ACP v1.
   `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /
   `$CORRAL_SOCKET_DIR`). No TCP ports, no network exposure. Peer authentication
   relies on the directory permissions.
-- Inter-agent messaging: `corral_message_agent` writes `$HOME/.corral/outbox/` (override
-  `$CORRAL_OUTBOX_DIR`); corral authorizes `(sender -> target)` dir pairs against
-  `$HOME/.corral/whitelist` (override `$CORRAL_WHITELIST`) plus an operator popup.
+- Inter-agent messaging: `corral_message_agent` submits over
+  `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`), corral's
+  control socket; no TCP, peer auth by directory permissions. corral authorizes
+  `(sender -> target)` dir pairs against `$HOME/.corral/whitelist` (override
+  `$CORRAL_WHITELIST`) plus an operator popup. A message accepted over the
+  socket lives only in corral's memory until routed (no on-disk spool): a corral
+  crash before routing loses it, an accepted tradeoff under the fire-and-forget
+  contract and the systemd keep-alive.
 
 ## Known Limitations (v1, deliberate)
 

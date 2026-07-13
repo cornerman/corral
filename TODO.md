@@ -54,9 +54,12 @@ One per-session file drives discovery, isolation, and resume.
       delivered over its socket via `session/prompt` (`prompt::send_prompt`,
       fire-and-forget). Spawn-in-dir-then-send is folded into the
       agent-initiated routing below.
-- [x] Agent-initiated transport: `corral_message_agent` tool writes
-      `~/.corral/outbox/<id>.json`; corral routes each tick (`mailbox.rs` +
-      `router.rs`), async and board-down-tolerant.
+- [x] Agent-initiated transport: `corral_message_agent` submits over the
+      `~/.corral/corrald.sock` control socket (`control.rs`); corral parses,
+      finds the recipient, acks synchronously (accepted / blocked /
+      recipient_not_found / directory_not_known), and enqueues routable
+      messages into `router.rs`. A connect failure fails loud (corral down);
+      accepted messages are in-memory only until routed (no on-disk spool).
 - [x] Addressing by target dir (spawn if absent; `force_new` for a dedicated
       agent) OR by exact `target_session` (deliver if live, else resume its
       dormant record). Session addressing makes replies land on the precise

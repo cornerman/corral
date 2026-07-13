@@ -1,11 +1,11 @@
-//! The outbox: agent-initiated cross-session messages. The `corral_message_agent`
-//! tool drops a `<id>.json` mailbox file here; corral is the trusted router
-//! that authorizes, resolves the target directory, and injects the message.
-//! Parsing and authorization are pure and unit-tested; the IO wrappers are
-//! thin.
+//! Agent-initiated cross-session messages. The `corral_message_agent` tool
+//! submits a message over the control socket (`corrald.sock`); corral is the
+//! trusted router that authorizes, resolves the target, and injects the
+//! message. Parsing, classification, and authorization are pure and
+//! unit-tested; the IO wrappers are thin.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Who a message is addressed to. A directory reaches whoever works there
 /// (spawning one if none); a session reaches exactly that agent (resuming it if
@@ -53,6 +53,57 @@ impl Message {
     }
 }
 
+/// The synchronous verdict corral returns to a message submitter over the
+/// control socket. It answers only what is knowable at once from the registry
+/// and whitelist; actual delivery (and the operator approval gate) happens
+/// afterward in the router. `Malformed` is handled before classification (a
+/// parse failure), so it is not a variant here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ack {
+    /// Target resolves and the `(sender -> target)` pair is whitelisted: the
+    /// router will deliver it.
+    Accepted,
+    /// Target resolves but the pair is not whitelisted: held for the operator's
+    /// approval. The sender is told now, not made to wait on a human.
+    Blocked,
+    /// A `target_session` that is not in the registry: nowhere to send.
+    RecipientNotFound,
+    /// A `target_dir` that is not an existing directory: nowhere to spawn.
+    DirectoryNotKnown,
+}
+
+impl Ack {
+    /// The wire word sent back over the control socket.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Ack::Accepted => "accepted",
+            Ack::Blocked => "blocked",
+            Ack::RecipientNotFound => "recipient_not_found",
+            Ack::DirectoryNotKnown => "directory_not_known",
+        }
+    }
+
+    /// Whether the router should route this message (only resolvable targets).
+    pub fn routable(self) -> bool {
+        matches!(self, Ack::Accepted | Ack::Blocked)
+    }
+}
+
+/// Classify a parsed message from resolved facts (pure, trivially tested).
+/// `target_cwd` is `Some` when the recipient is found (a known session's cwd,
+/// or an existing target directory), else `None`. `whitelisted` is consulted
+/// only when the recipient is found.
+pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) -> Ack {
+    match target_cwd {
+        None => match target {
+            Target::Session(_) => Ack::RecipientNotFound,
+            Target::Dir(_) => Ack::DirectoryNotKnown,
+        },
+        Some(_) if whitelisted => Ack::Accepted,
+        Some(_) => Ack::Blocked,
+    }
+}
+
 /// Parse one mailbox JSON document. Requires `id`, `fromCwd`, `message`, and a
 /// target (`targetSession` wins over `targetDir`); `forceNew` defaults to
 /// false. Returns `None` on malformed JSON or a missing field.
@@ -71,27 +122,6 @@ pub fn parse_message(text: &str) -> Option<Message> {
         message: s("message")?,
         force_new: v.get("forceNew").and_then(|x| x.as_bool()).unwrap_or(false),
     })
-}
-
-/// Read every pending mailbox file, newest last by filename. A missing
-/// directory is empty (no messages queued yet). Each entry pairs the file path
-/// (to delete on delivery) with its parsed message.
-pub fn scan_outbox(dir: &Path) -> Vec<(PathBuf, Message)> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<(PathBuf, Message)> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .filter_map(|p| {
-            let msg = parse_message(&std::fs::read_to_string(&p).ok()?)?;
-            Some((p, msg))
-        })
-        .collect();
-    // Stable order so the approval prompt does not jump between scans.
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
 }
 
 /// The `(from -> target)` separator in the whitelist file.
@@ -175,18 +205,21 @@ mod tests {
     }
 
     #[test]
-    fn scan_outbox_reads_json_only() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("m.json"),
-            r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi"}"#,
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("note.txt"), "ignore").unwrap();
-        let got = scan_outbox(dir.path());
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].1.id, "1");
-        assert!(scan_outbox(std::path::Path::new("/nonexistent/x")).is_empty());
+    fn classify_covers_every_ack() {
+        let sess = Target::Session("sid".into());
+        let dir = Target::Dir("/b".into());
+        // Recipient found -> whitelisted decides accepted vs blocked.
+        assert_eq!(classify(&sess, Some("/b"), true), Ack::Accepted);
+        assert_eq!(classify(&sess, Some("/b"), false), Ack::Blocked);
+        assert_eq!(classify(&dir, Some("/b"), true), Ack::Accepted);
+        // Recipient not found -> reason depends on the target kind.
+        assert_eq!(classify(&sess, None, false), Ack::RecipientNotFound);
+        assert_eq!(classify(&dir, None, false), Ack::DirectoryNotKnown);
+        // Only resolvable targets are routed onward.
+        assert!(Ack::Accepted.routable());
+        assert!(Ack::Blocked.routable());
+        assert!(!Ack::RecipientNotFound.routable());
+        assert!(!Ack::DirectoryNotKnown.routable());
     }
 
     #[test]

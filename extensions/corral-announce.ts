@@ -26,12 +26,15 @@
  *                         turn_start/turn_end, and requires_action while the
  *                         interactive `question` tool blocks on the user
  *
- * Registers one tool, corral_message_agent, that queues a cross-session message as a
- * mailbox file under $HOME/.corral/outbox/<id>.json (override with
- * $CORRAL_OUTBOX_DIR) for corral to route; the agent never reaches another
- * session directly. A message is addressed by target_dir (whoever works there)
- * or target_session (an exact agent, e.g. to reply), and is stamped with the
- * sender's session id so the receiver can reply to precisely this agent.
+ * Registers one tool, corral_message_agent, that submits a cross-session
+ * message over corral's control socket $HOME/.corral/corrald.sock (override
+ * with $CORRAL_CONTROL_SOCKET) for corral to route; the agent never reaches
+ * another session directly. Submission gets a synchronous ack (accepted /
+ * blocked / recipient_not_found / directory_not_known), and a connect failure
+ * means corral is down (fail loud, no silent queue). A message is addressed by
+ * target_dir (whoever works there) or target_session (an exact agent, e.g. to
+ * reply), and is stamped with the sender's session id so the receiver can
+ * reply to precisely this agent.
  *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
  *   pi -e /path/to/corral-announce.ts
@@ -73,12 +76,12 @@ export default function (pi: ExtensionAPI) {
 	// session/prompt requests waiting for the turn that consumes them to end.
 	const pendingPrompts: Array<{ conn: net.Socket; id: number | string }> = [];
 
-	// corral_message_agent: let this agent hand a message to another session, addressed
-	// by working directory. It only writes a mailbox file under ~/.corral/outbox;
-	// corral (the unsandboxed board) is the trusted cross-workdir router that
-	// authorizes, resolves the target, spawns an agent if none runs there, and
-	// injects with a provenance tag. Sandboxed agents cannot reach each other
-	// directly, so this indirection is the only cross-session path.
+	// corral_message_agent: let this agent hand a message to another session. It
+	// only submits over ~/.corral/corrald.sock; corral (the unsandboxed board) is
+	// the trusted cross-workdir router that authorizes, resolves the target,
+	// spawns an agent if none runs there, and injects with a provenance tag.
+	// Sandboxed agents cannot reach each other directly, so this indirection is
+	// the only cross-session path.
 	pi.registerTool({
 		name: "corral_message_agent",
 		label: "Message agent",
@@ -109,9 +112,10 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const home = process.env.HOME;
-			const outbox = process.env.CORRAL_OUTBOX_DIR ?? (home ? path.join(home, ".corral", "outbox") : undefined);
-			if (!outbox) {
-				return { content: [{ type: "text", text: "corral: no HOME; cannot queue message" }] };
+			const socketPath =
+				process.env.CORRAL_CONTROL_SOCKET ?? (home ? path.join(home, ".corral", "corrald.sock") : undefined);
+			if (!socketPath) {
+				return { content: [{ type: "text", text: "corral: no HOME; cannot submit message" }] };
 			}
 			const hasDir = typeof params.target_dir === "string" && params.target_dir.length > 0;
 			const hasSession = typeof params.target_session === "string" && params.target_session.length > 0;
@@ -120,10 +124,8 @@ export default function (pi: ExtensionAPI) {
 					content: [{ type: "text", text: "corral_message_agent: give exactly one of target_dir or target_session" }],
 				};
 			}
-			fs.mkdirSync(outbox, { recursive: true, mode: 0o700 });
-			const id = randomUUID();
 			const record: Record<string, unknown> = {
-				id,
+				id: randomUUID(),
 				fromCwd: ctx.cwd,
 				// The sender's session id, so the recipient can reply to this exact agent.
 				fromSession: ctx.sessionManager.getSessionId(),
@@ -133,15 +135,23 @@ export default function (pi: ExtensionAPI) {
 			};
 			if (hasDir) record.targetDir = params.target_dir;
 			else record.targetSession = params.target_session;
-			// Atomic write so a scanning corral never reads a half-written mailbox.
-			const file = path.join(outbox, `${id}.json`);
-			const tmp = `${file}.${process.pid}.tmp`;
-			fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
-			fs.renameSync(tmp, file);
-			const dest = hasDir ? `the agent in ${params.target_dir}` : `session ${params.target_session}`;
-			return {
-				content: [{ type: "text", text: `Queued message to ${dest} (corral will deliver it).` }],
-			};
+			const dest = hasDir ? params.target_dir : `session ${params.target_session}`;
+			// Submit over corral's control socket. A connect failure means corral is
+			// not running: fail loud here rather than silently queue undelivered.
+			let status: string;
+			try {
+				status = await submitToCorral(socketPath, record);
+			} catch {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `corral is not running (cannot reach ${socketPath}); message not sent.`,
+						},
+					],
+				};
+			}
+			return { content: [{ type: "text", text: describeAck(status, String(dest)) }] };
 		},
 	});
 
@@ -469,6 +479,55 @@ export default function (pi: ExtensionAPI) {
 			title: sessionTitle(ctx),
 			cwd: ctx.cwd,
 		};
+	}
+}
+
+// Submit a message record over corral's control socket and resolve with the
+// one-word ack status corral returns. Rejects on connect failure (corral down)
+// or if no ack arrives within a short window (so the tool never hangs).
+function submitToCorral(socketPath: string, record: Record<string, unknown>): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const conn = net.createConnection(socketPath);
+		let buf = "";
+		let done = false;
+		const finish = (fn: () => void) => {
+			if (done) return;
+			done = true;
+			conn.destroy();
+			fn();
+		};
+		conn.setTimeout(5000, () => finish(() => reject(new Error("timeout"))));
+		conn.on("connect", () => conn.write(`${JSON.stringify(record)}\n`));
+		conn.on("data", (chunk) => {
+			buf += chunk.toString("utf8");
+			const nl = buf.indexOf("\n");
+			if (nl < 0) return;
+			let status = "unknown";
+			try {
+				status = String((JSON.parse(buf.slice(0, nl)) as { status?: unknown }).status ?? "unknown");
+			} catch {}
+			finish(() => resolve(status));
+		});
+		conn.on("error", (e) => finish(() => reject(e)));
+		conn.on("close", () => finish(() => reject(new Error("closed before ack"))));
+	});
+}
+
+// Turn corral's ack status into a message for the sending agent.
+function describeAck(status: string, dest: string): string {
+	switch (status) {
+		case "accepted":
+			return `Accepted for routing by corral (to ${dest}).`;
+		case "blocked":
+			return `Submitted to ${dest}; blocked pending operator approval.`;
+		case "recipient_not_found":
+			return `Not sent: recipient not found (${dest}).`;
+		case "directory_not_known":
+			return `Not sent: directory not known (${dest}).`;
+		case "malformed":
+			return "Not sent: corral rejected the message as malformed.";
+		default:
+			return `corral responded: ${status}.`;
 	}
 }
 

@@ -254,16 +254,18 @@ direction (the agent is still fully discoverable, triageable, and messageable
 *by* the consumer).
 
 Sandboxed agents cannot reach each other's sockets, so an agent does not deliver
-directly. It drops a mailbox file and the consumer routes it:
+directly. It submits one message per connection over the consumer's control
+socket, newline-delimited JSON (request line, then one ack line):
 
-- Path: `$HOME/.corral/outbox/<id>.json` (override `$CORRAL_OUTBOX_DIR`), written
-  atomically, dir `0700`, file `0600`.
+- Socket: `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`). A
+  connect failure means the consumer is not running, so submission fails loud
+  rather than queuing silently.
 
-Fields:
+Request fields:
 
 | Field           | Type              | Meaning |
 |-----------------|-------------------|---------|
-| `id`            | string            | Unique message id (also the filename stem). |
+| `id`            | string            | Unique message id. |
 | `fromCwd`       | string            | Sender's working directory (the routing authorization is keyed on directory pairs). |
 | `fromSession`   | string            | Sender's `sessionId`, a reply handle so the receiver can answer this exact agent. |
 | `message`       | string            | The message text. |
@@ -272,10 +274,23 @@ Fields:
 | `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. |
 | `createdAt`     | string            | ISO-8601 creation time. |
 
+Ack (one line, `{"status":"…"}`), computed synchronously from the registry and
+whitelist:
+
+| `status`              | Meaning |
+|-----------------------|---------|
+| `accepted`            | Recipient found and the `(sender -> target)` pair is authorized; will route. |
+| `blocked`             | Recipient found but not authorized; held for the operator's approval (not awaited). |
+| `recipient_not_found` | `targetSession` is not in the registry. |
+| `directory_not_known` | `targetDir` is not an existing directory. |
+| `malformed`           | Unparseable request. |
+
 The consumer authorizes the `(fromCwd -> target directory)` pair, resolves the
 target (reusing, spawning, or resuming as needed), and injects the message with
 a provenance tag naming the sender directory and session. The receiver replies
-by addressing `targetSession` = the sender's `fromSession`.
+by addressing `targetSession` = the sender's `fromSession`. The ack confirms
+receipt and resolution, not delivery; a `blocked` message is delivered after
+approval without a further ack.
 
 ## Appendix B — Reference Implementation (non-normative)
 

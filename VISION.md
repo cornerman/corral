@@ -206,7 +206,11 @@ daily-use ergonomics.
    message submitted as the new session's first prompt, so delivery to a
    not-yet-live target is atomic. Deleted `RouteState`, the pre-existing-socket
    diffing, and `OpDelivery`/`pump_operator` from the router.
-4. **outbox to socket**: fail-loud ack on submit.
+4. **outbox to socket** (done): submission moved from `~/.corral/outbox` files
+   to the `~/.corral/corrald.sock` control socket. corral acks synchronously
+   (accepted / blocked / recipient_not_found / directory_not_known); a connect
+   failure fails loud instead of queuing silently. Accepted messages live in
+   corral's memory (no on-disk spool) until routed.
 5. **systemd unit for the scratchpad** plus a hide behavior (nixos side for the
    unit; corral side for hide). The real reliability fix.
 6. **Tray via `ksni`**: glanceable attention/pending count, click to open.

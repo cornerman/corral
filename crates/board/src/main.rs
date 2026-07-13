@@ -27,6 +27,7 @@ use crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 
+mod control;
 mod discovery;
 mod focus;
 mod launch;
@@ -101,9 +102,10 @@ fn registry_dir() -> Option<PathBuf> {
     corral_path("CORRAL_REGISTRY_DIR", "registry")
 }
 
-/// The outbox directory the corral-announce `corral_message_agent` tool writes to.
-fn outbox_dir() -> Option<PathBuf> {
-    corral_path("CORRAL_OUTBOX_DIR", "outbox")
+/// The control socket the corral-announce `corral_message_agent` tool submits
+/// to. Under `~/.corral`, which is on the agent sandbox allowlist.
+fn control_socket() -> Option<PathBuf> {
+    corral_path("CORRAL_CONTROL_SOCKET", "corrald.sock")
 }
 
 /// The whitelist file of pre-authorized `(sender -> target)` dir pairs.
@@ -263,11 +265,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     // The active input overlay, if any (`c` spawn dir, `f` focus agent, `m`
     // compose a message). One at a time by construction.
     let mut overlay: Option<Overlay> = None;
-    // Agent-initiated message routing (the outbox). The router owns its state;
-    // None when there is no home to resolve the outbox/whitelist under.
-    let mut router = outbox_dir()
-        .zip(whitelist_file())
-        .map(|(o, w)| Router::new(o, w));
+    // Agent-initiated message routing. Messages arrive over the control socket
+    // (corrald.sock) on a background thread and are drained into the router,
+    // which owns authorization. None when there is no home for the whitelist.
+    let mut router = whitelist_file().map(Router::new);
+    let (msg_tx, msg_rx): (Sender<mailbox::Message>, Receiver<mailbox::Message>) = mpsc::channel();
+    if let (Some(sock), Some(wl)) = (control_socket(), whitelist_file()) {
+        control::serve(sock, dir.to_path_buf(), wl, msg_tx);
+    }
     // A pending approval is mirrored to a desktop notification; its buttons
     // report back here. `notified` tracks which message id already has one, so
     // a notification fires once per pending message.
@@ -362,9 +367,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             board.apply(update);
         }
 
-        // Route agent-initiated messages when no overlay is capturing input.
-        // Cheap (a readdir), so delivery is prompt once a spawned target
-        // announces.
+        // Drain messages accepted over the control socket into the router.
+        if let Some(r) = router.as_mut() {
+            while let Ok(msg) = msg_rx.try_recv() {
+                r.enqueue(msg);
+            }
+        }
+
+        // Route queued messages when no overlay is capturing input.
         if overlay.is_none() {
             if let Some(r) = router.as_mut() {
                 if let Some(s) = r.poll(&board, &launcher) {
