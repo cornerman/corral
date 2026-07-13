@@ -72,12 +72,24 @@ impl Router {
 
     /// Route every whitelisted or already-approved message in the queue. Stops
     /// at the first message that needs a decision, storing it as `pending`.
-    /// Returns a status line when it acted. A no-op while a decision is pending
-    /// (one at a time). `entries` is a fresh registry scan (the daemon's view
+    /// Returns a status line when it acted. While a decision is pending it only
+    /// releases that message if its pair was meanwhile whitelisted, else it is a
+    /// no-op (one pending at a time). `entries` is a fresh registry scan (the daemon's view
     /// of who is live and dormant).
     pub fn poll(&mut self, entries: &[RegistryEntry], launcher: &dyn Launcher) -> Option<String> {
-        if self.pending.is_some() {
-            return None;
+        // Release a pending message without an interactive decision if its pair
+        // was meanwhile whitelisted. This is the headless approval path: with no
+        // tray/notification/GUI, an operator edits ~/.corral/whitelist and the
+        // daemon picks it up on the next tick. Otherwise a decision is still
+        // owed, so stay put (one pending at a time).
+        if let Some(p) = self.pending.take() {
+            if is_whitelisted(&self.whitelist, &p.msg.from_cwd, &p.target_cwd) {
+                self.approved.insert(p.msg.id.clone());
+                self.queue.push_front(p.msg);
+            } else {
+                self.pending = Some(p);
+                return None;
+            }
         }
         let mut status = None;
         while let Some(msg) = self.queue.pop_front() {
@@ -292,6 +304,29 @@ mod tests {
     }
 
     #[test]
+    fn whitelist_edit_releases_an_already_pending_message() {
+        // Headless approval: a message goes pending, then the pair is added to
+        // the whitelist file out of band; the next poll releases and delivers
+        // it with no operator decision.
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        let mut r = Router::new(whitelist.clone());
+        r.enqueue(dir_msg("1", "/a", "/b"));
+        let launcher = StubLauncher::default();
+
+        r.poll(&[], &launcher); // -> pending (not yet whitelisted)
+        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
+        assert_eq!(launcher.spawns.get(), 0);
+
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        r.poll(&[], &launcher); // whitelist edit picked up -> delivered
+        assert!(r.pending().is_none(), "released by the whitelist edit");
+        assert_eq!(launcher.spawns.get(), 1);
+        r.poll(&[], &launcher); // nothing left to do
+        assert_eq!(launcher.spawns.get(), 1, "released message delivers only once");
+    }
+
+    #[test]
     fn allow_always_persists_authorizes_and_delivers() {
         let tmp = tempfile::tempdir().unwrap();
         let whitelist = tmp.path().join("whitelist");
@@ -304,6 +339,8 @@ mod tests {
         assert!(mailbox::is_whitelisted(&whitelist, "/a", "/b"));
         r.poll(&[], &launcher); // re-queued -> delivered
         assert_eq!(launcher.spawns.get(), 1);
+        r.poll(&[], &launcher); // no residual re-delivery
+        assert_eq!(launcher.spawns.get(), 1, "allow_always delivers only once");
     }
 
     #[test]

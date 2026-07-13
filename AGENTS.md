@@ -372,10 +372,12 @@ message/tool updates) is ACP v1.
   `session/request_permission`.
 - Inter-agent messaging is fire-and-forget (v1): corrald injects the message and
   does not capture a reply back to the sender. A response channel is a clean v2.
-- Approvals need either a StatusNotifierHost (tray) or a notification daemon. If
-  neither runs, an `approval_needed` message stays pending in corrald's memory with no
-  way to answer it (the tray is the reliable path, so a tray host is the
-  expectation). No auto-deny; the tray count shows what is waiting.
+- Interactive approval needs either a StatusNotifierHost (tray) or a notification
+  daemon. If neither runs (a headless corrald), the headless approval path is the
+  whitelist file: add the `(sender-dir -> target-dir)` pair to
+  `~/.corral/whitelist` and the next poll releases the pending message and
+  delivers it (the file is re-read every tick). No auto-deny; the tray count
+  shows what is waiting, and the tray stays the reliable interactive path.
 - Delivery policy when the target dir's agent is Running: v1 reuses it and lets
   the extension queue the message as a follow-up (it can intrude on a
   human-driven session; the provenance tag makes that visible). Alternatives
