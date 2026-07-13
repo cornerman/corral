@@ -1,7 +1,9 @@
 //! corral-gui: a desktop (egui/eframe) attention board, a parallel presentation
-//! shell to the ratatui `corral`. This is the proof-spike: it opens a themed
-//! window (base16 Solarized, following the system light/dark preference). The
-//! dashboard (columns of cards over the registry) builds on top of it.
+//! shell to the ratatui `corral`. A flat, base16-Solarized window (following the
+//! system light/dark preference) showing the four columns of cards, with a
+//! filter line that narrows cards by their whole content.
+
+use std::process::Command;
 
 mod dashboard;
 mod theme;
@@ -24,21 +26,45 @@ fn main() -> eframe::Result {
         "corral",
         options,
         Box::new(|cc| {
-            // Provide both appearances up front; egui then follows the system
-            // light/dark preference on its own, no per-frame theme juggling.
-            cc.egui_ctx.set_visuals_of(
-                egui::Theme::Dark,
-                theme::visuals(&theme::SOLARIZED_DARK, true),
-            );
-            cc.egui_ctx.set_visuals_of(
-                egui::Theme::Light,
-                theme::visuals(&theme::SOLARIZED_LIGHT, false),
-            );
+            // Install the flat Solarized dark+light visuals, then pick the one
+            // the desktop prefers.
+            theme::install(&cc.egui_ctx);
+            let pref = if system_prefers_dark() {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            };
+            cc.egui_ctx.set_theme(pref);
             Ok(Box::new(App {
                 dashboard: Dashboard::new(),
             }))
         }),
     )
+}
+
+/// Whether the desktop prefers a dark appearance, read from the freedesktop
+/// settings portal (`org.freedesktop.appearance color-scheme`: 1 = dark,
+/// 2 = light). Zero-dependency shell-out, like corral's other integrations;
+/// defaults to dark if the portal is absent. egui/winit does not surface this
+/// on Wayland, hence the explicit query.
+fn system_prefers_dark() -> bool {
+    let out = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply=literal",
+            "--dest=org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Settings.Read",
+            "string:org.freedesktop.appearance",
+            "string:color-scheme",
+        ])
+        .output();
+    match out {
+        // "… uint32 2" is the explicit light preference; anything else
+        // (dark, no-preference, or no portal) falls to dark.
+        Ok(o) => !String::from_utf8_lossy(&o.stdout).contains("uint32 2"),
+        Err(_) => true,
+    }
 }
 
 struct App {

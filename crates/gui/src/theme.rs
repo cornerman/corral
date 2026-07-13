@@ -4,7 +4,7 @@
 //! Light means two schemes cover both system appearances, and any other base16
 //! scheme drops in by defining its 16 colors.
 
-use egui::{Color32, Stroke, Visuals};
+use egui::{Color32, CornerRadius, Stroke, Visuals};
 
 /// A base16 palette. Slots follow the base16 convention: `base00` darkest
 /// background … `base07` lightest foreground (reversed for a light scheme),
@@ -97,7 +97,9 @@ pub fn visuals(p: &Base16, dark: bool) -> Visuals {
 
     v.panel_fill = bg0;
     v.window_fill = bg0;
-    v.extreme_bg_color = bg0;
+    // Text-input fill (the filter field): a hair above the panel so it reads
+    // as a field without a border.
+    v.extreme_bg_color = bg1;
     v.faint_bg_color = bg1;
     v.window_stroke = Stroke::new(1.0, bg2);
     v.override_text_color = Some(fg);
@@ -108,7 +110,8 @@ pub fn visuals(p: &Base16, dark: bool) -> Visuals {
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, dim);
 
     v.widgets.inactive.bg_fill = bg1;
-    v.widgets.inactive.weak_bg_fill = bg1;
+    // Frameless buttons: no fill at rest, a faint wash on hover.
+    v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, fg);
 
     v.widgets.hovered.bg_fill = bg2;
@@ -122,7 +125,34 @@ pub fn visuals(p: &Base16, dark: bool) -> Visuals {
 
     v.selection.bg_fill = blue.linear_multiply(0.4);
     v.selection.stroke = Stroke::new(1.0, blue);
+
+    // Flat: no rounding anywhere, no widget frame strokes, no hover expansion.
+    v.window_corner_radius = CornerRadius::ZERO;
+    v.menu_corner_radius = CornerRadius::ZERO;
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.corner_radius = CornerRadius::ZERO;
+        w.bg_stroke = Stroke::NONE;
+        w.expansion = 0.0;
+    }
     v
+}
+
+/// Install the corral look on a context: the Solarized dark and light visuals
+/// (egui follows the system appearance) plus airy, flat spacing.
+pub fn install(ctx: &egui::Context) {
+    ctx.set_visuals_of(egui::Theme::Dark, visuals(&SOLARIZED_DARK, true));
+    ctx.set_visuals_of(egui::Theme::Light, visuals(&SOLARIZED_LIGHT, false));
+    ctx.all_styles_mut(|s| {
+        s.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        s.spacing.button_padding = egui::vec2(10.0, 5.0);
+        s.spacing.window_margin = egui::Margin::same(10);
+    });
 }
 
 #[cfg(test)]
