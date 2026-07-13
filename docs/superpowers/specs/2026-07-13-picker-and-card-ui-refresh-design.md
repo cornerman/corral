@@ -10,8 +10,9 @@ change.
 - Board cards pack the title and directory onto one line, so a long title (the
   common case) shrinks or drops the directory. The title deserves the whole
   line.
-- The Idle column has no age, so its second line is often near-empty: a wasted
-  row.
+- The Idle column shows no age, so its info line is often near-empty: a wasted
+  row. Filling it with staleness (how long it has been waiting for you) makes
+  the row earn its place.
 - A Requires Action card is the one that demands the operator, yet the question
   it is blocked on only shares a line with the age.
 - The `/` picker is a flat fuzzy list. When many sessions run across many
@@ -20,40 +21,37 @@ change.
 
 ## Part 1 — Board Card Relayout (`ui.rs::card`)
 
-Cards become variable height; the existing blank spacer line delimits them, so
-varying height still reads as distinct blocks. Card height then tracks how much
-the card has to say, which draws the eye to the fuller (more urgent) cards.
+Cards stay **fixed height** — four rows: title / basename / info / spacer. Fixed
+height is deliberate: click hit-testing (`ui.rs::hit_test`) maps a mouse row to
+a card by dividing by a single `CARD_ROWS` constant, so uniform height keeps the
+mapping a one-line division. Adaptive height would force `hit_test` to sum
+per-card heights (threading `CardMeta` into it), rejected for simplicity. The
+change is only that the title and basename each get their own line (bumping
+`CARD_ROWS` from 3 to 4), and the single info line is filled per column:
 
-Lines, top to bottom, with empty lines dropped:
-
-| Column          | Lines                                          |
-| --------------- | ---------------------------------------------- |
-| Requires Action | title / basename / question / age-blocked      |
-| Running         | title / basename / activity · quiet-age        |
-| Idle            | title / basename / activity (if any)           |
-| Dormant         | title / basename / record-age (whole dimmed)   |
+| Column          | info line                       |
+| --------------- | ------------------------------- |
+| Requires Action | question · time-blocked          |
+| Running         | activity · quiet-age             |
+| Idle            | activity · time-idle             |
+| Dormant         | activity · record-age (dimmed)   |
 
 Rules:
 
 - **Title** owns a full-width line, truncated only when it overflows the column
   width. Dormant titles stay dimmed (as today).
-- **Basename** of `cwd` on its own dim line (unchanged content, `basename`,
-  just moved off the title line).
-- **Requires Action** puts the question on its own line. The question is the
-  `activity` value (the extension already leads `SALIENT_ARGS` with
-  `"question"`, so a blocked agent's activity is the question text). The age
-  (time blocked) goes on the line below it. The question is NOT also repeated
-  in a combined meta line.
-- **Other columns** keep the combined meta line `activity · age` (Running:
-  quiet-age; Dormant: record-age; Idle: no age).
-- **Empty lines drop.** A card with no activity and no age (an idle agent that
-  has run no tool yet) collapses to title / basename / spacer. No padding to a
-  fixed height: the columns are independent stacks that never align row-for-row,
-  so fixed height would only reintroduce the wasted Idle row.
-
-`card_meta_line` stays for the combined columns. Requires Action no longer uses
-it; instead the card emits the question line (from `agent.activity`) and a
-separate age line (from `meta.in_state`).
+- **Basename** of `cwd` on its own dim line (empty string when `cwd` is None,
+  so the card keeps its fixed height).
+- **Info line** is `card_meta_line`: the activity (what it is doing, last did,
+  or is asking) joined with a column-specific age by `·`. Requires Action's
+  activity is the question (the extension leads `SALIENT_ARGS` with
+  `"question"`), so its info line reads `question · time-blocked`; the question
+  truncates first so the age stays visible.
+- **Idle now shows an age.** `card_meta_line` uses `meta.in_state` (time since
+  the agent entered its current state, already tracked in the main loop) for
+  both Requires Action and Idle. This fills the previously-empty idle row with
+  how long the agent has been waiting for you.
+- `CARD_ROWS` changes 3 → 4; `hit_test` is otherwise unchanged.
 
 ## Part 2 — `/` Picker Redesign (`picker.rs` + `ui.rs::render_picker`)
 

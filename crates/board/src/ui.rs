@@ -13,7 +13,7 @@ const PAD: u16 = 1;
 /// Rows above a column's cards: the heading and its underline rule.
 const HEAD_ROWS: u16 = 2;
 /// Rows one card spans: title, meta, and a blank spacer for air.
-const CARD_ROWS: u16 = 3;
+const CARD_ROWS: u16 = 4;
 use ratatui::widgets::{
     Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap,
 };
@@ -336,12 +336,12 @@ pub struct CardMeta<'a> {
     pub dormant_age: &'a HashMap<String, String>,
 }
 
-/// The card's secondary line: what the agent is doing (or last did, or is
-/// asking) and a column-specific age. The directory lives on the title line, so
-/// it is not repeated here. The age differs per column because the triage
-/// question does: time blocked when it needs you, time since the last activity
-/// while running, none when idle (a timer there is noise), and record age when
-/// dormant.
+/// The card's info line: what the agent is doing (or last did, or is asking)
+/// and a column-specific age. The directory has its own line, so it is not
+/// repeated here. The age differs per column because the triage question does:
+/// time blocked when it needs you, time since the last activity while running,
+/// time idle (how long it has been waiting for you) when idle, and record age
+/// when dormant.
 fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
     let mut parts: Vec<&str> = Vec::new();
     // What it is doing (Running) or last did (Idle), or asking (Requires
@@ -350,9 +350,10 @@ fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
         parts.push(a);
     }
     let age = match col {
-        Column::RequiresAction => meta.in_state.get(&agent.socket_path),
+        // Idle reuses in_state (time since entering the state) to show how long
+        // the agent has been waiting for the user.
+        Column::RequiresAction | Column::Idle => meta.in_state.get(&agent.socket_path),
         Column::Running => meta.quiet.get(&agent.socket_path),
-        Column::Idle => None,
         Column::Dormant => agent
             .session_id
             .as_deref()
@@ -364,6 +365,21 @@ fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
     parts.join(" · ")
 }
 
+/// The three card lines, top to bottom (spacer excluded): the title, the cwd
+/// basename (empty when unknown), and the info line. Fixed at three so cards
+/// keep a uniform height and `hit_test` can divide clicks by `CARD_ROWS`.
+/// Pure, unit-tested.
+fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 3] {
+    let name = agent.title.as_deref().unwrap_or("(unnamed)");
+    let dir = agent.cwd.as_deref().map(basename).unwrap_or("");
+    let info = card_meta_line(agent, col, meta);
+    [
+        truncate(name, width),
+        truncate(dir, width),
+        truncate(&info, width),
+    ]
+}
+
 fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {
     // Dormant cards are dimmed whole: they are context, not a call to act.
     let title_style = match agent.origin {
@@ -371,22 +387,12 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         Origin::Live => Style::default(),
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let name = agent.title.as_deref().unwrap_or("(unnamed)");
-    // Title line: the name, then the directory as a dim (never bold) suffix,
-    // so the card shows what and where on one line. The name shrinks first so
-    // the directory stays visible; too narrow to fit both drops the directory.
-    let dir = agent.cwd.as_deref().map(basename);
-    let title_line = match dir {
-        Some(d) if width > d.chars().count() + 4 => Line::from(vec![
-            Span::styled(truncate(name, width - d.chars().count() - 2), title_style),
-            Span::styled(format!("  {d}"), dim),
-        ]),
-        _ => Line::from(Span::styled(truncate(name, width), title_style)),
-    };
-    let meta_line = truncate(&card_meta_line(agent, col, meta), width);
+    // Title owns a full line; the basename gets its own dim line below it.
+    let [name, dir, info] = card_lines(agent, col, meta, width);
     ListItem::new(vec![
-        title_line,
-        Line::from(Span::styled(meta_line, dim)),
+        Line::from(Span::styled(name, title_style)),
+        Line::from(Span::styled(dir, dim)),
+        Line::from(Span::styled(info, dim)),
         Line::from(""), // blank spacer: air between cards
     ])
 }
@@ -565,9 +571,9 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
         let no_scroll = [0usize; 4];
 
-        // Left column: HEAD_ROWS=2 (heading+rule), then 3-row cards.
+        // Left column: HEAD_ROWS=2 (heading+rule), then 4-row cards.
         assert_eq!(hit_test(area, &b, 5, 2, no_scroll), Some(0));
-        assert_eq!(hit_test(area, &b, 5, 5, no_scroll), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 6, no_scroll), Some(1));
         assert_eq!(hit_test(area, &b, 5, 1, no_scroll), None); // heading/rule row
         assert_eq!(hit_test(area, &b, 5, 12, no_scroll), None); // past the two cards
 
@@ -582,5 +588,98 @@ mod tests {
 
         // A scrolled left column maps the first visible row to the offset item.
         assert_eq!(hit_test(area, &b, 5, 2, [1, 0, 0, 0]), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+    use crate::model::{Agent, Origin, State};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn agent(state: State, activity: Option<&str>) -> Agent {
+        Agent {
+            socket_path: PathBuf::from("/s/a.sock"),
+            pid: 1,
+            label: "pi".into(),
+            session_id: Some("sid".into()),
+            title: Some("fix the auth flow".into()),
+            cwd: Some("/home/u/projects/corral".into()),
+            state,
+            origin: Origin::Live,
+            resume: None,
+            activity: activity.map(String::from),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn meta(
+        in_state: &[(&str, &str)],
+    ) -> (
+        HashMap<PathBuf, String>,
+        HashMap<PathBuf, String>,
+        HashMap<String, String>,
+    ) {
+        let in_state = in_state
+            .iter()
+            .map(|(k, v)| (PathBuf::from(*k), v.to_string()))
+            .collect();
+        (in_state, HashMap::new(), HashMap::new())
+    }
+
+    #[test]
+    fn idle_info_line_shows_activity_and_time_idle() {
+        let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
+        let m = CardMeta {
+            in_state: &i,
+            quiet: &q,
+            dormant_age: &d,
+        };
+        let a = agent(State::Idle, Some("edit model.rs"));
+        assert_eq!(
+            card_lines(&a, Column::Idle, &m, 40),
+            ["fix the auth flow", "corral", "edit model.rs · 5m"]
+        );
+    }
+
+    #[test]
+    fn idle_info_line_is_age_only_without_activity() {
+        let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
+        let m = CardMeta {
+            in_state: &i,
+            quiet: &q,
+            dormant_age: &d,
+        };
+        let a = agent(State::Idle, None);
+        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[2], "5m");
+    }
+
+    #[test]
+    fn requires_action_info_line_is_question_then_age() {
+        let (i, q, d) = meta(&[("/s/a.sock", "3m")]);
+        let m = CardMeta {
+            in_state: &i,
+            quiet: &q,
+            dormant_age: &d,
+        };
+        let a = agent(State::RequiresAction, Some("Which branch?"));
+        assert_eq!(
+            card_lines(&a, Column::RequiresAction, &m, 40),
+            ["fix the auth flow", "corral", "Which branch? · 3m"]
+        );
+    }
+
+    #[test]
+    fn basename_is_empty_string_when_cwd_missing() {
+        let (i, q, d) = meta(&[]);
+        let m = CardMeta {
+            in_state: &i,
+            quiet: &q,
+            dormant_age: &d,
+        };
+        let mut a = agent(State::Idle, None);
+        a.cwd = None;
+        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[1], "");
     }
 }

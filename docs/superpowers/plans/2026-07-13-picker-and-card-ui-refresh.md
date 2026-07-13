@@ -15,25 +15,24 @@
 - Verbs unchanged: Enter = go (focus live / resume dormant), Shift+Enter = spawn in the selection's dir.
 - Lint clean under `just lint` (clippy `-D warnings`) and formatted with `cargo fmt`.
 - Run checks from the repo root; the crate is `corral` at `crates/board`.
-- Deviation from spec, accepted for simplicity: picker agent rows show `agent.activity` only as the dim meta (no age). Age maps (`CardMeta`) live in the main loop and are not threaded into the picker. The board still shows age.
 
 ---
 
-### Task 1: Board card relayout
+### Task 1: Board card relayout (fixed height)
 
-Split the card into its own full-width title line, a dim basename line, and an adaptive meta section (question + age lines in Requires Action; combined `activity · age` otherwise), dropping empty lines. Factor a pure `card_lines` helper so the composition is unit-testable.
+Give the title and the basename their own lines, and fill the single info line per column (Idle now shows time-idle). Cards stay fixed height: `CARD_ROWS` goes 3 → 4, so `hit_test` stays a one-line division. Factor a pure `card_lines` helper (always three strings: title, basename, info) so the composition is unit-testable.
 
 **Files:**
-- Modify: `crates/board/src/ui.rs` (rewrite `card`, add `card_lines`)
+- Modify: `crates/board/src/ui.rs` (`CARD_ROWS`, `card_meta_line` idle age, rewrite `card`, add `card_lines`, fix `hit_test` test)
 - Test: `crates/board/src/ui.rs` (existing `#[cfg(test)] mod tests`)
 
 **Interfaces:**
 - Consumes: `Agent` (`title`, `cwd`, `activity`, `socket_path`, `session_id`, `origin`), `Column`, `CardMeta` (`in_state`, `quiet`, `dormant_age`), helpers `basename`, `truncate`, `card_meta_line` — all already in `ui.rs`.
-- Produces: `fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> Vec<String>` — the text of each card line top-to-bottom, spacer excluded, empty lines omitted.
+- Produces: `fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 3]` — the title, basename, and info line text, each truncated to `width`.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to the `tests` module in `crates/board/src/ui.rs`:
+Add a new module right after the existing `#[cfg(test)] mod tests { ... }` block in `crates/board/src/ui.rs`:
 
 ```rust
 #[cfg(test)]
@@ -43,7 +42,7 @@ mod card_tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    fn agent(state: State, origin: Origin, activity: Option<&str>) -> Agent {
+    fn agent(state: State, activity: Option<&str>) -> Agent {
         Agent {
             socket_path: PathBuf::from("/s/a.sock"),
             pid: 1,
@@ -52,77 +51,92 @@ mod card_tests {
             title: Some("fix the auth flow".into()),
             cwd: Some("/home/u/projects/corral".into()),
             state,
-            origin,
+            origin: Origin::Live,
             resume: None,
             activity: activity.map(String::from),
         }
     }
 
-    fn meta_with(in_state: &[(&str, &str)], dormant: &[(&str, &str)]) -> (HashMap<PathBuf, String>, HashMap<PathBuf, String>, HashMap<String, String>) {
+    fn meta(in_state: &[(&str, &str)]) -> (HashMap<PathBuf, String>, HashMap<PathBuf, String>, HashMap<String, String>) {
         let in_state = in_state.iter().map(|(k, v)| (PathBuf::from(*k), v.to_string())).collect();
-        let quiet = HashMap::new();
-        let dormant = dormant.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        (in_state, quiet, dormant)
+        (in_state, HashMap::new(), HashMap::new())
     }
 
     #[test]
-    fn idle_card_collapses_to_title_and_basename() {
-        let (i, q, d) = meta_with(&[], &[]);
+    fn idle_info_line_shows_activity_and_time_idle() {
+        let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
         let m = CardMeta { in_state: &i, quiet: &q, dormant_age: &d };
-        let a = agent(State::Idle, Origin::Live, None);
-        assert_eq!(card_lines(&a, Column::Idle, &m, 40), vec!["fix the auth flow", "corral"]);
+        let a = agent(State::Idle, Some("edit model.rs"));
+        assert_eq!(
+            card_lines(&a, Column::Idle, &m, 40),
+            ["fix the auth flow", "corral", "edit model.rs · 5m"]
+        );
     }
 
     #[test]
-    fn requires_action_shows_question_then_age_lines() {
-        let (i, q, d) = meta_with(&[("/s/a.sock", "3m")], &[]);
+    fn idle_info_line_is_age_only_without_activity() {
+        let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
         let m = CardMeta { in_state: &i, quiet: &q, dormant_age: &d };
-        let a = agent(State::RequiresAction, Origin::Live, Some("Which branch?"));
+        let a = agent(State::Idle, None);
+        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[2], "5m");
+    }
+
+    #[test]
+    fn requires_action_info_line_is_question_then_age() {
+        let (i, q, d) = meta(&[("/s/a.sock", "3m")]);
+        let m = CardMeta { in_state: &i, quiet: &q, dormant_age: &d };
+        let a = agent(State::RequiresAction, Some("Which branch?"));
         assert_eq!(
             card_lines(&a, Column::RequiresAction, &m, 40),
-            vec!["fix the auth flow", "corral", "Which branch?", "3m"]
+            ["fix the auth flow", "corral", "Which branch? · 3m"]
         );
+    }
+
+    #[test]
+    fn basename_is_empty_string_when_cwd_missing() {
+        let (i, q, d) = meta(&[]);
+        let m = CardMeta { in_state: &i, quiet: &q, dormant_age: &d };
+        let mut a = agent(State::Idle, None);
+        a.cwd = None;
+        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[1], "");
     }
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /home/cornerman/projects/corral && cargo test -p corral card_lines 2>&1 | tail -20`
+Run: `cd /home/cornerman/projects/corral/.worktrees/ui-refresh && cargo test -p corral card_ 2>&1 | tail -20`
 Expected: FAIL — `cannot find function 'card_lines'`.
 
-- [ ] **Step 3: Add the `card_lines` helper and rewrite `card`**
+- [ ] **Step 3: Show idle its age in `card_meta_line`**
 
-In `crates/board/src/ui.rs`, replace the whole `fn card(...)` body (the function starting `fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {` through its closing brace) with:
+In `crates/board/src/ui.rs`, in `card_meta_line`, change the age match so Idle uses the same `in_state` map as Requires Action:
 
 ```rust
-/// The text of each card line, top to bottom, spacer excluded. Title owns its
-/// line; the basename gets its own line; Requires Action puts the question on
-/// its own line with the blocked-age below it; other columns get the combined
-/// `activity · age` meta. Empty lines are omitted so idle cards stay compact.
-/// Pure, unit-tested.
-fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> Vec<String> {
+    let age = match col {
+        Column::RequiresAction | Column::Idle => meta.in_state.get(&agent.socket_path),
+        Column::Running => meta.quiet.get(&agent.socket_path),
+        Column::Dormant => agent
+            .session_id
+            .as_deref()
+            .and_then(|id| meta.dormant_age.get(id)),
+    };
+```
+
+- [ ] **Step 4: Add `card_lines` and rewrite `card`**
+
+Replace the whole `fn card(...)` (from `fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {` through its closing brace) with:
+
+```rust
+/// The three card lines, top to bottom (spacer excluded): the title, the cwd
+/// basename (empty when unknown), and the info line (`card_meta_line`). Fixed
+/// at three so cards keep a uniform height and `hit_test` can divide by
+/// `CARD_ROWS`. Pure, unit-tested.
+fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 3] {
     let name = agent.title.as_deref().unwrap_or("(unnamed)");
-    let mut lines = vec![truncate(name, width)];
-    if let Some(dir) = agent.cwd.as_deref().map(basename) {
-        lines.push(truncate(dir, width));
-    }
-    if matches!(col, Column::RequiresAction) {
-        // The question the agent is blocked on (its activity) earns its own
-        // line; the time-blocked age sits below it.
-        if let Some(q) = agent.activity.as_deref() {
-            lines.push(truncate(q, width));
-        }
-        if let Some(age) = meta.in_state.get(&agent.socket_path) {
-            lines.push(truncate(age, width));
-        }
-    } else {
-        let m = card_meta_line(agent, col, meta);
-        if !m.is_empty() {
-            lines.push(truncate(&m, width));
-        }
-    }
-    lines
+    let dir = agent.cwd.as_deref().map(basename).unwrap_or("");
+    let info = card_meta_line(agent, col, meta);
+    [truncate(name, width), truncate(dir, width), truncate(&info, width)]
 }
 
 fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {
@@ -132,31 +146,44 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         Origin::Live => Style::default(),
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, text) in card_lines(agent, col, meta, width).into_iter().enumerate() {
-        // Line 0 is the title; every later line (basename, question, meta) is dim.
-        let style = if i == 0 { title_style } else { dim };
-        lines.push(Line::from(Span::styled(text, style)));
-    }
-    lines.push(Line::from("")); // blank spacer: air between cards
-    ListItem::new(lines)
+    let [name, dir, info] = card_lines(agent, col, meta, width);
+    ListItem::new(vec![
+        Line::from(Span::styled(name, title_style)),
+        Line::from(Span::styled(dir, dim)),
+        Line::from(Span::styled(info, dim)),
+        Line::from(""), // blank spacer: air between cards
+    ])
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Bump `CARD_ROWS` and fix the `hit_test` test**
 
-Run: `cd /home/cornerman/projects/corral && cargo test -p corral 2>&1 | tail -20`
-Expected: PASS (all tests, including the two new `card_tests`).
+Change the constant near the top of `crates/board/src/ui.rs` from `const CARD_ROWS: u16 = 3;` to `const CARD_ROWS: u16 = 4;`.
 
-- [ ] **Step 5: Lint and format**
+In the `hit_test_maps_clicks_to_selectable_indices` test, the second card now starts one row lower (cards are 4 rows tall). Update the comment and the second-card assertion:
 
-Run: `cd /home/cornerman/projects/corral && cargo fmt && just lint 2>&1 | tail -15`
+```rust
+        // Left column: HEAD_ROWS=2 (heading+rule), then 4-row cards.
+        assert_eq!(hit_test(area, &b, 5, 2, no_scroll), Some(0));
+        assert_eq!(hit_test(area, &b, 5, 6, no_scroll), Some(1));
+```
+
+(Replace the existing `assert_eq!(hit_test(area, &b, 5, 5, no_scroll), Some(1));` line and its preceding comment. Leave the other assertions unchanged — they still hold: row 12 is past the two 4-row cards, row 1 is the heading, etc.)
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `cd /home/cornerman/projects/corral/.worktrees/ui-refresh && cargo test -p corral 2>&1 | tail -20`
+Expected: PASS (all tests, including the new `card_tests`).
+
+- [ ] **Step 7: Lint and format**
+
+Run: `cd /home/cornerman/projects/corral/.worktrees/ui-refresh && cargo fmt && just lint 2>&1 | tail -15`
 Expected: no warnings.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-cd /home/cornerman/projects/corral && git add crates/board/src/ui.rs && git commit -m "ui: relayout board cards (title/basename lines, adaptive height, question line)"
+cd /home/cornerman/projects/corral/.worktrees/ui-refresh && git add crates/board/src/ui.rs docs/superpowers && git commit -m "ui: relayout board cards (title/basename own lines, idle shows time-idle)"
 ```
 
 ---
