@@ -133,7 +133,7 @@ struct Compose {
 /// exclusive by construction: no parallel `Option`s to keep consistent.
 enum Overlay {
     /// `/`: fuzzy-pick any agent to go to (Enter) or spawn beside (Shift+Enter).
-    Jump(Picker, Vec<model::Agent>),
+    Jump(Picker),
     /// `m`: compose a message to a live agent.
     Compose(Compose),
 }
@@ -171,6 +171,10 @@ fn picker_input(p: &mut Picker, key: KeyEvent) -> PickerInput {
             p.push(c);
             PickerInput::Continue
         }
+        KeyCode::Tab => {
+            p.cycle_filter();
+            PickerInput::Continue
+        }
         _ => PickerInput::Continue,
     }
 }
@@ -191,11 +195,11 @@ fn handle_overlay(
         return Some(ov);
     }
     match &mut ov {
-        Overlay::Jump(p, targets) => match picker_input(p, key) {
+        Overlay::Jump(p) => match picker_input(p, key) {
             PickerInput::Continue => Some(ov),
             PickerInput::Cancel => None,
             PickerInput::Submit => {
-                if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
+                if let Some(a) = p.selected_agent() {
                     if let Err(e) = activate(a, focuser, launcher) {
                         *status = e;
                     }
@@ -203,7 +207,7 @@ fn handle_overlay(
                 None
             }
             PickerInput::SubmitSpawn => {
-                if let Some(a) = p.selected_original().and_then(|i| targets.get(i)) {
+                if let Some(a) = p.selected_agent() {
                     let cwd = launch::default_cwd(Some(a));
                     if let Err(e) = launcher.spawn(&cwd, None) {
                         *status = format!("spawn: {e}");
@@ -430,7 +434,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         terminal.draw(|f| {
             ui::render(f, &board, selected, &status, &mut list_states, &meta);
             match &overlay {
-                Some(Overlay::Jump(p, _)) => ui::render_picker(f, p),
+                Some(Overlay::Jump(p)) => ui::render_picker(f, p),
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
                 None => {}
             }
@@ -638,15 +642,6 @@ fn activate(
     }
 }
 
-/// Picker label for the `f` go-to list: the focus label, marked when dormant
-/// so the operator knows Enter will resume rather than focus.
-fn goto_label(agent: &model::Agent) -> String {
-    match agent.origin {
-        Origin::Live => ui::focus_label(agent),
-        Origin::Dormant => format!("{} (dormant)", ui::focus_label(agent)),
-    }
-}
-
 /// Apply an approval decision to the router. Shared by the in-board dialog
 /// (keys/click) and the desktop notification's buttons.
 fn apply_approval(router: &mut Router, action: ui::ApprovalAction, status: &mut String) {
@@ -663,11 +658,8 @@ fn apply_approval(router: &mut Router, action: ui::ApprovalAction, status: &mut 
 
 /// Open the `/` jump picker over all agents (Enter goes, Shift+Enter spawns).
 fn open_jump(board: &Board) -> Option<Overlay> {
-    let targets: Vec<model::Agent> = board.selectable().into_iter().cloned().collect();
-    (!targets.is_empty()).then(|| {
-        let labels = targets.iter().map(goto_label).collect();
-        Overlay::Jump(Picker::new(labels), targets)
-    })
+    let agents: Vec<model::Agent> = board.selectable().into_iter().cloned().collect();
+    (!agents.is_empty()).then(|| Overlay::Jump(Picker::new(agents)))
 }
 
 /// Open the compose overlay to message the selected agent, if any.
@@ -772,7 +764,18 @@ mod tests {
 
     #[test]
     fn shift_enter_in_picker_is_spawn() {
-        let mut p = Picker::new(vec!["a".into()]);
+        let mut p = Picker::new(vec![model::Agent {
+            socket_path: std::path::PathBuf::from("/s/a.sock"),
+            pid: 1,
+            label: "pi".into(),
+            session_id: Some("a".into()),
+            title: Some("a".into()),
+            cwd: Some("/tmp".into()),
+            state: model::State::Idle,
+            origin: model::Origin::Live,
+            resume: None,
+            activity: None,
+        }]);
         let plain = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let shift = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         assert!(matches!(picker_input(&mut p, plain), PickerInput::Submit));

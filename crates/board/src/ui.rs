@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::model::{Agent, Board, Column, Origin};
-use crate::picker::Picker;
+use crate::model::{Agent, Board, Column, Origin, State};
+use crate::picker::{Picker, Row};
 
 /// The heading shown above each column. Bound to the column identity (not a
 /// parallel array), so it cannot drift from `Column::ALL`.
@@ -93,13 +93,31 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
     .split(v[1])[1]
 }
 
-/// Draw the `/` jump picker as a centered overlay: a query line above the
-/// fuzzy-filtered agent list (Enter goes, Shift+Enter spawns).
+/// Glyph, color, and title emphasis for an agent's state in the picker. Color
+/// carries state here because the picker groups by directory, not by state, so
+/// position can no longer encode it (as it does on the board).
+fn badge(a: &Agent) -> (&'static str, Color, bool) {
+    match a.origin {
+        Origin::Dormant => ("·", Color::DarkGray, false),
+        Origin::Live => match a.state {
+            State::RequiresAction => ("●", Color::Red, true),
+            State::Running => ("●", Color::Green, false),
+            State::Idle => ("○", Color::White, false),
+        },
+    }
+}
+
+/// Draw the `/` jump picker: a query line and scope label, then agents grouped
+/// under dim directory headers, each row a colored state glyph + title + dim
+/// activity. Enter goes, Shift+Enter spawns, Tab cycles the scope.
 pub fn render_picker(frame: &mut Frame, picker: &Picker) {
     let area = centered(frame.area(), 70, 60);
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .title(" jump — type to filter, ⏎ go, ⇧⏎ new, esc cancel ")
+        .title(format!(
+            " jump [{}] — filter, tab scope, ⏎ go, ⇧⏎ new, esc cancel ",
+            picker.filter_label()
+        ))
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -107,11 +125,48 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
     frame.render_widget(Paragraph::new(format!("> {}", picker.query)), rows[0]);
 
-    let matches = picker.matches();
-    let items: Vec<ListItem> = matches.iter().map(|d| ListItem::new(*d)).collect();
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut items: Vec<ListItem> = Vec::new();
+    // The list index of the selected agent row (headers are interleaved, so it
+    // differs from `picker.selected`, which counts only agent rows).
+    let mut highlight: Option<usize> = None;
+    let mut agent_seen = 0usize;
+    for row in picker.rows() {
+        match row {
+            Row::Header(dir) => {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    dir.to_string(),
+                    dim,
+                ))));
+            }
+            Row::Agent(a) => {
+                if agent_seen == picker.selected {
+                    highlight = Some(items.len());
+                }
+                agent_seen += 1;
+                let (glyph, color, bold) = badge(a);
+                let mut title_style = Style::default().fg(color);
+                if bold {
+                    title_style = title_style.add_modifier(Modifier::BOLD);
+                }
+                if a.origin == Origin::Dormant {
+                    title_style = title_style.add_modifier(Modifier::DIM);
+                }
+                let name = a.title.as_deref().unwrap_or("(unnamed)");
+                let mut spans = vec![
+                    Span::styled(format!("{glyph} "), Style::default().fg(color)),
+                    Span::styled(name.to_string(), title_style),
+                ];
+                if let Some(act) = a.activity.as_deref() {
+                    spans.push(Span::styled(format!("   {act}"), dim));
+                }
+                items.push(ListItem::new(Line::from(spans)));
+            }
+        }
+    }
     let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default();
-    state.select((!matches.is_empty()).then_some(picker.selected));
+    state.select(highlight);
     frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
@@ -284,7 +339,7 @@ pub fn footer_hit_test(area: Rect, col: u16, row: u16) -> Option<FooterAction> {
     None
 }
 
-fn basename(path: &str) -> &str {
+pub(crate) fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 

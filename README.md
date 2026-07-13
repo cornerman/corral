@@ -40,7 +40,8 @@ harness-neutral convention, specified independently of pi and corral in
   each by Requires Action / Idle / Running / Dormant. Enter goes to the
   selected agent (focus a live window via sway, or resume a dormant session);
   Shift+Enter spawns a new agent via kitty in its cwd; `/` opens a fuzzy jump
-  picker over the board's agents (Enter goes, Shift+Enter spawns beside).
+  picker over the board's agents, grouped by directory with a state-colored
+  glyph per row and a Tab scope filter (Enter goes, Shift+Enter spawns beside).
   Shift+Enter relies on the kitty keyboard protocol. Window focus and agent
   spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable

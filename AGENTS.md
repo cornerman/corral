@@ -139,20 +139,26 @@ your terminal (pi, interactive TUI)              another terminal
     counts. Unit-tested.
   - `src/ui.rs` — ratatui: four equal columns (from `Column::ALL`) divided by
     dim vertical rules, each with a bold heading over an underline and padded
-    cards spaced for air, a `▍` selection bar. Each card is a title with the
-    working directory as a dim suffix, over a column-specific meta line: what
-    the agent is doing (from `tool_call`) or last did, plus an age whose
-    meaning follows the column (time blocked in Requires Action, time since
-    the last activity in Running, none in Idle, record age in Dormant). Three
+    cards spaced for air, a `▍` selection bar. Each card is fixed height: a
+    full-width title line, the working-directory basename on its own dim line,
+    then a column-specific info line: what the agent is doing (from `tool_call`)
+    or last did, plus an age whose meaning follows the column (time blocked in
+    Requires Action, time since the last activity in Running, time idle in Idle,
+    record age in Dormant). Fixed height keeps `hit_test` a `CARD_ROWS`
+    division. Three
     live triage columns (Requires Action, Idle, Running)
     then a dim-gray Dormant column (resumable history). Plus a footer of
     clickable key-hint buttons (`footer_hit_test`, same pattern as the approval
     dialog) with any status on the spacer row above it. Owns the card, heading,
     separator, footer, and age/focus-label formatting.
-  - `src/picker.rs` — the `/` jump picker: fuzzy-filter the board's agents
-    (`board.selectable()`); Enter goes to one, Shift+Enter spawns a fresh agent
-    in its dir. Subsequence fuzzy filter; `selected_original` maps the chosen
-    label back to its agent. Unit-tested.
+  - `src/picker.rs` — the `/` jump picker: holds the board's agents
+    (`board.selectable()`), grouped under dim directory-basename headers.
+    Subsequence fuzzy filter matches title, path, or basename (so a directory
+    query keeps every agent under it); a Tab scope filter cycles All/Live/
+    Dormant. `selected_agent` maps the selection (which counts only agent rows,
+    skipping headers) back to its agent. Enter goes to one, Shift+Enter spawns
+    a fresh agent in its dir. Styling (state glyph + color) lives in `ui.rs`;
+    picker stays free of ratatui. Unit-tested.
   - `src/main.rs` — the imperative shell: the event loop that scans + prunes
     the registry, spawns watchers, drains updates, polls the `Router`, draws,
     and dispatches input. Input modes are one `Overlay` enum (the `/` jump
@@ -249,7 +255,9 @@ message/tool updates) is ACP v1.
   h/l) switch columns; Enter or left-click goes to the selected agent (focus a
   live window, resume a dormant session with `pi --session`); Shift+Enter
   spawns a new agent in the selected agent's cwd; `/` opens a fuzzy jump picker
-  over all agents (Enter goes, Shift+Enter spawns beside); `m` compose a
+  over all agents, grouped by directory with a state-colored glyph per row and
+  a Tab scope filter (All/Live/Dormant) (Enter goes, Shift+Enter spawns beside);
+  `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant
   one by resuming it with the message as its first prompt; `d` close the
   selected live agent (kill its terminal process, closing the window; pi then
