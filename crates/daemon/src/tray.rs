@@ -201,12 +201,9 @@ impl Tray {
     }
 }
 
-/// Open the attention board in its own detached kitty window. Detached
-/// (`setsid --fork`) so it outlives the daemon and is not a child of it.
+/// Open the desktop attention board (`corral-gui`), detached (`setsid --fork`)
+/// so it outlives the daemon and is not a child of it. The GUI is a native
+/// window, so no terminal is needed (unlike the TUI `kitty -e corral`).
 pub fn open_board() {
-    let _ = Command::new("setsid")
-        .arg("--fork")
-        .arg("kitty")
-        .args(["-e", "corral"])
-        .status();
+    let _ = Command::new("setsid").arg("--fork").arg("corral-gui").status();
 }
