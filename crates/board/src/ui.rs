@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::model::{Agent, Board, Column, Origin, State};
-use crate::picker::{Picker, Row};
+use corral_core::model::{Agent, Board, Column, Origin, State};
+use corral_core::picker::{Picker, Row};
 
 /// The heading shown above each column. Bound to the column identity (not a
 /// parallel array), so it cannot drift from `Column::ALL`.
@@ -620,7 +620,7 @@ const LOGO: &str = "⟦∴⟧";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{State, Update};
+    use corral_core::model::{State, Update};
     use std::path::PathBuf;
 
     #[test]
@@ -640,7 +640,7 @@ mod tests {
             title: None,
             cwd: None,
             state,
-            origin: crate::model::Origin::Live,
+            origin: corral_core::model::Origin::Live,
             resume: None,
             activity: None,
         }));
@@ -679,7 +679,7 @@ mod tests {
 #[cfg(test)]
 mod card_tests {
     use super::*;
-    use crate::model::{Agent, Origin, State};
+    use corral_core::model::{Agent, Origin, State};
     use std::collections::HashMap;
     use std::path::PathBuf;
 

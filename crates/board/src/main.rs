@@ -27,20 +27,15 @@ use crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 
-mod focus;
-mod model;
-mod nav;
-mod picker;
 mod ui;
-mod watch;
 
 use corral_core::discovery::{self, RegistryEntry};
+use corral_core::focus::{SwayFocuser, WindowFocuser};
 use corral_core::launch::{self, KittyLauncher, Launcher};
-use corral_core::paths;
+use corral_core::model::{Board, Origin, Update};
+use corral_core::picker::Picker;
 use corral_core::prompt;
-use focus::{SwayFocuser, WindowFocuser};
-use model::{Board, Origin, Update};
-use picker::Picker;
+use corral_core::{model, nav, paths, watch};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);

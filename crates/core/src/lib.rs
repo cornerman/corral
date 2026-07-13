@@ -5,6 +5,11 @@
 //! in its own crate; this crate stays dependency-light on purpose.
 
 pub mod discovery;
+pub mod focus;
 pub mod launch;
+pub mod model;
+pub mod nav;
 pub mod paths;
+pub mod picker;
 pub mod prompt;
+pub mod watch;
