@@ -14,6 +14,8 @@ const PAD: u16 = 1;
 const HEAD_ROWS: u16 = 2;
 /// Rows one card spans: title, meta, and a blank spacer for air.
 const CARD_ROWS: u16 = 4;
+/// Rows reserved at the top for the launcher-style filter box (border+input).
+const FILTER_ROWS: u16 = 3;
 use ratatui::widgets::{
     Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
 };
@@ -39,11 +41,28 @@ fn heading(column: Column) -> &'static str {
 /// above the footer). Shared by `render` and `hit_test` so their geometry
 /// cannot drift. Columns are separated by gutters (layout spacing), not borders.
 fn column_layout(area: Rect) -> [Rect; 4] {
-    let content = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area)[0];
+    // Top: the filter box; middle: the columns; bottom two: spacer + footer.
+    let content = Layout::vertical([
+        Constraint::Length(FILTER_ROWS),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .split(area)[1];
     let cols = Layout::horizontal([Constraint::Ratio(1, 4); 4])
         .spacing(3)
         .split(content);
     [cols[0], cols[1], cols[2], cols[3]]
+}
+
+/// The reserved top strip that holds the filter box (same split as
+/// `column_layout`, so their geometry cannot drift).
+fn filter_area(area: Rect) -> Rect {
+    Layout::vertical([
+        Constraint::Length(FILTER_ROWS),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .split(area)[0]
 }
 
 /// Map a mouse cell (col,row) to a selectable index, using the same layout as
@@ -96,25 +115,41 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
 /// query, with a block cursor while editing. Draws nothing when idle and empty,
 /// so the status line shows through.
 pub fn render_filter(frame: &mut Frame, filter: &str, filtering: bool) {
-    if !filtering && filter.is_empty() {
-        return;
-    }
-    let footer = footer_rect(frame.area());
-    let row = Rect {
-        y: footer.y.saturating_sub(1),
-        height: 1,
-        ..footer
+    let area = filter_area(frame.area());
+    // A centered field, prominent like a launcher's input line.
+    let w = ((area.width as u32 * 7 / 10) as u16).clamp(30.min(area.width), area.width);
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let field = Rect {
+        x,
+        y: area.y,
+        width: w,
+        height: FILTER_ROWS,
     };
-    let cursor = if filtering { "\u{2588}" } else { "" };
-    let style = if filtering {
+    // Bright border while editing, dim otherwise; the box is always shown.
+    let border = if filtering {
         Style::default()
     } else {
         Style::default().add_modifier(Modifier::DIM)
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(format!("/{filter}{cursor}")).style(style)),
-        row,
-    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border)
+        .title(" filter ");
+    let inner = block.inner(field);
+    frame.render_widget(block, field);
+    let line = if filter.is_empty() && !filtering {
+        Line::from(Span::styled(
+            "type to filter…",
+            Style::default().add_modifier(Modifier::DIM),
+        ))
+    } else {
+        let cursor = if filtering { "\u{2588}" } else { "" };
+        Line::from(Span::styled(
+            format!("{filter}{cursor}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))
+    };
+    frame.render_widget(Paragraph::new(line), inner);
 }
 
 /// Draw the `m` message composer as a centered overlay: the target agent in
