@@ -1,0 +1,57 @@
+//! corral-gui: a desktop (egui/eframe) attention board, a parallel presentation
+//! shell to the ratatui `corral`. This is the proof-spike: it opens a themed
+//! window (base16 Solarized, following the system light/dark preference). The
+//! dashboard (columns of cards over the registry) builds on top of it.
+
+mod theme;
+
+/// The corral mark: a pen (⟦ ⟧) enclosing three dots (∴), matching the TUI
+/// footer glyph and the tray icon.
+const MARK: &str = "⟦∴⟧";
+
+fn main() -> eframe::Result {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("corral")
+            .with_inner_size([900.0, 600.0])
+            .with_min_inner_size([420.0, 300.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "corral",
+        options,
+        Box::new(|cc| {
+            // Provide both appearances up front; egui then follows the system
+            // light/dark preference on its own, no per-frame theme juggling.
+            cc.egui_ctx.set_visuals_of(
+                egui::Theme::Dark,
+                theme::visuals(&theme::SOLARIZED_DARK, true),
+            );
+            cc.egui_ctx.set_visuals_of(
+                egui::Theme::Light,
+                theme::visuals(&theme::SOLARIZED_LIGHT, false),
+            );
+            Ok(Box::new(App))
+        }),
+    )
+}
+
+struct App;
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let dark = ui.ctx().theme() == egui::Theme::Dark;
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.35);
+            ui.heading(egui::RichText::new(format!("{MARK} corral")).size(48.0));
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "desktop attention board — solarized {}",
+                    if dark { "dark" } else { "light" }
+                ))
+                .weak(),
+            );
+        });
+    }
+}

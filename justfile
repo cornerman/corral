@@ -36,3 +36,7 @@ board *ARGS:
 # Run the message-routing daemon (owns the control socket + tray)
 daemon *ARGS:
     cargo run -p corral-daemon -- {{ARGS}}
+
+# Run the desktop (egui) attention board
+gui *ARGS:
+    cargo run -p corral-gui -- {{ARGS}}

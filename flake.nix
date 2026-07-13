@@ -20,6 +20,21 @@
       # Pin the Rust toolchain via rust-overlay; rust-toolchain.toml is the
       # single source of truth for the version.
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      # The GUI shell (corral-gui, egui/eframe) links these graphics libraries.
+      # winit needs the Wayland + X11 client libs and libxkbcommon; eframe's
+      # glow backend needs libGL. libxcb is a link-time dep of the X11 path.
+      # On mainstream distros these already sit in standard paths, so a built
+      # binary just runs; NixOS needs them named explicitly (build + runtime).
+      guiLibsFor = pkgs: with pkgs; [
+        libGL
+        libxkbcommon
+        wayland
+        xorg.libX11
+        xorg.libXcursor
+        xorg.libXi
+        xorg.libXrandr
+        xorg.libxcb
+      ];
     in
     {
       packages = forAllSystems (pkgs: {
@@ -28,6 +43,15 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
+          buildInputs = guiLibsFor pkgs;
+          # egui/winit dlopen libGL and the display libs at runtime; on NixOS
+          # they are not in a standard path, so put them on the GUI binary's
+          # library path. Harmless no-op on the TUI/daemon binaries.
+          postInstall = ''
+            wrapProgram "$out/bin/corral-gui" \
+              --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (guiLibsFor pkgs)}"
+          '';
         };
       });
 
@@ -37,7 +61,11 @@
             (toolchainFor pkgs)
             pkgs.just
             pkgs.cargo-watch
+            pkgs.pkg-config
           ];
+          buildInputs = guiLibsFor pkgs;
+          # So `cargo run -p corral-gui` finds libGL / wayland / X11 at runtime.
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (guiLibsFor pkgs);
         };
       });
 

@@ -1,0 +1,19 @@
+# The `corral-gui` binary: a desktop (egui/eframe) presentation shell over the
+# same registry the TUI board reads. A second, parallel viewer \u2014 the ratatui
+# `corral` stays as the zero-friction terminal path. Self-contained binary;
+# links only the ubiquitous graphics libs (libGL/wayland/X11/xkbcommon).
+[package]
+name = "corral-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop (egui) attention board for corral"
+
+[[bin]]
+name = "corral-gui"
+path = "src/main.rs"
+
+[dependencies]
+corral-core = { path = "../core" }
+eframe = "0.35"
+egui = "0.35"
