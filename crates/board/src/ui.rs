@@ -14,8 +14,9 @@ const PAD: u16 = 1;
 const HEAD_ROWS: u16 = 2;
 /// Rows one card spans: title, meta, and a blank spacer for air.
 const CARD_ROWS: u16 = 4;
-/// Rows reserved at the top for the launcher-style filter box (border+input).
-const FILTER_ROWS: u16 = 3;
+/// Rows reserved at the top for the filter: the input line, its underline, and
+/// breathing room beneath before the columns.
+const FILTER_ROWS: u16 = 4;
 use ratatui::widgets::{
     Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
 };
@@ -119,11 +120,13 @@ pub fn render_filter(frame: &mut Frame, filter: &str, filtering: bool) {
     // A centered field, prominent like a launcher's input line.
     let w = ((area.width as u32 * 7 / 10) as u16).clamp(30.min(area.width), area.width);
     let x = area.x + area.width.saturating_sub(w) / 2;
+    // The field is just the input row + its underline; the remaining reserved
+    // rows are empty space under it.
     let field = Rect {
         x,
-        y: area.y,
+        y: area.y + 1, // a blank row of padding above the filter
         width: w,
-        height: FILTER_ROWS,
+        height: 2,
     };
     // Bright border while editing, dim otherwise; the box is always shown.
     let border = if filtering {
@@ -131,10 +134,10 @@ pub fn render_filter(frame: &mut Frame, filter: &str, filtering: bool) {
     } else {
         Style::default().add_modifier(Modifier::DIM)
     };
+    // Just an underline, not a full box (flat, like the GUI's filter).
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border)
-        .title(" filter ");
+        .borders(Borders::BOTTOM)
+        .border_style(border);
     let inner = block.inner(field);
     frame.render_widget(block, field);
     let line = if filter.is_empty() && !filtering {
