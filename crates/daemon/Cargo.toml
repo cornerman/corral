@@ -1,0 +1,22 @@
+# The `corrald` daemon: a headless singleton that owns inter-agent messaging.
+# It binds the control socket, authorizes and routes agent-initiated messages,
+# and surfaces the approval gate via a tray icon and desktop notifications.
+# One process by nature (one control socket), unlike the multi-launchable board.
+[package]
+name = "corral-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless message-routing daemon for corral (owns the control socket + tray)"
+
+[[bin]]
+name = "corrald"
+path = "src/main.rs"
+
+[dependencies]
+corral-core = { path = "../core" }
+serde_json = "1"
+ksni = { version = "0.3", features = ["blocking"] }
+
+[dev-dependencies]
+tempfile = "3"

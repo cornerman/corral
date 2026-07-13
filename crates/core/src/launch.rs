@@ -4,8 +4,6 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::model::Agent;
-
 pub trait Launcher {
     /// Start a fresh pi agent in its own window, rooted at `cwd`. An optional
     /// initial `message` is submitted as pi's first prompt (a positional arg),
@@ -90,9 +88,10 @@ impl Launcher for KittyLauncher {
     }
 }
 
-/// Default spawn directory: the selected agent's cwd if known, else $HOME.
-pub fn default_cwd(selected: Option<&Agent>) -> std::path::PathBuf {
-    if let Some(cwd) = selected.and_then(|a| a.cwd.as_ref()) {
+/// Default spawn directory: the given cwd if known, else $HOME. Takes a plain
+/// cwd (not an `Agent`) so this crate stays free of the board's model.
+pub fn default_cwd(cwd: Option<&str>) -> std::path::PathBuf {
+    if let Some(cwd) = cwd {
         return std::path::PathBuf::from(cwd);
     }
     std::env::var_os("HOME")

@@ -15,32 +15,50 @@ use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
-use crate::discovery;
+use corral_core::discovery;
+
 use crate::mailbox::{self, Message, Target};
+
+/// Whether another daemon is already serving this socket. A successful connect
+/// proves a live listener; a connect failure means the socket is absent or
+/// stale (a crashed prior run). This is the singleton guard: exactly one
+/// corrald may own the control socket, unlike the multi-launchable board.
+pub fn is_serving(socket: &Path) -> bool {
+    UnixStream::connect(socket)
+        .map(|s| {
+            let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+        })
+        .is_ok()
+}
 
 /// Bind the control socket and serve it on a background thread. Routable
 /// messages are sent on `tx` for the main loop to enqueue into the router.
-/// A missing `HOME` (no paths) or a bind failure is silent: messaging is then
-/// simply unavailable, exactly as before this socket existed.
-pub fn serve(socket: PathBuf, registry_dir: PathBuf, whitelist: PathBuf, tx: Sender<Message>) {
-    // Remove a stale socket from a crashed prior run, then bind. 0700 dir:
+/// Fails loud on a bind error: the daemon's whole job is this socket, so it
+/// must not run useless. Call `is_serving` first to reject a second daemon.
+pub fn serve(
+    socket: PathBuf,
+    registry_dir: PathBuf,
+    whitelist: PathBuf,
+    tx: Sender<Message>,
+) -> std::io::Result<()> {
+    // Reclaim a stale socket from a crashed prior run, then bind. 0700 dir:
     // directory permissions are the only peer authentication.
     let _ = std::fs::remove_file(&socket);
     if let Some(parent) = socket.parent() {
-        let _ = std::fs::DirBuilder::new()
+        std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(parent);
+            .create(parent)?;
     }
-    let Ok(listener) = UnixListener::bind(&socket) else {
-        return;
-    };
+    let listener = UnixListener::bind(&socket)?;
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             handle(conn, &registry_dir, &whitelist, &tx);
         }
     });
+    Ok(())
 }
 
 /// One connection: read a request line, ack the verdict, enqueue if routable.
@@ -121,7 +139,7 @@ mod tests {
         write_registry(&registry, "sid-7", tmp.path().to_str().unwrap());
         mailbox::whitelist_add(&whitelist, "/a", tmp.path().to_str().unwrap()).unwrap();
         let (tx, rx) = mpsc::channel();
-        serve(socket.clone(), registry, whitelist, tx);
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {} // wait for bind
 
         let ack = submit(
@@ -136,7 +154,7 @@ mod tests {
     fn unknown_session_is_recipient_not_found_and_not_enqueued() {
         let (_tmp, socket, registry, whitelist) = setup();
         let (tx, rx) = mpsc::channel();
-        serve(socket.clone(), registry, whitelist, tx);
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
@@ -151,7 +169,7 @@ mod tests {
     fn missing_directory_is_directory_not_known() {
         let (_tmp, socket, registry, whitelist) = setup();
         let (tx, _rx) = mpsc::channel();
-        serve(socket.clone(), registry, whitelist, tx);
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
@@ -166,7 +184,7 @@ mod tests {
         let (tmp, socket, registry, whitelist) = setup();
         let dir = tmp.path().to_str().unwrap().to_string();
         let (tx, rx) = mpsc::channel();
-        serve(socket.clone(), registry, whitelist, tx);
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
@@ -185,7 +203,7 @@ mod tests {
     fn malformed_is_acked_without_enqueue() {
         let (_tmp, socket, registry, whitelist) = setup();
         let (tx, rx) = mpsc::channel();
-        serve(socket.clone(), registry, whitelist, tx);
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         assert_eq!(submit(&socket, "not json"), r#"{"status":"malformed"}"#);

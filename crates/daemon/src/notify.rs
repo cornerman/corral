@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::thread;
 
-use crate::ui::ApprovalAction;
+use crate::router::ApprovalAction;
 
 /// Fire a notification for a pending approval; the chosen action comes back on
 /// a channel, tagged with the message id so a stale reply can be ignored.

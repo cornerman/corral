@@ -103,12 +103,6 @@ pub enum Update {
 pub struct Board {
     live: BTreeMap<PathBuf, Agent>,
     dormant: Vec<Agent>,
-    /// Every registry session id -> its cwd, from the latest scan, whether the
-    /// record is live or dormant. Lets the router tell a session that exists
-    /// but is not yet discovered (a live socket whose watcher has not
-    /// announced, e.g. right after corral starts) from one that never existed,
-    /// so a queued session-addressed message waits instead of being dropped.
-    registry_sessions: BTreeMap<String, Option<String>>,
 }
 
 impl Board {
@@ -149,10 +143,6 @@ impl Board {
     /// resumable, not-live record is shown (one card per dormant session,
     /// newest first), so resuming one visibly drops the count.
     pub fn sync_registry(&mut self, entries: &[RegistryEntry], dead_sockets: &HashSet<PathBuf>) {
-        self.registry_sessions = entries
-            .iter()
-            .map(|e| (e.session_id.clone(), e.cwd.clone()))
-            .collect();
         let live_ids: HashSet<&str> = self
             .live
             .values()
@@ -201,50 +191,6 @@ impl Board {
     /// Live agents in a given state, in stable order.
     pub fn in_state(&self, state: State) -> Vec<&Agent> {
         self.live.values().filter(|a| a.state == state).collect()
-    }
-
-    /// Live agents whose working directory is `dir`, in stable order (socket
-    /// path). Used to route an inter-agent message to its target directory.
-    pub fn live_in_dir(&self, dir: &str) -> Vec<&Agent> {
-        self.live
-            .values()
-            .filter(|a| a.cwd.as_deref() == Some(dir))
-            .collect()
-    }
-
-    /// The live agent for an exact session id, if running. Used to route a
-    /// session-addressed message (e.g. a reply) to precisely that agent.
-    pub fn live_by_session(&self, session_id: &str) -> Option<&Agent> {
-        self.live
-            .values()
-            .find(|a| a.session_id.as_deref() == Some(session_id))
-    }
-
-    /// The dormant record for an exact session id, if any (to resume it).
-    pub fn dormant_by_session(&self, session_id: &str) -> Option<&Agent> {
-        self.dormant
-            .iter()
-            .find(|a| a.session_id.as_deref() == Some(session_id))
-    }
-
-    /// The agent for a session id, live first then dormant. Used to resolve a
-    /// session-addressed target's cwd (for authorization).
-    pub fn by_session(&self, session_id: &str) -> Option<&Agent> {
-        self.live_by_session(session_id)
-            .or_else(|| self.dormant_by_session(session_id))
-    }
-
-    /// The cwd of a session known to the registry (live or dormant), even one
-    /// not yet discovered by a watcher. `None` means the session id is absent
-    /// from the registry entirely (a truly unknown, undeliverable target).
-    pub fn registry_session_cwd(&self, session_id: &str) -> Option<String> {
-        self.registry_sessions.get(session_id).cloned().flatten()
-    }
-
-    /// Whether the registry knows this session id at all (live or dormant),
-    /// including a live record whose watcher has not announced yet.
-    pub fn registry_has_session(&self, session_id: &str) -> bool {
-        self.registry_sessions.contains_key(session_id)
     }
 
     /// The dormant column: every resumable, not-live session, newest first.
@@ -424,20 +370,6 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].session_id.as_deref(), Some("crashed"));
         assert_eq!(d[0].origin, Origin::Dormant);
-    }
-
-    #[test]
-    fn live_in_dir_filters_by_cwd() {
-        let mut b = Board::default();
-        let mut a1 = agent("/s/1.sock", State::Idle);
-        a1.cwd = Some("/p".into());
-        let mut a2 = agent("/s/2.sock", State::Idle);
-        a2.cwd = Some("/q".into());
-        b.apply(Update::Upsert(a1));
-        b.apply(Update::Upsert(a2));
-        let got = b.live_in_dir("/p");
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].cwd.as_deref(), Some("/p"));
     }
 
     #[test]

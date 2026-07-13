@@ -1,26 +1,38 @@
 //! Routing agent-initiated messages. Messages arrive over the control socket
 //! (`control.rs`) and are enqueued here; the `Router` owns the authorization
-//! decisions and the one message awaiting an operator decision, so the event
-//! loop only enqueues, polls, and forwards key presses. corral is the trusted
-//! cross-workdir bridge, so the authorization gate lives here.
+//! decisions and the one message awaiting an operator decision. corrald is the
+//! trusted cross-workdir bridge, so the authorization gate lives here.
 //!
 //! A message targets either a directory (reach whoever works there, spawning
 //! one if none) or an exact session id (reach precisely that agent, resuming it
 //! if dormant). Session targeting is what makes a reply land on the agent that
 //! actually asked, since a directory can hold zero, one, or several sessions.
 //!
-//! Delivery to a not-yet-live target hands the message to the launcher as the
-//! new session's first prompt (`pi "<message>"`), so a spawn/resume delivers
-//! atomically with no wait-for-announce dance. A target that is already live
-//! gets the message over its socket.
+//! Liveness comes straight from the registry: a record with a `socket` is
+//! live, one without is dormant. The daemon does not watch sockets (that is the
+//! board's job), so it delivers optimistically and falls back on a connect
+//! failure — a dead socket (crashed session) is resumed from its record rather
+//! than tracked. Delivery to a not-yet-live target hands the message to the
+//! launcher as the new session's first prompt (`pi "<message>"`), atomic with
+//! no wait-for-announce dance.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::launch::Launcher;
+use corral_core::discovery::RegistryEntry;
+use corral_core::launch::Launcher;
+use corral_core::prompt;
+
 use crate::mailbox::{is_whitelisted, whitelist_add, Message, Target};
-use crate::model::Board;
-use crate::prompt;
+
+/// An operator decision on a pending approval, produced by the tray or the
+/// desktop notification and applied to the router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalAction {
+    AllowOnce,
+    AllowAlways,
+    Deny,
+}
 
 /// A message awaiting an operator decision, with its resolved target directory
 /// (for the whitelist, which is keyed on dir pairs).
@@ -31,7 +43,7 @@ struct Pending {
 
 pub struct Router {
     whitelist: PathBuf,
-    /// Allow-once decisions for this board run (by message id).
+    /// Allow-once decisions for this daemon run (by message id).
     approved: HashSet<String>,
     /// Messages accepted over the control socket, awaiting routing.
     queue: VecDeque<Message>,
@@ -53,7 +65,7 @@ impl Router {
         self.queue.push_back(msg);
     }
 
-    /// The message awaiting an operator decision, if any (for the overlay).
+    /// The message awaiting an operator decision, if any.
     pub fn pending(&self) -> Option<&Message> {
         self.pending.as_ref().map(|p| &p.msg)
     }
@@ -61,20 +73,17 @@ impl Router {
     /// Route every whitelisted or already-approved message in the queue. Stops
     /// at the first message that needs a decision, storing it as `pending`.
     /// Returns a status line when it acted. A no-op while a decision is pending
-    /// (one at a time).
-    pub fn poll(&mut self, board: &Board, launcher: &dyn Launcher) -> Option<String> {
+    /// (one at a time). `entries` is a fresh registry scan (the daemon's view
+    /// of who is live and dormant).
+    pub fn poll(&mut self, entries: &[RegistryEntry], launcher: &dyn Launcher) -> Option<String> {
         if self.pending.is_some() {
             return None;
         }
         let mut status = None;
-        // A message whose live target has not yet been discovered is deferred
-        // and retried on the next poll (it cannot be launch-delivered: the
-        // agent is already running, just not watched yet).
-        let mut deferred = Vec::new();
         while let Some(msg) = self.queue.pop_front() {
-            let Some(target_cwd) = target_cwd(&msg, board) else {
+            let Some(target_cwd) = target_cwd(&msg, entries) else {
                 // Resolvable at accept time but gone now (rare race). Drop it.
-                status = Some("route: unknown target session".into());
+                status = Some("route: unknown target".into());
                 continue;
             };
             let ok = self.approved.contains(&msg.id)
@@ -83,15 +92,19 @@ impl Router {
                 self.pending = Some(Pending { msg, target_cwd });
                 break;
             }
-            match deliver(&msg, board, launcher) {
-                Some(s) => status = Some(s),
-                None => deferred.push(msg),
-            }
-        }
-        for m in deferred.into_iter().rev() {
-            self.queue.push_front(m);
+            status = Some(deliver(&msg, entries, launcher));
         }
         status
+    }
+
+    /// Apply an operator decision to the pending message.
+    pub fn apply(&mut self, action: ApprovalAction) -> std::io::Result<()> {
+        match action {
+            ApprovalAction::AllowOnce => self.allow_once(),
+            ApprovalAction::AllowAlways => self.allow_always()?,
+            ApprovalAction::Deny => self.deny(),
+        }
+        Ok(())
     }
 
     /// Allow the pending message once (this run), then route it on the next poll.
@@ -118,83 +131,85 @@ impl Router {
     }
 }
 
-/// Deliver one authorized message to its target.
-fn deliver(msg: &Message, board: &Board, launcher: &dyn Launcher) -> Option<String> {
+/// Deliver one authorized message to its target, returning a status line.
+fn deliver(msg: &Message, entries: &[RegistryEntry], launcher: &dyn Launcher) -> String {
     match &msg.target {
-        Target::Dir(dir) => deliver_dir(msg, dir, board, launcher),
-        Target::Session(sid) => deliver_session(msg, sid, board, launcher),
+        Target::Dir(dir) => deliver_dir(msg, dir, entries, launcher),
+        Target::Session(sid) => deliver_session(msg, sid, entries, launcher),
     }
 }
 
-/// Directory target: reuse a live agent in `dir`, or spawn one (and, for
-/// `force_new`, always a dedicated agent) carrying the message as its first
-/// prompt.
-fn deliver_dir(msg: &Message, dir: &str, board: &Board, launcher: &dyn Launcher) -> Option<String> {
+/// Directory target: reuse a live agent in `dir` (over its socket), or spawn
+/// one carrying the message as its first prompt. `force_new` always spawns a
+/// dedicated agent. A live socket that fails to connect (crashed session) falls
+/// through to a spawn.
+fn deliver_dir(
+    msg: &Message,
+    dir: &str,
+    entries: &[RegistryEntry],
+    launcher: &dyn Launcher,
+) -> String {
     if !msg.force_new {
-        let in_dir = board.live_in_dir(dir);
-        if let Some(agent) = in_dir.first() {
-            let sock = agent.socket_path.clone();
-            return Some(finish(&sock, msg));
+        if let Some(sock) = live_socket_in_dir(entries, dir) {
+            if prompt::send_prompt(&sock, &msg.tagged()).is_ok() {
+                return format!("routed to {}", msg.target_label());
+            }
+            // Socket present but dead: fall through and spawn a fresh agent.
         }
     }
-    Some(match launcher.spawn(Path::new(dir), Some(&msg.tagged())) {
+    match launcher.spawn(Path::new(dir), Some(&msg.tagged())) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
-    })
+    }
 }
 
-/// Session target: deliver to that exact agent if live, else resume it from its
-/// dormant record with the message as its first prompt. A live-but-undiscovered
-/// session (socket not yet watched) returns `None` to be retried next poll.
+/// Session target: deliver to that exact agent over its socket if live, else
+/// resume it from its record with the message as its first prompt. A live
+/// socket that fails to connect (crashed) falls back to resume.
 fn deliver_session(
     msg: &Message,
     session_id: &str,
-    board: &Board,
+    entries: &[RegistryEntry],
     launcher: &dyn Launcher,
-) -> Option<String> {
-    if let Some(agent) = board.live_by_session(session_id) {
-        let sock = agent.socket_path.clone();
-        return Some(finish(&sock, msg));
-    }
-    match board.dormant_by_session(session_id) {
-        Some(d) => Some(match (&d.cwd, &d.resume) {
-            (Some(cwd), Some(resume)) => {
-                match launcher.resume(Path::new(cwd), resume, Some(&msg.tagged())) {
-                    Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
-                    Err(e) => format!("route resume: {e}"),
-                }
-            }
-            _ => format!("route: session {session_id} not resumable"),
-        }),
-        None => {
-            if board.registry_has_session(session_id) {
-                return None; // live socket, watcher not announced yet: retry
-            }
-            Some(format!("route: session {session_id} not found"))
+) -> String {
+    let Some(entry) = entries.iter().find(|e| e.session_id == session_id) else {
+        return format!("route: session {session_id} not found");
+    };
+    if let Some(sock) = &entry.socket {
+        if prompt::send_prompt(sock, &msg.tagged()).is_ok() {
+            return format!("routed to {}", msg.target_label());
         }
+        // Socket present but dead: fall through and resume from the record.
+    }
+    match (&entry.cwd, &entry.resume) {
+        (Some(cwd), Some(resume)) => {
+            match launcher.resume(Path::new(cwd), resume, Some(&msg.tagged())) {
+                Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
+                Err(e) => format!("route resume: {e}"),
+            }
+        }
+        _ => format!("route: session {session_id} not resumable"),
     }
 }
 
-/// Inject a delivered message over a live target's socket.
-fn finish(socket: &Path, msg: &Message) -> String {
-    match prompt::send_prompt(socket, &msg.tagged()) {
-        Ok(()) => format!("routed to {}", msg.target_label()),
-        Err(e) => format!("route send: {e}"),
-    }
+/// The connectable socket of a live agent whose cwd is `dir`, if any.
+fn live_socket_in_dir(entries: &[RegistryEntry], dir: &str) -> Option<PathBuf> {
+    entries
+        .iter()
+        .find(|e| e.cwd.as_deref() == Some(dir) && e.socket.is_some())
+        .and_then(|e| e.socket.clone())
 }
 
-/// The target's working directory, used for the dir-keyed whitelist. A dir
-/// target is its own cwd; a session target resolves through the board (live or
-/// dormant). `None` means a session corral does not know about.
-fn target_cwd(msg: &Message, board: &Board) -> Option<String> {
+/// The target's working directory, for the dir-keyed whitelist. A dir target is
+/// its own cwd; a session target resolves through the registry. `None` means a
+/// session the daemon does not know about.
+fn target_cwd(msg: &Message, entries: &[RegistryEntry]) -> Option<String> {
     match &msg.target {
         Target::Dir(d) => Some(d.clone()),
-        // A discovered agent's own cwd first, then the registry, so a live
-        // session whose watcher has not announced yet still resolves its cwd.
-        Target::Session(sid) => board
-            .by_session(sid)
-            .and_then(|a| a.cwd.clone())
-            .or_else(|| board.registry_session_cwd(sid)),
+        Target::Session(sid) => entries
+            .iter()
+            .find(|e| &e.session_id == sid)
+            .and_then(|e| e.cwd.clone()),
     }
 }
 
@@ -202,9 +217,7 @@ fn target_cwd(msg: &Message, board: &Board) -> Option<String> {
 mod tests {
     use super::*;
     use crate::mailbox;
-    use crate::model::{Agent, Origin, State, Update};
     use std::cell::{Cell, RefCell};
-    use std::collections::HashSet;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
 
@@ -212,6 +225,7 @@ mod tests {
     #[derive(Default)]
     struct StubLauncher {
         spawns: Cell<usize>,
+        resumes: Cell<usize>,
         last_msg: RefCell<Option<String>>,
     }
     impl Launcher for StubLauncher {
@@ -221,6 +235,7 @@ mod tests {
             Ok(())
         }
         fn resume(&self, _cwd: &Path, _resume: &str, message: Option<&str>) -> Result<(), String> {
+            self.resumes.set(self.resumes.get() + 1);
             *self.last_msg.borrow_mut() = message.map(str::to_owned);
             Ok(())
         }
@@ -233,6 +248,18 @@ mod tests {
         .unwrap()
     }
 
+    fn dormant(session_id: &str, cwd: &str, resume: &str) -> RegistryEntry {
+        RegistryEntry {
+            session_id: session_id.into(),
+            cwd: Some(cwd.into()),
+            title: None,
+            socket: None,
+            resume: Some(resume.into()),
+            label: Some("pi".into()),
+            last_seen: None,
+        }
+    }
+
     #[test]
     fn unauthorized_message_becomes_pending_without_spawning() {
         let tmp = tempfile::tempdir().unwrap();
@@ -240,7 +267,7 @@ mod tests {
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
 
-        assert!(r.poll(&Board::default(), &launcher).is_none());
+        assert!(r.poll(&[], &launcher).is_none());
         assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0, "no delivery before approval");
     }
@@ -254,7 +281,7 @@ mod tests {
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
 
-        r.poll(&Board::default(), &launcher);
+        r.poll(&[], &launcher);
         assert!(r.pending().is_none(), "whitelisted needs no decision");
         assert_eq!(launcher.spawns.get(), 1, "spawned an agent in the target");
         assert_eq!(
@@ -272,10 +299,10 @@ mod tests {
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
 
-        r.poll(&Board::default(), &launcher); // -> pending
-        r.allow_always().unwrap();
+        r.poll(&[], &launcher); // -> pending
+        r.apply(ApprovalAction::AllowAlways).unwrap();
         assert!(mailbox::is_whitelisted(&whitelist, "/a", "/b"));
-        r.poll(&Board::default(), &launcher); // re-queued -> delivered
+        r.poll(&[], &launcher); // re-queued -> delivered
         assert_eq!(launcher.spawns.get(), 1);
     }
 
@@ -286,33 +313,16 @@ mod tests {
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
 
-        r.poll(&Board::default(), &launcher); // -> pending
-        r.deny();
+        r.poll(&[], &launcher); // -> pending
+        r.apply(ApprovalAction::Deny).unwrap();
         assert!(r.pending().is_none());
-        r.poll(&Board::default(), &launcher);
+        r.poll(&[], &launcher);
         assert_eq!(launcher.spawns.get(), 0, "denied -> never delivered");
     }
 
     #[test]
-    fn known_but_undiscovered_session_is_kept_not_dropped() {
-        // Right after corral starts, watchers have not announced, so a
-        // currently-live session is neither on the live board nor dormant (its
-        // record still names a socket). A session-addressed message must wait
-        // for the watcher, not be dropped as "unknown target".
+    fn dormant_session_target_is_resumed_with_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut board = Board::default();
-        board.sync_registry(
-            &[crate::discovery::RegistryEntry {
-                session_id: "sid-7".into(),
-                cwd: Some("/b".into()),
-                title: None,
-                socket: Some(tmp.path().join("pi-1.sock")),
-                resume: Some("/s/sid-7.jsonl".into()),
-                label: Some("pi".into()),
-                last_seen: None,
-            }],
-            &HashSet::new(),
-        );
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
@@ -323,15 +333,36 @@ mod tests {
             .unwrap(),
         );
         let launcher = StubLauncher::default();
+        let entries = [dormant("sid-7", "/b", "/s/sid-7.jsonl")];
 
-        assert!(
-            r.poll(&board, &launcher).is_none(),
-            "deferred, not delivered"
-        );
-        assert_eq!(launcher.spawns.get(), 0, "live socket needs no resume");
+        r.poll(&entries, &launcher);
         assert!(r.pending().is_none(), "whitelisted: no operator prompt");
-        // Still queued for a later poll once the watcher announces.
-        assert!(r.poll(&board, &launcher).is_none());
+        assert_eq!(launcher.resumes.get(), 1, "dormant session is resumed");
+        assert_eq!(
+            launcher.last_msg.borrow().as_deref(),
+            Some("[from agent in /a] hi")
+        );
+    }
+
+    #[test]
+    fn unknown_session_is_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        // Whitelist an unrelated pair; the point is the session does not exist.
+        let mut r = Router::new(whitelist);
+        r.enqueue(
+            mailbox::parse_message(
+                r#"{"id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
+            )
+            .unwrap(),
+        );
+        let launcher = StubLauncher::default();
+
+        let status = r.poll(&[], &launcher);
+        assert!(status.unwrap().contains("unknown target"));
+        assert!(r.pending().is_none());
+        assert_eq!(launcher.spawns.get(), 0);
+        assert_eq!(launcher.resumes.get(), 0);
     }
 
     #[test]
@@ -347,19 +378,15 @@ mod tests {
                 let _ = c.read(&mut buf);
             }
         });
-        let mut board = Board::default();
-        board.apply(Update::Upsert(Agent {
-            socket_path: sock.clone(),
-            pid: 1,
-            label: "pi".into(),
-            session_id: Some("sid-7".into()),
-            title: None,
+        let entries = [RegistryEntry {
+            session_id: "sid-7".into(),
             cwd: Some("/b".into()),
-            state: State::Idle,
-            origin: Origin::Live,
-            resume: None,
-            activity: None,
-        }));
+            title: None,
+            socket: Some(sock.clone()),
+            resume: Some("/s/sid-7.jsonl".into()),
+            label: Some("pi".into()),
+            last_seen: None,
+        }];
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
@@ -371,8 +398,9 @@ mod tests {
         );
         let launcher = StubLauncher::default();
 
-        r.poll(&board, &launcher);
+        r.poll(&entries, &launcher);
         handle.join().unwrap();
         assert_eq!(launcher.spawns.get(), 0, "live session needs no spawn");
+        assert_eq!(launcher.resumes.get(), 0, "live socket needs no resume");
     }
 }

@@ -32,3 +32,7 @@ watch:
 # Run the attention board
 board *ARGS:
     cargo run -p corral -- {{ARGS}}
+
+# Run the message-routing daemon (owns the control socket + tray)
+daemon *ARGS:
+    cargo run -p corral-daemon -- {{ARGS}}

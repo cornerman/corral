@@ -1,0 +1,15 @@
+# Shared code for the `corral` board and the `corrald` daemon: registry
+# discovery, prompt delivery over a live socket, and the agent-launch seam.
+# Deliberately UI-free (no ratatui, no ksni) so each binary keeps its own deps.
+[package]
+name = "corral-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared registry/discovery/launch/prompt code for corral and corrald"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

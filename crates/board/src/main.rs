@@ -27,27 +27,20 @@ use crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 
-mod control;
-mod discovery;
 mod focus;
-mod launch;
-mod mailbox;
 mod model;
 mod nav;
-mod notify;
 mod picker;
-mod prompt;
-mod router;
 mod ui;
 mod watch;
 
-use discovery::RegistryEntry;
+use corral_core::discovery::{self, RegistryEntry};
+use corral_core::launch::{self, KittyLauncher, Launcher};
+use corral_core::paths;
+use corral_core::prompt;
 use focus::{SwayFocuser, WindowFocuser};
-use launch::{KittyLauncher, Launcher};
 use model::{Board, Origin, Update};
-use notify::{ApprovalNotifier, NotifySendNotifier};
 use picker::Picker;
-use router::Router;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
@@ -57,7 +50,7 @@ const POLL: Duration = Duration::from_millis(250);
 const DORMANT_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 fn main() {
-    let Some(dir) = registry_dir() else {
+    let Some(dir) = paths::registry_dir() else {
         eprintln!("corral: set $CORRAL_REGISTRY_DIR or $HOME");
         std::process::exit(1);
     };
@@ -84,33 +77,6 @@ fn main() {
         eprintln!("corral: {e}");
         std::process::exit(1);
     }
-}
-
-/// A corral path: the `env` override if set, else `$HOME/.corral/<name>`.
-/// `None` only when neither is available. All of corral's on-disk locations
-/// share this shape (a well-known name under `~/.corral`, overridable for
-/// tests and non-standard setups).
-fn corral_path(env: &str, name: &str) -> Option<PathBuf> {
-    if let Some(v) = std::env::var_os(env) {
-        return Some(PathBuf::from(v));
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join(name))
-}
-
-/// The registry directory: the session records corral discovers.
-fn registry_dir() -> Option<PathBuf> {
-    corral_path("CORRAL_REGISTRY_DIR", "registry")
-}
-
-/// The control socket the corral-announce `corral_message_agent` tool submits
-/// to. Under `~/.corral`, which is on the agent sandbox allowlist.
-fn control_socket() -> Option<PathBuf> {
-    corral_path("CORRAL_CONTROL_SOCKET", "corrald.sock")
-}
-
-/// The whitelist file of pre-authorized `(sender -> target)` dir pairs.
-fn whitelist_file() -> Option<PathBuf> {
-    corral_path("CORRAL_WHITELIST", "whitelist")
 }
 
 /// Where an operator-composed message (`m`) is delivered.
@@ -208,7 +174,7 @@ fn handle_overlay(
             }
             PickerInput::SubmitSpawn => {
                 if let Some(a) = p.selected_agent() {
-                    let cwd = launch::default_cwd(Some(a));
+                    let cwd = launch::default_cwd(a.cwd.as_deref());
                     if let Err(e) = launcher.spawn(&cwd, None) {
                         *status = format!("spawn: {e}");
                     }
@@ -269,22 +235,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     // The active input overlay, if any (`c` spawn dir, `f` focus agent, `m`
     // compose a message). One at a time by construction.
     let mut overlay: Option<Overlay> = None;
-    // Agent-initiated message routing. Messages arrive over the control socket
-    // (corrald.sock) on a background thread and are drained into the router,
-    // which owns authorization. None when there is no home for the whitelist.
-    let mut router = whitelist_file().map(Router::new);
-    let (msg_tx, msg_rx): (Sender<mailbox::Message>, Receiver<mailbox::Message>) = mpsc::channel();
-    if let (Some(sock), Some(wl)) = (control_socket(), whitelist_file()) {
-        control::serve(sock, dir.to_path_buf(), wl, msg_tx);
-    }
-    // A pending approval is mirrored to a desktop notification; its buttons
-    // report back here. `notified` tracks which message id already has one, so
-    // a notification fires once per pending message.
-    let notifier = NotifySendNotifier;
-    let (napp_tx, napp_rx) = mpsc::channel::<(String, ui::ApprovalAction)>();
-    let mut notified: Option<String> = None;
-    // Scroll offset for the pending approval's (possibly long) message body.
-    let mut approval_scroll: u16 = 0;
+    // Inter-agent messaging lives entirely in the corrald daemon now; the board
+    // is a pure viewer of the registry plus the operator's own actions (focus,
+    // spawn, resume, and the ungated `m` message to a selected agent).
     // One persistent ListState per column so ratatui scrolls long columns and
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
@@ -371,47 +324,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             board.apply(update);
         }
 
-        // Drain messages accepted over the control socket into the router.
-        if let Some(r) = router.as_mut() {
-            while let Ok(msg) = msg_rx.try_recv() {
-                r.enqueue(msg);
-            }
-        }
-
-        // Route queued messages when no overlay is capturing input.
-        if overlay.is_none() {
-            if let Some(r) = router.as_mut() {
-                if let Some(s) = r.poll(&board, &launcher) {
-                    status = s;
-                }
-            }
-        }
-
-        // Mirror a newly pending approval to a desktop notification, and apply
-        // any decision its buttons send back (ignoring stale ids).
-        match router.as_ref().and_then(Router::pending) {
-            Some(msg) if notified.as_deref() != Some(&msg.id) => {
-                notifier.notify(
-                    msg.id.clone(),
-                    &msg.from_cwd,
-                    &msg.target_label(),
-                    &msg.message,
-                    napp_tx.clone(),
-                );
-                notified = Some(msg.id.clone());
-                approval_scroll = 0; // fresh message starts at the top
-            }
-            None => notified = None,
-            _ => {}
-        }
-        while let Ok((id, action)) = napp_rx.try_recv() {
-            if let Some(r) = router.as_mut() {
-                if r.pending().map(|m| m.id.as_str()) == Some(id.as_str()) {
-                    apply_approval(r, action, &mut status);
-                }
-            }
-        }
-
         let counts = board.column_counts();
         let count: usize = counts.iter().sum();
         if selected >= count {
@@ -438,56 +350,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
                 None => {}
             }
-            if let Some(msg) = router.as_ref().and_then(Router::pending) {
-                ui::render_approval(f, msg, approval_scroll);
-            }
         })?;
 
         if event::poll(POLL)? {
             let ev = event::read()?;
-            // The approval overlay captures all input until the operator
-            // decides on the pending inter-agent message. Enter = allow once,
-            // a = allow always (persist), Esc = deny; or click a button.
-            if let Some(r) = router.as_mut().filter(|r| r.pending().is_some()) {
-                let action = match ev {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                        KeyCode::Enter => Some(ui::ApprovalAction::AllowOnce),
-                        KeyCode::Char('a') => Some(ui::ApprovalAction::AllowAlways),
-                        KeyCode::Esc => Some(ui::ApprovalAction::Deny),
-                        // Up/Down scroll the message body, not a decision.
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            approval_scroll = approval_scroll.saturating_sub(1);
-                            None
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            approval_scroll = approval_scroll.saturating_add(1);
-                            None
-                        }
-                        _ => None,
-                    },
-                    Event::Mouse(m) => match m.kind {
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            let s = terminal.size()?;
-                            let area = Rect::new(0, 0, s.width, s.height);
-                            ui::approval_hit_test(area, m.column, m.row)
-                        }
-                        MouseEventKind::ScrollUp => {
-                            approval_scroll = approval_scroll.saturating_sub(1);
-                            None
-                        }
-                        MouseEventKind::ScrollDown => {
-                            approval_scroll = approval_scroll.saturating_add(1);
-                            None
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some(a) = action {
-                    apply_approval(r, a, &mut status);
-                }
-                continue;
-            }
             // Any open overlay captures all input until it closes.
             if let Some(ov) = overlay.take() {
                 overlay = handle_overlay(ov, ev, &focuser, &launcher, &mut status);
@@ -642,20 +508,6 @@ fn activate(
     }
 }
 
-/// Apply an approval decision to the router. Shared by the in-board dialog
-/// (keys/click) and the desktop notification's buttons.
-fn apply_approval(router: &mut Router, action: ui::ApprovalAction, status: &mut String) {
-    match action {
-        ui::ApprovalAction::AllowOnce => router.allow_once(),
-        ui::ApprovalAction::AllowAlways => {
-            if let Err(e) = router.allow_always() {
-                *status = format!("whitelist: {e}");
-            }
-        }
-        ui::ApprovalAction::Deny => router.deny(),
-    }
-}
-
 /// Open the `/` jump picker over all agents (Enter goes, Shift+Enter spawns).
 fn open_jump(board: &Board) -> Option<Overlay> {
     let agents: Vec<model::Agent> = board.selectable().into_iter().cloned().collect();
@@ -685,7 +537,12 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
 /// Spawn a new agent in the selected agent's dir (or $HOME).
 fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &mut String) {
     status.clear();
-    let cwd = launch::default_cwd(board.selectable().get(selected).copied());
+    let cwd = launch::default_cwd(
+        board
+            .selectable()
+            .get(selected)
+            .and_then(|a| a.cwd.as_deref()),
+    );
     if let Err(e) = launcher.spawn(&cwd, None) {
         *status = format!("spawn: {e}");
     }
