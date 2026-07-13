@@ -21,6 +21,7 @@ use corral_core::launch::KittyLauncher;
 use corral_core::paths;
 
 mod control;
+mod icon;
 mod mailbox;
 mod notify;
 mod router;

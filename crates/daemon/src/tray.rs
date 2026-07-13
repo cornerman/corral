@@ -64,13 +64,15 @@ impl ksni::Tray for CorralTray {
         }
     }
 
-    // A waiting approval flips the icon to an attention/unread glyph so the
-    // tray reads at a glance without opening the menu.
-    fn icon_name(&self) -> String {
-        match &self.pending {
-            Some(_) => "mail-unread-new".into(),
-            None => "mail-read".into(),
-        }
+    // The corral "pen" mark, drawn in code. Calm (gray) normally; the tray
+    // switches to the attention pixmap (warm red) when `status` is
+    // NeedsAttention, i.e. a message is waiting.
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        crate::icon::pen_pixmaps(false)
+    }
+
+    fn attention_icon_pixmap(&self) -> Vec<ksni::Icon> {
+        crate::icon::pen_pixmaps(true)
     }
 
     fn status(&self) -> ksni::Status {

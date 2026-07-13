@@ -4,7 +4,7 @@
 //! dim-gray Dormant column (resumable history). A status/help footer sits at
 //! the bottom.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 
@@ -603,7 +603,19 @@ pub fn render(
         spans.push(Span::styled(*label, dim));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_area);
+
+    // The corral mark, bottom-right and faint: "the pen" — a bracketed
+    // enclosure holding three dots (the board's own agent glyph). Right-aligned
+    // on the footer row, clear of the left-aligned key hints.
+    frame.render_widget(
+        Paragraph::new(Line::from(LOGO.fg(Color::DarkGray)).alignment(Alignment::Right)),
+        footer_area,
+    );
 }
+
+/// The minimal corral wordmark shown in the board's bottom-right corner: a pen
+/// (`⟦ ⟧`) enclosing three dots (`∴`), matching the tray icon.
+const LOGO: &str = "⟦∴⟧ corral";
 
 #[cfg(test)]
 mod tests {
