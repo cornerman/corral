@@ -47,7 +47,7 @@ talks ACP to that agent.
   (`initialize`, `session/list`), watch its activity (message and tool
   broadcasts), send prompts, and cancel turns. It reports run state via the
   standard ACP v2 `state_update` notification (running/idle/requires_action).
-  It also registers a `message_agent` tool so a session can hand a message to
+  It also registers a `corral_message_agent` tool so a session can hand a message to
   another agent, addressed by directory or by exact session id (the latter lets
   a reply reach the precise agent that asked); corral routes it, spawning or
   resuming a target if none is running and asking you to approve unfamiliar

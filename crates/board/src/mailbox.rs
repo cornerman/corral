@@ -1,4 +1,4 @@
-//! The outbox: agent-initiated cross-session messages. The `message_agent`
+//! The outbox: agent-initiated cross-session messages. The `corral_message_agent`
 //! tool drops a `<id>.json` mailbox file here; corral is the trusted router
 //! that authorizes, resolves the target directory, and injects the message.
 //! Parsing and authorization are pure and unit-tested; the IO wrappers are
@@ -33,7 +33,7 @@ impl Message {
     /// The delivered text, carrying in-band provenance so the receiving model
     /// and the watching human see it came from another agent, not the
     /// operator. When the sender's session is known it is included as a reply
-    /// handle: the receiver answers with `message_agent(target_session = ..)`.
+    /// handle: the receiver answers with `corral_message_agent(target_session = ..)`.
     pub fn tagged(&self) -> String {
         match &self.from_session {
             Some(sid) => format!(

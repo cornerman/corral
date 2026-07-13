@@ -101,7 +101,7 @@ fn registry_dir() -> Option<PathBuf> {
     corral_path("CORRAL_REGISTRY_DIR", "registry")
 }
 
-/// The outbox directory the corral-announce `message_agent` tool writes to.
+/// The outbox directory the corral-announce `corral_message_agent` tool writes to.
 fn outbox_dir() -> Option<PathBuf> {
     corral_path("CORRAL_OUTBOX_DIR", "outbox")
 }

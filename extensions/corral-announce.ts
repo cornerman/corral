@@ -26,7 +26,7 @@
  *                         turn_start/turn_end, and requires_action while the
  *                         interactive `question` tool blocks on the user
  *
- * Registers one tool, message_agent, that queues a cross-session message as a
+ * Registers one tool, corral_message_agent, that queues a cross-session message as a
  * mailbox file under $HOME/.corral/outbox/<id>.json (override with
  * $CORRAL_OUTBOX_DIR) for corral to route; the agent never reaches another
  * session directly. A message is addressed by target_dir (whoever works there)
@@ -73,14 +73,14 @@ export default function (pi: ExtensionAPI) {
 	// session/prompt requests waiting for the turn that consumes them to end.
 	const pendingPrompts: Array<{ conn: net.Socket; id: number | string }> = [];
 
-	// message_agent: let this agent hand a message to another session, addressed
+	// corral_message_agent: let this agent hand a message to another session, addressed
 	// by working directory. It only writes a mailbox file under ~/.corral/outbox;
 	// corral (the unsandboxed board) is the trusted cross-workdir router that
 	// authorizes, resolves the target, spawns an agent if none runs there, and
 	// injects with a provenance tag. Sandboxed agents cannot reach each other
 	// directly, so this indirection is the only cross-session path.
 	pi.registerTool({
-		name: "message_agent",
+		name: "corral_message_agent",
 		label: "Message agent",
 		description:
 			"Send a message to another coding-agent session. Address it EITHER by " +
@@ -117,7 +117,7 @@ export default function (pi: ExtensionAPI) {
 			const hasSession = typeof params.target_session === "string" && params.target_session.length > 0;
 			if (hasDir === hasSession) {
 				return {
-					content: [{ type: "text", text: "message_agent: give exactly one of target_dir or target_session" }],
+					content: [{ type: "text", text: "corral_message_agent: give exactly one of target_dir or target_session" }],
 				};
 			}
 			fs.mkdirSync(outbox, { recursive: true, mode: 0o700 });
@@ -462,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 	function sessionInfo(ctx: ExtensionContext) {
 		return {
 			// The stable session UUID, matching the registry filename and the
-			// reply handle stamped by message_agent. Must NOT be the session
+			// reply handle stamped by corral_message_agent. Must NOT be the session
 			// file path, or session-addressed routing (live_by_session) would
 			// never match a live agent.
 			sessionId: ctx.sessionManager.getSessionId(),
