@@ -194,10 +194,11 @@ The land-grab (capturing the coordination-layer space) reorders the work. The
 first two items are what turn "my private tool" into "the space"; the rest is
 daily-use ergonomics.
 
-1. **Publish the contract as a neutral convention.** Specify the registry
-   record, the workdir-local socket, and the `state_update` broadcast
-   independently of pi *and* of corral, so any harness or tool can implement it
-   without reading corral's source. This is what makes the convention adoptable.
+1. **Publish the contract as a neutral convention.** (done) Specified in
+   [CONVENTION.md](CONVENTION.md): the registry record, the workdir-local
+   socket, the ACP surface, and the `state_update` broadcast, independently of
+   pi *and* of corral, with a MUST/SHOULD/MAY conformance checklist so any
+   harness or tool can implement it without reading corral's source.
 2. **Prove cross-harness with a second adapter.** A Claude Code (or Codex)
    announce shim beside `corral-announce`. Two harnesses on one board is the
    demonstration that makes the claim real; one harness is just a tool.

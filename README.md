@@ -29,6 +29,10 @@ speaks the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) as
 newline-delimited JSON-RPC: corral reads the registry to find each socket, then
 talks ACP to that agent.
 
+The registry record, workdir-local socket, and `state_update` broadcast are a
+harness-neutral convention, specified independently of pi and corral in
+[CONVENTION.md](CONVENTION.md), so any agent harness can join the board.
+
 ## Components
 
 - **corral** (`crates/board`) — the attention board TUI. Scans

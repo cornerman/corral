@@ -16,6 +16,10 @@ Agent-agnostic by design; pi is the current proof of concept, announced via the
 `corral-announce` extension. The board reads agent identity generically, so
 other ACP agents are a matter of giving them a way to announce (see Future).
 
+The registry record, workdir-local socket, and ACP surface are a harness-neutral
+convention specified in `CONVENTION.md` (implement from that alone, no source
+reading). This section is the architecture view of the same contract.
+
 Discovery works through a per-session registry on the filesystem, not a
 registry service. One record per session names a workdir-local socket:
 
