@@ -138,10 +138,18 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker) {
                 let faint = Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM);
-                items.push(ListItem::new(path_line(&shown, dim, faint)));
+                // Blank line before each group (except the first) sets the
+                // directory groups apart without bloating every row.
+                let mut lines = Vec::new();
+                if !items.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(path_line(&shown, dim, faint));
+                items.push(ListItem::new(lines));
             }
             Row::Agent(a) => {
-                if agent_seen == picker.selected {
+                let selected = agent_seen == picker.selected;
+                if selected {
                     highlight = Some(items.len());
                 }
                 agent_seen += 1;
@@ -154,7 +162,11 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker) {
                     title_style = title_style.add_modifier(Modifier::DIM);
                 }
                 let name = a.title.as_deref().unwrap_or("(unnamed)");
+                // A colored bar marks the selected entry (the board's motif);
+                // others get matching blank width so titles stay aligned.
+                let bar = if selected { "▍ " } else { "  " };
                 let mut spans = vec![
+                    Span::styled(bar.to_string(), Style::default().fg(color)),
                     Span::styled(format!("{glyph} "), Style::default().fg(color)),
                     Span::styled(name.to_string(), title_style),
                 ];
@@ -165,7 +177,10 @@ pub fn render_picker(frame: &mut Frame, picker: &Picker) {
             }
         }
     }
-    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    // A uniform dark background marks the selection in one clean shade,
+    // keeping each span's own color (REVERSED would invert them piecemeal into
+    // a patchy two-tone bar).
+    let list = List::new(items).highlight_style(Style::default().bg(Color::Indexed(238)));
     let mut state = ListState::default();
     state.select(highlight);
     frame.render_stateful_widget(list, rows[1], &mut state);
