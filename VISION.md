@@ -149,13 +149,22 @@ or takes turns, which is really a subagent-shaped need.
 
 ## Architecture Decisions Reached (2026-07-13)
 
-- **One binary, one process, terminal TUI.** No board/daemon split and no
-  `crates/core` reorg. The routing loop lives in the same process as the board,
-  as it does today. Rationale: routing cannot function without the graphical
-  session anyway (delivery spawns kitty, focus uses sway), so a headless daemon
-  that "survives without the GUI" buys nothing. The two share one lifecycle by
-  nature. The terminal TUI is deliberate: simple, and it fits terminal-native
-  developers.
+- **Two binaries: the board (`corral`) and a message daemon (`corrald`).**
+  Superseding the earlier "one binary, one process" call. The forcing fact the
+  first decision missed: exactly one process can own the control socket, but a
+  registry reflector is harmless to run many times over. Today every `corral`
+  silently hijacks the socket (unlink + rebind) if launched twice, so messaging
+  quietly migrates to whichever board started last. The fix is to make
+  messaging a singleton daemon and the board a pure viewer. The gate maps the
+  split cleanly: agent-initiated messages are untrusted and gated (whitelist +
+  approval), so they route through `corrald`; the operator's own `m` is trusted
+  and ungated, so it stays direct on the board. The two share only the
+  filesystem registry and never talk. A `corral-core` lib holds the shared
+  discovery/launch/prompt/paths code, so the board keeps `ratatui` and the
+  daemon keeps `ksni` without cross-contamination. corrald can be headless (a
+  systemd user service in the graphical session spawns kitty, runs the tray,
+  and sends notifications), which the old "headless buys nothing" argument had
+  ruled out on the wrong axis (lifecycle survival, not the singleton conflict).
 - **Corral owns behavior; the WM and nixos own lifecycle and visibility.**
   Keeping the process alive (systemd, `exec_always`) and showing or hiding its
   window (scratchpad) are deployment concerns in `~/nixos`, not corral code.
@@ -211,12 +220,18 @@ daily-use ergonomics.
    (accepted / blocked / recipient_not_found / directory_not_known); a connect
    failure fails loud instead of queuing silently. Accepted messages live in
    corral's memory (no on-disk spool) until routed.
-5. **systemd unit for the scratchpad** plus a hide behavior (nixos side for the
-   unit; corral side for hide). The real reliability fix.
-6. **Tray via `ksni`**: glanceable attention/pending count, click to open.
+5. **corrald daemon + tray** (done): messaging split into a singleton `corrald`
+   binary owning the control socket, whitelist gate, and router; a `ksni` tray
+   is its reliable approval surface (Allow once / always / Deny, open board,
+   quit) with the `notify-send` mirror. The board became a pure viewer (no
+   router, control, or approval code) and a `corral-core` lib holds the shared
+   code. Still nixos-side: the systemd user service that keeps `corrald` alive
+   (restart-on-failure) and the WM keybind that summons the board window.
+6. **Board window hide** (nixos + a `WindowHider` seam): summon/dismiss the
+   board via the WM scratchpad; corral hides itself after a dismiss. See the
+   open "Hide trigger" question.
 7. **Review surface**: a cohesive approval-review view showing the full prompt
-   text, kept separate in code from the triage columns even though it is the
-   same binary.
+   text, kept separate in code from the triage columns.
 
 Items 3 through 7 improve corral for daily use; items 1 and 2 capture the space.
 

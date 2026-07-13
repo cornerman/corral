@@ -35,7 +35,8 @@ harness-neutral convention, specified independently of pi and corral in
 
 ## Components
 
-- **corral** (`crates/board`) — the attention board TUI. Scans
+- **corral** (`crates/board`) — the attention board TUI, a pure viewer of the
+  registry (launch as many as you like). Scans
   `$HOME/.corral/registry/`, holds a live watch connection per live socket, and columns
   each by Requires Action / Idle / Running / Dormant. Enter goes to the
   selected agent (focus a live window via sway, or resume a dormant session);
@@ -45,7 +46,18 @@ harness-neutral convention, specified independently of pi and corral in
   Shift+Enter relies on the kitty keyboard protocol. Window focus and agent
   spawn sit behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
-  and the core never names them.
+  and the core never names them. `m` messages the selected agent directly and
+  ungated (the operator is trusted).
+- **corrald** (`crates/daemon`) — the headless message-routing daemon, a
+  singleton owning inter-agent messaging: it binds the control socket
+  (`$HOME/.corral/corrald.sock`), authorizes `(sender -> target)` directory
+  pairs against a whitelist, and injects each approved message. The approval
+  gate surfaces on a `ksni` system tray (Allow once / always / Deny, open board,
+  quit) with a `notify-send` mirror. Run it under a systemd user service. The
+  board and the daemon share only the registry and never talk to each other.
+- **corral-core** (`crates/core`) — the shared lib (registry discovery, prompt
+  delivery, the kitty launch seam, on-disk paths), so the board and the daemon
+  reuse one implementation without linking each other's UI dependencies.
 - **corral-announce** (pi extension, `extensions/corral-announce.ts`) —
   announces an interactive pi session via the registry, no wrapper needed. The
   TUI stays in your terminal while ACP clients discover the session
@@ -54,7 +66,7 @@ harness-neutral convention, specified independently of pi and corral in
   standard ACP v2 `state_update` notification (running/idle/requires_action).
   It also registers a `corral_message_agent` tool so a session can hand a message to
   another agent, addressed by directory or by exact session id (the latter lets
-  a reply reach the precise agent that asked); corral routes it, spawning or
+  a reply reach the precise agent that asked); corrald routes it, spawning or
   resuming a target if none is running and asking you to approve unfamiliar
   sender/target pairs.
 
@@ -64,8 +76,12 @@ harness-neutral convention, specified independently of pi and corral in
 # Announce interactive pi sessions (one-time setup):
 ln -s ~/projects/corral/extensions/corral-announce.ts ~/.pi/agent/extensions/
 
-# Then just run the board:
+# Run the board (any number of instances):
 corral
+
+# For inter-agent messaging, run the daemon once (ideally a systemd user
+# service so it survives crashes). A second instance refuses to start.
+corrald
 ```
 
 Any ACP client can connect to a discovered socket directly (for example with

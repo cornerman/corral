@@ -9,8 +9,16 @@ An attention board for locally running ACP agent sessions, plus the discovery
 convention it rides on. Design premise: the user launches agents in arbitrary
 terminals, never through a manager. Corral shows which agent needs attention
 and jumps the user to its real window. It never drives an agent autonomously;
-the operator may deliver a message to a selected agent (`m`), which corral
+the operator may deliver a message to a selected agent (`m`), which the board
 injects over that agent's socket.
+
+Two binaries ship from this workspace. `corral` is the board — a pure viewer of
+the registry, launchable many times over. `corrald` is a headless singleton
+daemon that owns inter-agent messaging (the control socket, the whitelist gate,
+the approval tray). They share only the filesystem registry and never talk to
+each other. The split falls out of two facts: exactly one process can own the
+control socket (so messaging must be a singleton), while a registry reflector is
+harmless to run many times over.
 
 Agent-agnostic by design; pi is the current proof of concept, announced via the
 `corral-announce` extension. The board reads agent identity generically, so
@@ -42,35 +50,72 @@ sessions is a later stage).
 
 ## Data Flow
 
+Two independent processes read the same filesystem registry; they never talk to
+each other. The board (`corral`) reflects and drives the operator's own actions;
+the daemon (`corrald`) is the singleton that owns inter-agent messaging.
+
 ```
 your terminal (pi, interactive TUI)              another terminal
-  pi -e extensions/corral-announce.ts              corral (attention board)
+  pi -e extensions/corral-announce.ts              corral (attention board, launch many)
     |  writes ~/.corral/registry/<id>.json           |  scans the registry (1s)
     |  binds <cwd>/.corral/pi-<pid>.sock              |  one watch connection per live socket:
     |    on session_start                            |    initialize + session/list (seed)
     |  serves ACP beside the live TUI:               |    streams state_update -> column
     |    initialize, session/list, prompt, cancel    |  Enter -> focus (sway) or resume
     |  broadcasts activity + state_update            |  shift+enter -> spawn agent (kitty)
-    |  clears socket + unlinks on session_shutdown   |  m -> send prompt to agent
-    |                                                |
-  corral_message_agent tool -> ~/.corral/corrald.sock ----+  per submission (control.rs):
-    (asks to message a target dir or session)            parse, find recipient,
-    <- ack: accepted / blocked /                         ack the verdict, then
-       recipient_not_found / directory_not_known         enqueue to the router:
-                                                         authorize (whitelist +
-                                                         operator popup), resolve
-                                                         target dir/session (spawn
-                                                         or resume if needed),
-                                                         inject with provenance tag
+    |  clears socket + unlinks on session_shutdown   |  m -> send prompt DIRECT (ungated,
+    |                                                |       operator is trusted)
+    |
+  corral_message_agent tool -> ~/.corral/corrald.sock ----+  corrald (daemon, ONE singleton)
+    (asks to message a target dir or session)            per submission (control.rs):
+    <- ack: accepted / blocked /                         parse, find recipient, ack, then
+       recipient_not_found / directory_not_known         enqueue to the router: authorize
+                                                         (whitelist + tray/notify popup),
+                                                         resolve dir/session (spawn/resume
+                                                         if needed), inject w/ provenance tag
 ```
+
+The operator's `m` and the agent-initiated path split on trust: the operator is
+the trusting authority, so `m` delivers directly and ungated from the board; an
+agent's message is gated by the whitelist and the approval popup, which is why
+it routes through the daemon. The approval gate maps exactly onto the daemon
+boundary. The daemon is a singleton because exactly one process may own the
+control socket; the board is a pure registry reflector, so any number may run.
 
 ## Crates
 
-- `crates/board` — the attention board (binary name `corral`). The triage core
-  (`model`, `watch`, `ui`) never names sway or kitty; both sit behind traits.
+Three workspace crates. `core` holds only what both binaries share, so neither
+links the other's dependencies (the board keeps ratatui; the daemon keeps ksni).
+
+- `crates/core` — `corral-core` (lib): the shared foundation, UI-free
+  (`serde_json` only).
   - `src/discovery.rs` — scan the registry dir, parse each `<sessionId>.json`
     record, and resolve a live record to its socket (parsing the
-    `<label>-<pid>.sock` filename). Pure, unit-tested.
+    `<label>-<pid>.sock` filename). Liveness is read straight from the record
+    (`socket` set = live, cleared = dormant). Pure, unit-tested.
+  - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
+    (spawn) or `kitty -e pi --session <path>` (resume a dormant session),
+    always via `setsid --fork` so the window is detached from its launcher
+    (survives the launcher exiting, no zombie, and — since it is not a
+    descendant — the board's focus parent-walk cannot climb into corral's own
+    window). Both take an optional initial `message` submitted as pi's first
+    prompt (a positional arg), so a message can be delivered atomically at
+    launch. pi's parser has no `--` marker and treats a leading `-`/`@` as a
+    flag/file, so such a message is space-guarded (pi trims it); `pi_args` is
+    unit-tested. `default_cwd` takes a plain cwd (not an `Agent`) so the crate
+    stays free of the board's model.
+  - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
+    opening a one-shot connection to its socket and writing a `session/prompt`
+    request (fire-and-forget). Used by the board (operator `m`) and the daemon
+    (agent delivery to a live target). Unit-tested against a throwaway listener.
+  - `src/paths.rs` — the well-known on-disk locations (`registry_dir`,
+    `control_socket`, `whitelist_file`), each the `env` override or a fixed name
+    under `~/.corral`. Shared so both binaries agree on where things live.
+
+- `crates/board` — the attention board (binary name `corral`), a pure viewer of
+  the registry plus the operator's own actions. Holds no messaging state (that
+  is the daemon's); launch it as many times as you like. The triage core
+  (`model`, `watch`, `ui`) never names sway or kitty; both sit behind traits.
   - `src/model.rs` — `Agent` (`Origin` Live or Dormant) and `Board`. Live
     agents are keyed by socket path (driven by watchers); dormant agents are a
     derived view of the registry (cleanly shut-down, resumable, not-live
@@ -91,49 +136,6 @@ your terminal (pi, interactive TUI)              another terminal
     namespace). `focus` then runs `swaymsg [con_id=..] focus`; `close` kills
     that terminal pid (not a window-close request, which kitty's
     `confirm_os_window_close` would block). The tree walk is unit-tested.
-  - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
-    (spawn) or `kitty -e pi --session <path>` (resume a dormant session),
-    always via `setsid --fork` so the window is detached from corral (survives
-    the board exiting, no zombie, and — since it is not a descendant of corral
-    — the focus parent-walk cannot climb into the board's own window). Both
-    take an optional initial `message` submitted as pi's first prompt (a
-    positional arg), so a message can be delivered atomically at launch. pi's
-    parser has no `--` marker and treats a leading `-`/`@` as a flag/file, so
-    such a message is space-guarded (pi trims it); `pi_args` is unit-tested.
-  - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
-    opening a one-shot connection to its socket and writing a `session/prompt`
-    request (fire-and-forget). Unit-tested against a throwaway listener.
-  - `src/mailbox.rs` — cross-session message types: parse a submitted message (a
-    `Target` is a directory or an exact session id), `classify` it into an `Ack`
-    (accepted / blocked / recipient_not_found / directory_not_known) from
-    resolved facts, add the `[from agent in <dir> (session <id>)]`
-    provenance/reply-handle tag, and read/append the `(sender -> target)`
-    whitelist. Pure, unit-tested.
-  - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
-    `$CORRAL_CONTROL_SOCKET`). A background thread accepts one submission per
-    connection: read the request line, parse, find the recipient (registry
-    scan for a session, dir-exists for a directory), ack the verdict, and (if
-    routable) hand the message to the router over a channel. Submission thus
-    fails loud when corral is down (connect fails) rather than piling up a
-    silent file queue. Ack is synchronous; delivery and the approval gate run
-    later in the router. Unit-tested against a throwaway socket.
-  - `src/router.rs` — `Router`: routes agent-initiated messages (enqueued from
-    the control socket) to a target directory (reuse a live agent or spawn one)
-    or an exact session (deliver if live, else resume its dormant record).
-    Delivery to a not-yet-live target hands the message to the launcher as the
-    new session's first prompt (launch-with-message), so a spawn/resume
-    delivers atomically with no wait-for-announce state; an already-live target
-    gets it over its socket. Holds an in-memory queue (no file spool), the
-    authorization decisions, and the one message awaiting operator approval;
-    the event loop enqueues, polls, and forwards the decision (key or click).
-    A live-but-undiscovered session defers for a later poll. Unit-tested
-    (gating, spawn-with-message, session delivery, allow/deny, defer).
-  - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
-    pending approval to a desktop notification with Allow once / Allow always /
-    Deny buttons (`notify-send -A`), reporting the choice back on a channel
-    tagged with the message id. Best-effort and non-blocking (a thread per
-    notification); the in-board dialog always works too. Pure name mapping is
-    unit-tested.
   - `src/nav.rs` — pure selection math: move the flat selection index within a
     column (up/down) or across columns (left/right) over the per-column
     counts. Unit-tested.
@@ -149,8 +151,8 @@ your terminal (pi, interactive TUI)              another terminal
     division. Three
     live triage columns (Requires Action, Idle, Running)
     then a dim-gray Dormant column (resumable history). Plus a footer of
-    clickable key-hint buttons (`footer_hit_test`, same pattern as the approval
-    dialog) with any status on the spacer row above it. Owns the card, heading,
+    clickable key-hint buttons (`footer_hit_test`) with any status on the
+    spacer row above it. Owns the card, heading,
     separator, footer, path abbreviation (~-relative, component-shortening), and
     age/focus-label formatting.
   - `src/picker.rs` — the `/` jump picker: holds the board's agents
@@ -163,8 +165,10 @@ your terminal (pi, interactive TUI)              another terminal
     Styling (state glyph + color) and path abbreviation live in `ui.rs`; picker
     stays free of ratatui. Unit-tested.
   - `src/main.rs` — the imperative shell: the event loop that scans + prunes
-    the registry, spawns watchers, drains updates, polls the `Router`, draws,
-    and dispatches input. Input modes are one `Overlay` enum (the `/` jump
+    the registry, spawns watchers, drains updates, draws, and dispatches input.
+    Operator `m` delivers directly and ungated (live over the socket via
+    `core::prompt`, dormant by resume-with-message via `core::launch`); the
+    board holds no router. Input modes are one `Overlay` enum (the `/` jump
     picker or message compose), exclusive by construction. Two verbs chosen by
     a modifier, on both the board and the picker: Enter goes to the selection
     (focus a live window, resume a dormant session), Shift+Enter spawns a new
@@ -177,6 +181,56 @@ your terminal (pi, interactive TUI)              another terminal
     (go / new / jump / msg / delete / quit), sharing the key dispatch via
     `open_jump`/`open_compose`/`spawn_new`. Shift+Enter needs the kitty keyboard
     protocol (`main` pushes `DISAMBIGUATE_ESCAPE_CODES` where supported).
+
+- `crates/daemon` — the message-routing daemon (binary name `corrald`), a
+  headless singleton. Owns the control socket and every gated (agent-initiated)
+  delivery; the approval gate surfaces on a tray and desktop notifications.
+  Reads liveness from the registry (no socket watching — that is the board's
+  job).
+  - `src/mailbox.rs` — cross-session message types: parse a submitted message (a
+    `Target` is a directory or an exact session id), `classify` it into an `Ack`
+    (accepted / blocked / recipient_not_found / directory_not_known) from
+    resolved facts, add the `[from agent in <dir> (session <id>)]`
+    provenance/reply-handle tag, and read/append the `(sender -> target)`
+    whitelist. Pure, unit-tested.
+  - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
+    `$CORRAL_CONTROL_SOCKET`). A background thread accepts one submission per
+    connection: read the request line, parse, find the recipient (registry
+    scan for a session, dir-exists for a directory), ack the verdict, and (if
+    routable) hand the message to the router over a channel. `serve` fails loud
+    on a bind error and `is_serving` is the singleton guard (a live listener
+    means another corrald owns the socket, so the second refuses to start).
+    Ack is synchronous; delivery and the approval gate run later. Unit-tested
+    against a throwaway socket.
+  - `src/router.rs` — `Router`: routes agent-initiated messages (enqueued from
+    the control socket) using a fresh registry scan as its whole view of who is
+    live and dormant. A directory target reuses a live agent over its socket or
+    spawns one; a session target delivers to the live socket or resumes its
+    record. A live socket that fails to connect (crashed session) falls back to
+    spawn/resume — the daemon needs no dead-socket tracking. Delivery to a
+    not-yet-live target carries the message as the new session's first prompt
+    (launch-with-message), atomic with no wait-for-announce. Holds an in-memory
+    queue (no file spool), the authorization decisions, and the one message
+    awaiting operator approval; owns `ApprovalAction` and `apply`. Unit-tested
+    (gating, spawn-with-message, live + dormant session delivery, allow/deny,
+    unknown-session drop).
+  - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
+    pending approval to a desktop notification with Allow once / Allow always /
+    Deny buttons (`notify-send -A`), reporting the choice back on a channel
+    tagged with the message id. Best-effort and non-blocking (a thread per
+    notification); the tray path always works too. Pure name mapping is
+    unit-tested.
+  - `src/tray.rs` — the `ksni`/StatusNotifierItem tray, the daemon's
+    always-present control surface and the reliable approval path. Shows whether
+    a message is waiting and offers Allow once / Allow always / Deny, plus open
+    the board and quit. The tray thread cannot touch the router, so each action
+    becomes a `TrayCommand` on a channel the main loop drains. Best-effort: no
+    StatusNotifierHost means notification-only approval, nothing else changes.
+  - `src/main.rs` — the headless loop: refuse to start if another corrald is
+    live (`is_serving`), else bind the control socket (fail loud), then each
+    tick drain accepted messages, scan the registry, route, reflect a new
+    pending approval to the tray + a notification (once), and apply decisions
+    from either (guarded on the current pending id).
 
 ## Extensions
 
@@ -200,31 +254,38 @@ your terminal (pi, interactive TUI)              another terminal
   cross-session message over `~/.corral/corrald.sock` (stamped with the
   sender's `fromSession` as a reply handle) and reports corral's ack (accepted
   / blocked / recipient_not_found / directory_not_known); a connect failure is
-  surfaced as "corral not running" (fail loud, no silent queue). Install:
+  surfaced as "corrald not running" (fail loud, no silent queue). Install:
   symlink into
   `~/.pi/agent/extensions/`.
 
 ## Inter-Agent Messaging
 
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
-corral is the sole trusted cross-workdir router. An agent calls
+the `corrald` daemon is the sole trusted cross-workdir router. An agent calls
 `corral_message_agent`, which submits the message over `~/.corral/corrald.sock`
-(reachable because `~/.corral` is on the sandbox allowlist). corral parses it,
+(reachable because `~/.corral` is on the sandbox allowlist). corrald parses it,
 finds the recipient, and returns a synchronous ack: `recipient_not_found` /
 `directory_not_known` if there is nowhere to send, `blocked` if the
 `(sender-dir -> target-dir)` pair needs approval, else `accepted`. A connect
-failure means corral is down, so submission fails loud instead of queuing
-silently. Routable messages are then routed asynchronously: corral authorizes
-the pair against the whitelist (or asks the operator, by key or mouse click:
-Enter allow once, `a` allow always, Esc deny), resolves the target, and injects
-the message over that agent's socket with a `[from agent in <dir> (session
-<id>)]` provenance tag. The approval gate is not awaited by the sender (a
-human is unbounded): a `blocked` message is acked at once and delivered after
-approval, without a delivery ack. Delivery reuses
-`prompt::send_prompt`, the same path as operator messaging (`m`). A pending
-approval is also mirrored to a desktop notification (`notify-send -A`) whose
-Allow/Deny buttons resolve it without switching to the board; best-effort, and
-the in-board dialog stays available.
+failure means corrald is down, so submission fails loud instead of queuing
+silently. Routable messages are then routed asynchronously: corrald authorizes
+the pair against the whitelist (or asks the operator on its tray menu — Allow
+once / Allow always / Deny), resolves the target, and injects the message over
+that agent's socket with a `[from agent in <dir> (session <id>)]` provenance
+tag. The approval gate is not awaited by the sender (a human is unbounded): a
+`blocked` message is acked at once and delivered after approval, without a
+delivery ack. Delivery reuses `core::prompt::send_prompt`, the same path as the
+board's operator messaging (`m`). A pending approval is also mirrored to a
+desktop notification (`notify-send -A`) whose Allow/Deny buttons resolve it
+without opening the tray; best-effort, and the tray menu stays available. The
+approval lives in the daemon, not the board — the board is a pure viewer and
+never sees these messages.
+
+The operator's own `m` (from the board) is ungated and does not go through
+corrald: the operator is the trusting authority, so gating `m` would mean asking
+the operator to approve the operator. The board delivers `m` directly (live over
+the socket, dormant by resume-with-message). This is why the approval gate and
+the daemon boundary coincide.
 
 A message is addressed either by **directory** (`target_dir`: reach whoever
 works there, spawning one if none, or a dedicated one for `force_new`) or by
@@ -272,19 +333,26 @@ message/tool updates) is ACP v1.
   `$CORRAL_REGISTRY_DIR`) for the registry dir; the `/` picker offers only the
   agents already on the board; uses `swaymsg` and `kitty` for focus
   and spawn.
+- CLI `corrald` — the headless message-routing daemon. No TUI; run under a
+  systemd user service (see Development Setup). Binds `$HOME/.corral/corrald.sock`
+  (override `$CORRAL_CONTROL_SOCKET`); refuses to start if another corrald is
+  already live on it. Surfaces the approval gate on a `ksni` tray (Allow once /
+  Allow always / Deny, plus open the board and quit) and a `notify-send`
+  mirror. Uses `kitty` to spawn/resume delivery targets. Reads the same registry
+  as the board.
 - pi extension `corral-announce` — see Extensions above.
 - Registry records in `$HOME/.corral/registry/` and unix sockets in each
   `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /
   `$CORRAL_SOCKET_DIR`). No TCP ports, no network exposure. Peer authentication
   relies on the directory permissions.
 - Inter-agent messaging: `corral_message_agent` submits over
-  `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`), corral's
-  control socket; no TCP, peer auth by directory permissions. corral authorizes
+  `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`), the daemon's
+  control socket; no TCP, peer auth by directory permissions. corrald authorizes
   `(sender -> target)` dir pairs against `$HOME/.corral/whitelist` (override
-  `$CORRAL_WHITELIST`) plus an operator popup. A message accepted over the
-  socket lives only in corral's memory until routed (no on-disk spool): a corral
-  crash before routing loses it, an accepted tradeoff under the fire-and-forget
-  contract and the systemd keep-alive.
+  `$CORRAL_WHITELIST`) plus the operator's tray/notification popup. A message
+  accepted over the socket lives only in corrald's memory until routed (no
+  on-disk spool): a corrald crash before routing loses it, an accepted tradeoff
+  under the fire-and-forget contract and the systemd keep-alive.
 
 ## Known Limitations (v1, deliberate)
 
@@ -307,8 +375,12 @@ message/tool updates) is ACP v1.
   at once when the queue drains (no per-message turn attribution).
 - Approvals stay in the pi TUI; socket clients never receive
   `session/request_permission`.
-- Inter-agent messaging is fire-and-forget (v1): corral injects the message and
+- Inter-agent messaging is fire-and-forget (v1): corrald injects the message and
   does not capture a reply back to the sender. A response channel is a clean v2.
+- Approvals need either a StatusNotifierHost (tray) or a notification daemon. If
+  neither runs, a `blocked` message stays pending in corrald's memory with no
+  way to answer it (the tray is the reliable path, so a tray host is the
+  expectation). No auto-deny; the tray count shows what is waiting.
 - Delivery policy when the target dir's agent is Running: v1 reuses it and lets
   the extension queue the message as a follow-up (it can intrude on a
   human-driven session; the provenance tag makes that visible). Alternatives
@@ -354,6 +426,12 @@ message/tool updates) is ACP v1.
 ## Development Setup
 
 - Nix flake (nixpkgs-unstable) + direnv; Rust pinned via rust-toolchain.toml
-  through rust-overlay. `just` for commands: `just test`, `just lint`,
-  `just board`, `just watch` (cargo-watch), `just nix-build`.
+  through rust-overlay. Three workspace crates: `corral-core` (lib), `corral`
+  (board bin), `corral-daemon` (`corrald` bin). `just` for commands: `just
+  test`, `just lint`, `just board`, `just daemon`, `just watch` (cargo-watch),
+  `just nix-build`.
+- Lifecycle is deployment glue in `~/nixos`, not corral code: a systemd user
+  service runs `corrald` (restart-on-failure) so messaging survives a crash,
+  and a WM keybind summons the board window. corrald owns behavior; nixos/WM
+  own keep-alive and visibility.
 - CI: GitHub Action runs `nix flake check` (build + tests via nix).
