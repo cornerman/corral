@@ -95,6 +95,32 @@ One per-session file drives discovery, isolation, and resume.
 - [ ] OPEN: delivery-target policy when the target is Running. v1 reuses +
       queues as follow-up; never-inject-Running and always-new are the
       alternatives. Settle with real use.
+- [ ] OPEN: harness choice when a `target_dir` message spawns a fresh agent.
+      TODAY: the router picks the FIRST registry record whose cwd matches the
+      dir and uses its `spawnCommand` (`router.rs::spawn_command_for_dir`,
+      `entries.iter().filter(cwd==dir).find_map(spawn_command)`) — arbitrary
+      when a dir has hosted more than one kind (pi vs opencode), and the caller
+      cannot choose. DIRECTION: `target_session` already fixes the harness (the
+      session's own kind), so the ambiguity is only the "start something new
+      here" case. Make it caller-defined: add an optional `label`/harness arg to
+      `corral_message_agent`, resolved to a spawnCommand from the registry
+      catalog; if omitted, default deterministically to the dir's MOST-USED
+      label (occurrence), then global most-used; fail loud on an unknown label
+      rather than spawn an arbitrary kind.
+- [ ] OPEN: expose available sessions to agents (discovery), so a caller can
+      target a precise `target_session` (label included) instead of guessing a
+      dir. LEAK GATE (decided in discussion): scope the listing by the
+      whitelist — an agent may see only sessions whose dir it is ALREADY
+      whitelisted to message (`(sender-dir -> target-dir)` in
+      `~/.corral/whitelist`). Discovery then grants nothing beyond what
+      messaging already allows = zero extra leak. Non-whitelisted sessions stay
+      INVISIBLE (do NOT prompt the operator just to enumerate: bad UX and the
+      prompt itself is a side-channel revealing existence). MECHANISM: a `list`
+      request on the control socket stamped with the sender's `fromSession`;
+      corrald resolves sender-dir, scans the registry, returns only
+      whitelisted-target entries as {sessionId, cwd, title, label, state}.
+      Reuses the existing provenance/whitelist plumbing; the board stays a pure
+      viewer (discovery lives in corrald, the trusted mediator).
 
 ## Validation
 
