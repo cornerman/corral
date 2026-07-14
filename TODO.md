@@ -106,7 +106,12 @@ One per-session file drives discovery, isolation, and resume.
       `corral_message_agent`, resolved to a spawnCommand from the registry
       catalog; if omitted, default deterministically to the dir's MOST-USED
       label (occurrence), then global most-used; fail loud on an unknown label
-      rather than spawn an arbitrary kind.
+      rather than spawn an arbitrary kind. NOTE: the target dir need NOT be
+      previously announced — any existing directory works, used directly as the
+      new agent's cwd. Such a dir has no local label history, so its harness
+      comes from the caller's `label` else the global most-used default. (So
+      `directory_not_known` should mean only "path does not exist", never
+      "no record here yet".)
 - [ ] OPEN: expose available sessions to agents (discovery), so a caller can
       target a precise `target_session` (label included) instead of guessing a
       dir. LEAK GATE (decided in discussion): scope the listing by the
