@@ -49,6 +49,12 @@ async function main() {
 	const controlSocket = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 
 	if (MODE === "await") {
+		// The doorbell is armed at SessionStart too (so a message reaches a session
+		// that has not taken its first turn), where the sidecar is still being
+		// spawned by the concurrent event hook. Wait for its socket before polling;
+		// on Stop it is already up so this returns at once. Do not spawn here — the
+		// event hook owns spawning, avoiding a double-bind race.
+		await waitUp(controlSocket, 5000);
 		const note = await requestAwait(controlSocket);
 		if (note) {
 			// asyncRewake doorbell: exit 2 wakes an idle session so its Stop hook fires

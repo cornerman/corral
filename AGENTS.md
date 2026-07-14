@@ -365,9 +365,12 @@ ratatui / iced, the daemon keeps ksni).
   hook so the text is visible: it returns `decision:block` (reason = the queued
   message as the next instruction) plus `systemMessage` (the one hook field shown
   to the user, so the message shows in the transcript, not an opaque "Stop hook
-  feedback" line). An `asyncRewake` hook on `Stop` is a doorbell only: on an idle
-  session it exits 2 with a neutral wake note to make the next `Stop` fire and
-  deliver visibly; it never carries the message text. `state_update` is native and richer than pi's
+  feedback" line). An `asyncRewake` hook is a doorbell only, armed on both
+  `SessionStart` and `Stop`: on an idle session it exits 2 with a neutral wake
+  note to make the next `Stop` fire and deliver visibly; it never carries the
+  message text. Arming at `SessionStart` (not only `Stop`) is what lets a message
+  reach a session that has not taken its first turn — without it no `Stop` has
+  fired to arm the doorbell, so the message would wait for the first user prompt. `state_update` is native and richer than pi's
   (`UserPromptSubmit`->running, `Stop`->idle,
   `Notification[permission_prompt]`->requires_action, a real approval gate);
   `session/cancel` is a no-op (no external turn-abort). Runs on `node` (not

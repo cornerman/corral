@@ -4,7 +4,18 @@
     "SessionStart": [
       {
         "matcher": "startup|resume",
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }]
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] },
+          {
+            "//": "Doorbell armed before the first turn so a board/agent message reaches a session that has not yet prompted (no Stop has fired to arm it otherwise).",
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts", "await"],
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 360
+          }
+        ]
       }
     ],
     "SessionEnd": [

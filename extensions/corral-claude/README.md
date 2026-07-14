@@ -41,11 +41,17 @@ text is visible in the transcript:
   is the one hook field shown to the user, so the message text appears in the
   transcript instead of an opaque "Stop hook feedback" line. Delivered when the
   current turn ends.
-- **Idle doorbell** — an `asyncRewake` hook (async, on `Stop`) long-polls the
-  sidecar. A message arriving on an idle session (no upcoming `Stop`) makes it
-  exit 2 with only a neutral wake note, waking Claude so its next `Stop` fires
-  and delivers the message visibly via the path above. The doorbell never
-  carries the message text itself.
+- **Idle doorbell** — an `asyncRewake` hook (async) long-polls the sidecar,
+  armed on both `SessionStart` and `Stop`. A message arriving on an idle session
+  (no upcoming `Stop`) makes it exit 2 with only a neutral wake note, waking
+  Claude so its next `Stop` fires and delivers the message visibly via the path
+  above. The doorbell never carries the message text itself. Arming at
+  `SessionStart` (not only `Stop`) is what lets a board/agent message reach a
+  session that has not yet taken its first turn — otherwise no `Stop` has fired
+  to arm the doorbell, and the message would wait for the first user prompt.
+  Known gap: `SessionStart` arms the doorbell once; if a fresh session sits
+  untouched past the ~5 min hold with no message, the pre-first-turn doorbell
+  lapses until the first turn re-arms it on `Stop`.
 
 `state_update` is driven natively and is richer than pi's: `UserPromptSubmit` →
 running, `Stop` → idle, and `Notification[permission_prompt]` →
