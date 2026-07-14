@@ -93,6 +93,11 @@ pub struct Agent {
     /// broadcast), e.g. "edit model.rs". Shows what a running agent is doing
     /// and what an idle one just finished. `None` until the first tool runs.
     pub activity: Option<String>,
+    /// Whether corral launches this agent's command directly (self-windowing
+    /// GUI app) instead of terminal-wrapped. Stamped from the record's `gui`
+    /// on both dormant and live agents, so spawn/resume beside any card picks
+    /// the right launch mode.
+    pub gui: bool,
 }
 
 impl Agent {
@@ -242,6 +247,7 @@ impl Board {
                 resume_command: e.resume_command.clone(),
                 // Dormant records carry no live activity.
                 activity: None,
+                gui: e.gui,
             })
             .collect();
 
@@ -252,6 +258,7 @@ impl Board {
             if let Some(sid) = a.session_id.as_deref() {
                 if let Some(e) = entries.iter().find(|e| e.session_id == sid) {
                     a.spawn_command = e.spawn_command.clone();
+                    a.gui = e.gui;
                 }
             }
         }
@@ -349,6 +356,7 @@ mod tests {
             spawn_command: None,
             resume_command: None,
             activity: None,
+            gui: false,
         }
     }
 
@@ -368,6 +376,31 @@ mod tests {
             last_seen: Some(last_seen.into()),
             gui: false,
         }
+    }
+
+    #[test]
+    fn dormant_agent_inherits_gui_from_record() {
+        let mut board = Board::default();
+        let rec = RegistryEntry {
+            session_id: "q1".into(),
+            cwd: Some("/tmp/q".into()),
+            title: None,
+            socket: None, // cleared => dormant
+            spawn_command: Some(vec!["quine".into(), "--corral".into()]),
+            resume_command: Some(vec![
+                "quine".into(),
+                "--session".into(),
+                "q1".into(),
+                "--corral".into(),
+            ]),
+            label: Some("quine".into()),
+            last_seen: None,
+            gui: true,
+        };
+        board.sync_registry(&[rec], &HashSet::new());
+        let dormant = board.dormant();
+        assert_eq!(dormant.len(), 1);
+        assert!(dormant[0].gui, "dormant quine card must carry gui=true");
     }
 
     #[test]

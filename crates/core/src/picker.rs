@@ -191,6 +191,7 @@ mod tests {
             spawn_command: None,
             resume_command: None,
             activity: None,
+            gui: false,
         }
     }
 

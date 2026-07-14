@@ -652,6 +652,7 @@ mod tests {
             spawn_command: None,
             resume_command: None,
             activity: None,
+            gui: false,
         }));
     }
 
@@ -706,6 +707,7 @@ mod card_tests {
             spawn_command: None,
             resume_command: None,
             activity: activity.map(String::from),
+            gui: false,
         }
     }
 

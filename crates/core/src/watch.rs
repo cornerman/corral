@@ -179,6 +179,8 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 spawn_command: None,
                 resume_command: None,
                 activity: None,
+                // sync_registry stamps the real value from the record each scan.
+                gui: false,
             }));
             seeded = true;
             continue;
