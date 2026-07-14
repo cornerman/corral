@@ -341,6 +341,29 @@ ratatui / iced, the daemon keeps ksni).
   in-file. Install: symlink into `~/.config/opencode/plugin/` (global) or
   `.opencode/plugin/` (project).
 
+- `extensions/corral-claude/` — the third adapter (Claude Code), shaped
+  differently because Claude Code has no in-process plugin runtime that can hold
+  a socket or inject into the live session (its hooks are subprocesses that
+  exit; its ACP mode is a separate headless stdio server). So it splits in two:
+  a resident `sidecar.ts` (one per session) holds the ACP socket, keeps triage
+  state, and queues messages; a thin `hook.ts` shim Claude runs per hook event
+  bridges the event to the sidecar over a per-session control socket
+  (`<cwd>/.corral/.claude-ctl-<sessionId>.sock`) beside the ACP socket
+  (`claude-<claudePid>.sock`, pid = the interactive Claude process so focus
+  correlation works). SessionStart spawns the sidecar detached; SessionEnd (or a
+  5s Claude-liveness probe, or corral's dead-socket sweep) reaps it. Live-session
+  delivery uses Claude's own hook feedback: the `Stop` hook returns
+  `decision:block` to continue with a queued message as the next instruction
+  (turn boundary), and an `asyncRewake` hook on `Stop` exits 2 to wake an idle
+  session immediately. `state_update` is native and richer than pi's
+  (`UserPromptSubmit`->running, `Stop`->idle,
+  `Notification[permission_prompt]`->requires_action, a real approval gate);
+  `session/cancel` is a no-op (no external turn-abort). Runs on `bun`, external
+  to Claude. UNVERIFIED in this repo (no Claude harness here): hook payload
+  fields and the block/asyncRewake injection semantics are coded from the hooks
+  reference and probed defensively. Install: merge `settings.json`'s hooks block
+  into `~/.claude/settings.json`. See `extensions/corral-claude/README.md`.
+
 ## Inter-Agent Messaging
 
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
