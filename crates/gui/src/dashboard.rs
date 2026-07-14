@@ -47,6 +47,11 @@ fn filter_id() -> text_input::Id {
     text_input::Id::new("corral-filter")
 }
 
+/// The compose field's focus id, so opening `m` focuses it for typing.
+fn compose_id() -> text_input::Id {
+    text_input::Id::new("corral-compose")
+}
+
 /// Messages the board reacts to.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -250,6 +255,9 @@ impl Board {
                     self.compose = compose_for(a);
                     if self.compose.is_none() {
                         self.status = "cannot message: no target".into();
+                    } else {
+                        // Focus the field so the operator types straight away.
+                        return text_input::focus(compose_id());
                     }
                 }
             }
@@ -771,6 +779,7 @@ fn compose_overlay<'a>(compose: &'a Compose, s: &Base16) -> Element<'a, Message>
                 .color(fg)
                 .font(semibold()),
             text_input("message…", &compose.buf)
+                .id(compose_id())
                 .on_input(Message::ComposeInput)
                 .on_submit(Message::ComposeSend)
                 .size(15)

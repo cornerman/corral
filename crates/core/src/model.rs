@@ -305,9 +305,12 @@ impl Board {
         counts
     }
 
-    /// The agents in one column, narrowed by the content filter if set, then
-    /// grouped by cwd with the most-used directories first (a stable sort, so
-    /// the base order is preserved within each directory group).
+    /// The agents in one column, narrowed by the content filter if set. The
+    /// live columns are then grouped by cwd with the most-used directories
+    /// first (a stable sort, so the base order is preserved within each
+    /// directory group). Dormant is exempt: it stays in its age order (newest
+    /// first), since a resumable session is picked by recency, not by which
+    /// directory is busiest.
     pub fn column(&self, column: Column) -> Vec<&Agent> {
         let base = match column {
             Column::RequiresAction => self.in_state(State::RequiresAction),
@@ -322,6 +325,10 @@ impl Board {
                 .filter(|a| a.matches_query(&self.filter))
                 .collect()
         };
+        // Dormant keeps its newest-first age order; only the live columns group.
+        if column == Column::Dormant {
+            return list;
+        }
         let counts = self.cwd_occurrences();
         list.sort_by(|a, b| {
             let (ca, cb) = (
@@ -471,6 +478,27 @@ mod tests {
             .collect();
         // /a occurs twice, so its group sorts ahead of the single /b.
         assert_eq!(cwds, vec!["/a", "/a", "/b"]);
+    }
+
+    #[test]
+    fn dormant_column_stays_age_ordered_ignoring_cwd_grouping() {
+        let mut b = Board::default();
+        // /busy occurs twice, /solo once. cwd grouping would float /busy up,
+        // but the Dormant column must ignore that and stay newest-first.
+        b.sync_registry(
+            &[
+                dormant_record("newest", "/solo", "2026-06-03T00:00:00Z"),
+                dormant_record("middle", "/busy", "2026-06-02T00:00:00Z"),
+                dormant_record("oldest", "/busy", "2026-06-01T00:00:00Z"),
+            ],
+            &HashSet::new(),
+        );
+        let ids: Vec<&str> = b
+            .column(Column::Dormant)
+            .iter()
+            .map(|a| a.session_id.as_deref().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["newest", "middle", "oldest"]);
     }
 
     #[test]
