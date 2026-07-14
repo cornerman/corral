@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Agent, Column, Origin, State};
-use corral_core::{engine::Engine, nav, palette::color_index, paths, prompt};
+use corral_core::{engine::Engine, nav, palette::basename, palette::color_index, paths, prompt};
 
 use iced::widget::{
     canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
@@ -1030,11 +1030,6 @@ fn state_color(agent: &Agent, s: &Base16) -> Color {
 /// across the board and the eye groups cards by color.
 fn cwd_color(cwd: &str, s: &Base16) -> Color {
     s.accent[color_index(cwd, s.accent.len())]
-}
-
-/// The last path component (the working directory's leaf), shown in the pill.
-fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Replace a leading `$HOME` with `~` for a compact path.

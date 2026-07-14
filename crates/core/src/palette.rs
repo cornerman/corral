@@ -6,6 +6,19 @@
 //! actual colors are rendering-specific. Keyed on the full path, so two
 //! same-named leaves under different roots stay distinguishable.
 
+/// The trailing leaf of a path (its basename), the label shown on a cwd pill.
+/// Trailing slashes are stripped first, so `/a/corral/` and `/a/corral` both
+/// yield `corral` (a naive `rsplit('/')` would return an empty string for the
+/// slash-terminated form, drawing an empty pill). Root `/` (or all-slashes)
+/// has no leaf, so the whole input is returned rather than an empty string.
+pub fn basename(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return path;
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
 /// Map a path to a palette bucket in `0..n` via a stable FNV-1a hash of the
 /// full path string. Deterministic across processes and runs (unlike
 /// `DefaultHasher`, which is randomly seeded), so a directory keeps its color.
@@ -52,5 +65,17 @@ mod tests {
     #[test]
     fn zero_palette_is_zero() {
         assert_eq!(color_index("/anything", 0), 0);
+    }
+
+    #[test]
+    fn basename_strips_trailing_slash() {
+        assert_eq!(basename("/home/u/projects/corral"), "corral");
+        assert_eq!(basename("/home/u/projects/corral/"), "corral");
+    }
+
+    #[test]
+    fn basename_of_root_is_not_empty() {
+        assert_eq!(basename("/"), "/");
+        assert_eq!(basename("//"), "//");
     }
 }

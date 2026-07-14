@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use corral_core::model::{Agent, Board, Column, Origin};
-use corral_core::palette::color_index;
+use corral_core::palette::{basename, color_index};
 
 /// The heading shown above each column. Bound to the column identity (not a
 /// parallel array), so it cannot drift from `Column::ALL`.
@@ -268,10 +268,6 @@ pub fn footer_hit_test(area: Rect, col: u16, row: u16) -> Option<FooterAction> {
         }
     }
     None
-}
-
-pub(crate) fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Truncate to `width` columns, adding an ellipsis when it does not fit, so a
