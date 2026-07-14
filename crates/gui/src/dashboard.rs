@@ -106,7 +106,7 @@ impl Dashboard {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.label(RichText::new("arrows move").weak().size(13.0));
                     if hint(ui, "Enter go") {
@@ -127,6 +127,12 @@ impl Dashboard {
                     if hint(ui, "q quit") {
                         act = Act::Quit;
                     }
+                    // The corral mark, bottom-right and faint: "the pen" — a
+                    // bracketed enclosure holding three dots, matching the TUI
+                    // footer and the tray icon.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("⟦∴⟧").weak().size(13.0));
+                    });
                 });
                 ui.add_space(8.0);
             });
