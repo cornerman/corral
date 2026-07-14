@@ -55,6 +55,10 @@ pub struct Dashboard {
     filter: String,
     /// Flat selection index across the (filtered) columns, TUI-style.
     selected: usize,
+    /// The agent to re-select once the columns rebuild, by (session id,
+    /// socket path). Set when the filter clears so the selection survives the
+    /// index shift and the operator can still act on the chosen agent.
+    reselect: Option<(Option<String>, PathBuf)>,
     compose: Option<Compose>,
     status: String,
 }
@@ -69,6 +73,7 @@ impl Dashboard {
             dir,
             filter: String::new(),
             selected: 0,
+            reselect: None,
             compose: None,
             status: String::new(),
         }
@@ -149,6 +154,16 @@ impl Dashboard {
         };
         let counts: [usize; 4] = std::array::from_fn(|i| columns[i].len());
         let total: usize = counts.iter().sum();
+        // Re-select the remembered agent now that the (unfiltered) columns are
+        // back, so clearing the filter never drops the selection.
+        if let Some((sid, sock)) = self.reselect.take() {
+            if let Some(idx) = columns.iter().flatten().position(|a| match &sid {
+                Some(_) => a.session_id == sid,
+                None => a.socket_path == sock,
+            }) {
+                self.selected = idx;
+            }
+        }
         if self.selected >= total {
             self.selected = total.saturating_sub(1);
         }
@@ -221,6 +236,11 @@ impl Dashboard {
                 if filtering {
                     // handled below by surrendering focus
                 } else if !self.filter.is_empty() {
+                    // Remember the selected agent so clearing the filter keeps
+                    // it selected (the flat index shifts as the rows widen).
+                    self.reselect = self
+                        .selected_agent(&columns)
+                        .map(|a| (a.session_id.clone(), a.socket_path.clone()));
                     self.filter.clear();
                 } else {
                     act = Act::Quit;
@@ -267,6 +287,12 @@ impl Dashboard {
                             let idx = base + j;
                             let age = card_age(agent, column, &in_state, &quiet, &dormant_ages);
                             let resp = card(ui, agent, &scheme, age, idx == self.selected);
+                            // Keep the selected card in view: minimal scroll,
+                            // a no-op when it is already fully visible, so the
+                            // selection never drifts off-screen or jitters.
+                            if idx == self.selected {
+                                resp.scroll_to_me(None);
+                            }
                             if resp.clicked() {
                                 // Two-stage, like the TUI: the first click only
                                 // selects the row (so the keys act on it); a
