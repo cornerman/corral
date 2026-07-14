@@ -34,7 +34,7 @@ enum ComposeTarget {
     /// A live agent: straight to its socket.
     Live(PathBuf),
     /// A dormant session: resume it with the message as its first prompt.
-    Dormant { cwd: String, resume: String },
+    Dormant { cwd: String, resume_command: Vec<String> },
 }
 
 /// A deferred action, resolved after the render borrow is released.
@@ -133,15 +133,6 @@ impl Dashboard {
         ui.horizontal(|ui| {
             ui.label(RichText::new("corral").weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+ new").clicked() {
-                    let cwd = launch::default_cwd(
-                        self.selected_agent(&columns).and_then(|a| a.cwd.as_deref()),
-                    );
-                    self.status = match self.launcher.spawn(&cwd, None) {
-                        Ok(()) => format!("spawned in {}", tilde(&cwd.to_string_lossy())),
-                        Err(e) => format!("spawn: {e}"),
-                    };
-                }
                 if !self.status.is_empty() {
                     ui.label(RichText::new(&self.status).weak());
                 }
@@ -284,10 +275,18 @@ impl Dashboard {
                 }
             }
             Act::Spawn => {
-                let cwd = launch::default_cwd(agent.as_ref().and_then(|a| a.cwd.as_deref()));
-                self.status = match self.launcher.spawn(&cwd, None) {
-                    Ok(()) => format!("spawned in {}", tilde(&cwd.to_string_lossy())),
-                    Err(e) => format!("spawn: {e}"),
+                // Spawn the selected card's kind in its dir; the launch command
+                // rides in the record, so no agent is named here. An empty
+                // board has no selection and cannot spawn.
+                self.status = match agent.as_ref().and_then(|a| a.spawn_command.as_ref().map(|c| (a, c))) {
+                    Some((a, command)) => {
+                        let cwd = launch::default_cwd(a.cwd.as_deref());
+                        match self.launcher.launch(&cwd, command, None) {
+                            Ok(()) => format!("spawned in {}", tilde(&cwd.to_string_lossy())),
+                            Err(e) => format!("spawn: {e}"),
+                        }
+                    }
+                    None => "spawn: no launchable agent selected".into(),
                 };
             }
             Act::Message => {
@@ -375,8 +374,8 @@ impl Dashboard {
                 Ok(()) => format!("sent to {label}"),
                 Err(e) => format!("send: {e}"),
             },
-            ComposeTarget::Dormant { cwd, resume } => {
-                match self.launcher.resume(Path::new(cwd), resume, Some(text)) {
+            ComposeTarget::Dormant { cwd, resume_command } => {
+                match self.launcher.launch(Path::new(cwd), resume_command, Some(text)) {
                     Ok(()) => format!("resuming {label} to deliver"),
                     Err(e) => format!("resume: {e}"),
                 }
@@ -392,7 +391,7 @@ fn compose_for(agent: &Agent) -> Option<Compose> {
         Origin::Live => ComposeTarget::Live(agent.socket_path.clone()),
         Origin::Dormant => ComposeTarget::Dormant {
             cwd: agent.cwd.clone()?,
-            resume: agent.resume.clone()?,
+            resume_command: agent.resume_command.clone()?,
         },
     };
     Some(Compose {
@@ -410,11 +409,11 @@ fn activate(
 ) -> Result<(), String> {
     match agent.origin {
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
-        Origin::Dormant => match (&agent.cwd, &agent.resume) {
-            (Some(cwd), Some(resume)) => launcher
-                .resume(Path::new(cwd), resume, None)
+        Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
+            (Some(cwd), Some(command)) => launcher
+                .launch(Path::new(cwd), command, None)
                 .map_err(|e| format!("resume: {e}")),
-            _ => Err("resume: dormant record missing cwd/resume".into()),
+            _ => Err("resume: dormant record missing cwd/resume command".into()),
         },
     }
 }
@@ -447,7 +446,15 @@ fn card(
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(agent.title.as_deref().unwrap_or("(unnamed)")).strong());
+            // Title line: name on the left, the agent kind as a dim badge on
+            // the right. The badge readies the board for mixed kinds (pi,
+            // opencode, …); with one kind it reads as a quiet tag.
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(agent.title.as_deref().unwrap_or("(unnamed)")).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(&agent.label).weak().small());
+                });
+            });
             if let Some(cwd) = &agent.cwd {
                 ui.label(RichText::new(tilde(cwd)).weak().small());
             }

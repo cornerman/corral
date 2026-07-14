@@ -406,8 +406,7 @@ fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
 /// basename (empty when unknown), and the info line. Fixed at three so cards
 /// keep a uniform height and `hit_test` can divide clicks by `CARD_ROWS`.
 /// Pure, unit-tested.
-fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 3] {
-    let name = agent.title.as_deref().unwrap_or("(unnamed)");
+fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 2] {
     // The full working directory (~-abbreviated, shortened to fit) on its own
     // line, so same-named leaves under different roots stay distinguishable.
     let dir = agent
@@ -416,7 +415,24 @@ fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [Str
         .map(|c| abbrev_cwd(c, width))
         .unwrap_or_default();
     let info = card_meta_line(agent, col, meta);
-    [truncate(name, width), dir, truncate(&info, width)]
+    [dir, truncate(&info, width)]
+}
+
+/// The title line: the session name, with the agent kind as a dim badge
+/// right-aligned in the card width. The badge readies the board for mixed
+/// agent kinds (pi, opencode, …); with one kind it reads as a quiet tag.
+fn title_line(agent: &Agent, width: usize, title_style: Style, badge_style: Style) -> Line<'static> {
+    let name_raw = agent.title.as_deref().unwrap_or("(unnamed)");
+    let badge = &agent.label;
+    let badge_w = badge.chars().count();
+    // Reserve the badge plus one separating space; the name takes the rest.
+    let name = truncate(name_raw, width.saturating_sub(badge_w + 1));
+    let pad = width.saturating_sub(name.chars().count() + badge_w);
+    Line::from(vec![
+        Span::styled(name, title_style),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(badge.clone(), badge_style),
+    ])
 }
 
 fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {
@@ -426,13 +442,14 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         Origin::Live => Style::default(),
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    // The leading path recedes (dark gray) so the basename reads first.
+    // The leading path recedes (dark gray) so the basename reads first; the
+    // kind badge recedes the same way.
     let faint = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM);
-    let [name, dir, info] = card_lines(agent, col, meta, width);
+    let [dir, info] = card_lines(agent, col, meta, width);
     ListItem::new(vec![
-        Line::from(Span::styled(name, title_style)),
+        title_line(agent, width, title_style, faint),
         path_line(&dir, dim, faint),
         Line::from(Span::styled(info, dim)),
         Line::from(""), // blank spacer: air between cards
@@ -613,7 +630,8 @@ mod tests {
             cwd: None,
             state,
             origin: corral_core::model::Origin::Live,
-            resume: None,
+            spawn_command: None,
+            resume_command: None,
             activity: None,
         }));
     }
@@ -666,7 +684,8 @@ mod card_tests {
             cwd: Some("/home/u/projects/corral".into()),
             state,
             origin: Origin::Live,
-            resume: None,
+            spawn_command: None,
+            resume_command: None,
             activity: activity.map(String::from),
         }
     }
@@ -698,12 +717,18 @@ mod card_tests {
         // The path is not under the test HOME, so it shows in full (fits 40).
         assert_eq!(
             card_lines(&a, Column::Idle, &m, 40),
-            [
-                "fix the auth flow",
-                "/home/u/projects/corral",
-                "edit model.rs · 5m"
-            ]
+            ["/home/u/projects/corral", "edit model.rs · 5m"]
         );
+    }
+
+    #[test]
+    fn title_line_appends_the_kind_badge_right_aligned() {
+        let a = agent(State::Idle, None); // label "pi", title "fix the auth flow"
+        let line = title_line(&a, 30, Style::default(), Style::default());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text.chars().count(), 30, "fills the card width exactly");
+        assert!(text.starts_with("fix the auth flow"));
+        assert!(text.ends_with("pi"), "kind badge is right-aligned");
     }
 
     #[test]
@@ -715,7 +740,7 @@ mod card_tests {
             dormant_age: &d,
         };
         let a = agent(State::Idle, None);
-        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[2], "5m");
+        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[1], "5m");
     }
 
     #[test]
@@ -729,11 +754,7 @@ mod card_tests {
         let a = agent(State::RequiresAction, Some("Which branch?"));
         assert_eq!(
             card_lines(&a, Column::RequiresAction, &m, 40),
-            [
-                "fix the auth flow",
-                "/home/u/projects/corral",
-                "Which branch? · 3m"
-            ]
+            ["/home/u/projects/corral", "Which branch? · 3m"]
         );
     }
 
@@ -787,6 +808,6 @@ mod card_tests {
         };
         let mut a = agent(State::Idle, None);
         a.cwd = None;
-        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[1], "");
+        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[0], "");
     }
 }

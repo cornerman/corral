@@ -188,7 +188,8 @@ mod tests {
             cwd: Some(cwd.into()),
             state: State::Idle,
             origin,
-            resume: None,
+            spawn_command: None,
+            resume_command: None,
             activity: None,
         }
     }

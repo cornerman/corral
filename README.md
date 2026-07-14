@@ -50,8 +50,9 @@ harness-neutral convention, specified independently of pi and corral in
 - **corral-gui** (`crates/gui`) — the same attention board as a desktop
   (egui/eframe) window: a second parallel viewer for when no terminal is
   wanted. Flat, base16-Solarized, follows the system light/dark; a centered
-  filter line over the four columns, click a card to go, `+ new` to spawn, the
-  same keys as the TUI. Drives the shared `corral-core::engine`. The daemon's
+  filter line over the four columns, click a card to go, Shift+Enter to spawn
+  the selected card's kind, the same keys as the TUI. Drives the shared
+  `corral-core::engine`. The daemon's
   tray “Open board” launches it.
 - **corrald** (`crates/daemon`) — the headless message-routing daemon, a
   singleton owning inter-agent messaging: it binds the control socket

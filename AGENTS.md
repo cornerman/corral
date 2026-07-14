@@ -37,7 +37,7 @@ registry service. One record per session names a workdir-local socket:
 
 ```
 $HOME/.corral/registry/<sessionId>.json   (dir 0700; override $CORRAL_REGISTRY_DIR)
-  { sessionId, cwd, title, label, socket, resume, lastSeen }
+  { sessionId, cwd, title, label, socket, spawnCommand, resumeCommand, lastSeen }
 <cwd>/.corral/<label>-<pid>.sock           (dir 0700; override $CORRAL_SOCKET_DIR)
 ```
 
@@ -99,15 +99,18 @@ ratatui / egui, the daemon keeps ksni).
     record, and resolve a live record to its socket (parsing the
     `<label>-<pid>.sock` filename). Liveness is read straight from the record
     (`socket` set = live, cleared = dormant). Pure, unit-tested.
-  - `src/launch.rs` — `Launcher` seam. `KittyLauncher` runs `kitty -e pi`
-    (spawn) or `kitty -e pi --session <path>` (resume a dormant session),
-    always via `setsid --fork` so the window is detached from its launcher
+  - `src/launch.rs` — `Launcher` seam. `KittyLauncher::launch(cwd, command,
+    message)` runs `setsid --fork kitty --directory <cwd> -e <command…>`, where
+    `command` is the argv the registry record carried (`spawnCommand` for a
+    fresh session, `resumeCommand` to resume an exact one). corral names no
+    agent kind: the command rides in the record, so the board launches whatever
+    kind the selected card is (pi, opencode, …). pi's `--session` grammar lives
+    in the announce extension, not here. `setsid --fork` detaches the window
     (survives the launcher exiting, no zombie, and — since it is not a
     descendant — the board's focus parent-walk cannot climb into corral's own
-    window). Both take an optional initial `message` submitted as pi's first
-    prompt (a positional arg), so a message can be delivered atomically at
-    launch. pi's parser has no `--` marker and treats a leading `-`/`@` as a
-    flag/file, so such a message is space-guarded (pi trims it); `pi_args` is
+    window). An optional initial `message` is appended as the final positional
+    arg (space-guarding a leading `-`/`@` as a generic CLI-safety convention),
+    so a message is delivered atomically at launch; `with_message` is
     unit-tested. `default_cwd` takes a plain cwd (not an `Agent`) so the crate
     stays free of the board's model.
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
@@ -162,7 +165,9 @@ ratatui / egui, the daemon keeps ksni).
   `core::engine::Engine`. Flat and base16-Solarized (dark/light polled from the
   freedesktop appearance portal and applied per frame, so egui's defaults never
   leak); a centered filter line over the four columns of cards; click a card to
-  go, `+ new` to spawn, a bottom key-hint footer, the same keys as the TUI.
+  go, Shift+Enter spawns the selected card's kind in its dir, a bottom key-hint
+  footer, the same keys as the TUI. Each card shows a dim kind badge (the
+  `label`) right of the title, readying the board for mixed agent kinds.
   `src/theme.rs` maps a base16 palette onto egui `Visuals` (Solarized dark +
   light); `src/dashboard.rs` renders and drives the actions (focus/resume via
   `core::focus`/`core::launch`, message compose, dismiss). Links `eframe`/`egui`
@@ -304,8 +309,9 @@ message/tool updates) is ACP v1.
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
   Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
   h/l) switch columns; Enter or left-click goes to the selected agent (focus a
-  live window, resume a dormant session with `pi --session`); Shift+Enter
-  spawns a new agent in the selected agent's cwd; `/` focuses a prominent
+  live window, resume a dormant session by running its `resumeCommand`);
+  Shift+Enter spawns a fresh agent of the selected card's kind (its
+  `spawnCommand`) in the selected agent's cwd; `/` focuses a prominent
   centered filter box that narrows the cards by their whole content (title /
   cwd / activity / state); while filtering, Enter goes and Shift+Enter spawns
   directly, arrows still navigate, Esc clears then exits;
@@ -403,12 +409,16 @@ message/tool updates) is ACP v1.
 - More than pi. The board core is agent-agnostic; the only pi-specific piece is
   the `corral-announce` adapter. The stable contract any ACP agent joins by:
   (1) write `~/.corral/registry/<sessionId>.json` with `label` set to the agent
-  kind and `socket` pointing at (2) a workdir-local `<label>-<pid>.sock`
-  speaking ACP (initialize, session/list, session/prompt), and (3) broadcast
-  `state_update`. A non-cooperating agent can be wrapped by a generic
+  kind, `socket` pointing at (2) a workdir-local `<label>-<pid>.sock` speaking
+  ACP (initialize, session/list, session/prompt), a `spawnCommand`/
+  `resumeCommand` argv corral runs verbatim to launch/resume the kind, and (3)
+  broadcast `state_update`. A non-cooperating agent can be wrapped by a generic
   stdio-to-socket-plus-registry shim instead of a bespoke extension. Missing
-  `state_update` just defaults the card to Idle; missing `label` defaults it to
-  `pi`.
+  `state_update` just defaults the card to Idle; a missing `label` renders as
+  `agent`; a missing `spawnCommand`/`resumeCommand` leaves the kind
+  discoverable and drivable but not launchable by corral.
+- Kind badges become load-bearing once a second agent kind ships: the card
+  already shows the `label`, so mixed pi/opencode boards read at a glance.
 - Full requires_action coverage. pi core (or a native ACP `state_update`
   implementation in pi) emitting a signal whenever any `ctx.ui.*` prompt opens
   (approvals, select, input, elicitation), so the board catches every

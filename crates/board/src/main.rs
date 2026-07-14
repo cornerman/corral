@@ -1,4 +1,4 @@
-//! corral: an attention board for locally running pi agents.
+//! corral: an attention board for locally running coding-agent sessions.
 //!
 //! Discovers sessions from the registry under $HOME/.corral/registry/
 //! (override with $CORRAL_REGISTRY_DIR): each `<sessionId>.json` names a
@@ -78,7 +78,7 @@ enum ComposeTarget {
     /// A live agent: deliver straight to its socket.
     Live(PathBuf),
     /// A dormant session: resume it with the message as its first prompt.
-    Dormant { cwd: String, resume: String },
+    Dormant { cwd: String, resume_command: Vec<String> },
 }
 
 /// The operator composing a message (opened with `m`): the target, a display
@@ -125,8 +125,8 @@ fn handle_overlay(
                         }
                         // Dormant: resume the session with the message as its
                         // first prompt (atomic, no wait-for-announce).
-                        ComposeTarget::Dormant { cwd, resume } => {
-                            *status = match launcher.resume(Path::new(cwd), resume, Some(text)) {
+                        ComposeTarget::Dormant { cwd, resume_command } => {
+                            *status = match launcher.launch(Path::new(cwd), resume_command, Some(text)) {
                                 Ok(()) => format!("resuming {} to deliver", c.label),
                                 Err(e) => format!("resume: {e}"),
                             };
@@ -473,11 +473,11 @@ fn activate(
 ) -> Result<(), String> {
     match agent.origin {
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
-        Origin::Dormant => match (&agent.cwd, &agent.resume) {
-            (Some(cwd), Some(resume)) => launcher
-                .resume(Path::new(cwd), resume, None)
+        Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
+            (Some(cwd), Some(command)) => launcher
+                .launch(Path::new(cwd), command, None)
                 .map_err(|e| format!("resume: {e}")),
-            _ => Err("resume: dormant record missing cwd/resume".into()),
+            _ => Err("resume: dormant record missing cwd/resume command".into()),
         },
     }
 }
@@ -487,10 +487,10 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
     let a = board.selectable().get(selected).copied()?;
     let target = match a.origin {
         Origin::Live => Some(ComposeTarget::Live(a.socket_path.clone())),
-        Origin::Dormant => match (&a.cwd, &a.resume) {
-            (Some(cwd), Some(resume)) => Some(ComposeTarget::Dormant {
+        Origin::Dormant => match (&a.cwd, &a.resume_command) {
+            (Some(cwd), Some(command)) => Some(ComposeTarget::Dormant {
                 cwd: cwd.clone(),
-                resume: resume.clone(),
+                resume_command: command.clone(),
             }),
             _ => None,
         },
@@ -502,22 +502,28 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
     }))
 }
 
-/// Spawn a new agent in the selected agent's dir (or $HOME).
+/// Spawn a fresh agent of the selected card's kind, in its dir. The launch
+/// command rides in the record (`spawn_command`), so the board spawns whatever
+/// kind the selection is without naming any agent. An empty board has no
+/// selection and so cannot spawn (agent #1 is started from a terminal).
 fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &mut String) {
     status.clear();
-    let cwd = launch::default_cwd(
-        board
-            .selectable()
-            .get(selected)
-            .and_then(|a| a.cwd.as_deref()),
-    );
-    if let Err(e) = launcher.spawn(&cwd, None) {
+    let Some(agent) = board.selectable().get(selected).copied() else {
+        *status = "spawn: no agent selected (start the first agent from a terminal)".into();
+        return;
+    };
+    let Some(command) = &agent.spawn_command else {
+        *status = format!("spawn: {} announced no spawn command", agent.label);
+        return;
+    };
+    let cwd = launch::default_cwd(agent.cwd.as_deref());
+    if let Err(e) = launcher.launch(&cwd, command, None) {
         *status = format!("spawn: {e}");
     }
 }
 
 /// `d`: dismiss the selected agent. A live agent is closed by terminating its
-/// pi process (which closes its `kitty -e pi` window and, via pi's clean
+/// agent process (which closes its terminal window and, via the agent's clean
 /// shutdown, leaves a dormant resumable record). A dormant record is forgotten
 /// by deleting its registry file. So `d` twice fully removes a session: close,
 /// then forget.
@@ -550,8 +556,10 @@ fn dismiss_selected(
     }
 }
 
-/// Prune dormant records whose resume target is gone or that have not been
-/// touched in `DORMANT_MAX_AGE`. Live records (socket set) are never pruned.
+/// Prune dormant records that are not resumable or have not been touched in
+/// `DORMANT_MAX_AGE`. Live records (socket set) are never pruned. A deleted
+/// session file is no longer detected here (the resume command is an opaque
+/// argv, not a path to stat); such a record fails at resume time and ages out.
 /// Returns the surviving entries.
 fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
     entries
@@ -560,7 +568,7 @@ fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
             if e.socket.is_some() {
                 return true; // live: not ours to prune
             }
-            let dead = e.resume.as_deref().is_none_or(|r| !Path::new(r).exists());
+            let dead = e.resume_command.is_none();
             let file = dir.join(format!("{}.json", e.session_id));
             let stale = std::fs::metadata(&file)
                 .and_then(|m| m.modified())

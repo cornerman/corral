@@ -174,7 +174,10 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 cwd,
                 state: DEFAULT_STATE,
                 origin: Origin::Live,
-                resume: None,
+                // The socket cannot report launch commands; Board::sync_registry
+                // stamps spawn_command from the matching record each scan.
+                spawn_command: None,
+                resume_command: None,
                 activity: None,
             }));
             seeded = true;

@@ -1,36 +1,30 @@
-//! Agent-spawn seam. The core calls `Launcher::spawn`; the kitty implementation
-//! is the only place that knows how a new agent window is started.
+//! Agent-spawn seam. The core calls `Launcher::launch` with an argv the
+//! registry record supplied; the kitty implementation is the only place that
+//! knows how a new agent window is started. corral never names a specific
+//! agent (pi, opencode, …): the command rides in the record, so the board runs
+//! whatever kind the selected card is.
 
 use std::path::Path;
 use std::process::Command;
 
 pub trait Launcher {
-    /// Start a fresh pi agent in its own window, rooted at `cwd`. An optional
-    /// initial `message` is submitted as pi's first prompt (a positional arg),
-    /// so a spawn can deliver a message atomically without waiting for the new
-    /// session to announce a socket.
-    fn spawn(&self, cwd: &Path, message: Option<&str>) -> Result<(), String>;
-
-    /// Resume a dormant session in its own window: `resume` is the session-file
-    /// path (`pi --session <resume>`), rooted at the session's original `cwd`.
-    /// An optional initial `message` is submitted as the first prompt on
-    /// resume (same atomic-delivery reason as `spawn`).
-    fn resume(&self, cwd: &Path, resume: &str, message: Option<&str>) -> Result<(), String>;
+    /// Launch an agent window rooted at `cwd`, running the argv `command`
+    /// (from the record's `spawnCommand` for a fresh session, or
+    /// `resumeCommand` to resume an exact one). An optional initial `message`
+    /// is appended as the final positional argument, so a launch can deliver a
+    /// message atomically without waiting for the new session to announce.
+    /// An empty `command` is an error (nothing to run).
+    fn launch(&self, cwd: &Path, command: &[String], message: Option<&str>) -> Result<(), String>;
 }
 
-/// Build the `pi` argument vector for a spawn/resume, optionally carrying an
-/// initial message as a positional prompt.
-///
-/// pi's CLI parser (as of 0.80) has no `--` end-of-options marker and treats
-/// any argument starting with `-` or `@` as a flag or a file, never a message.
-/// A message starting with those would be misparsed, so we prefix a single
-/// space to force it onto pi's `messages` list; pi trims it before submitting.
-fn pi_args(session: Option<&str>, message: Option<&str>) -> Vec<String> {
-    let mut args = Vec::new();
-    if let Some(s) = session {
-        args.push("--session".to_string());
-        args.push(s.to_string());
-    }
+/// Append an initial message to a launch argv as a trailing positional
+/// argument. A message starting with `-` or `@` is space-guarded (prefixed
+/// with a single space): a generic CLI-safety convention so an arg parser does
+/// not mistake the message for a flag or a file. This is the one launch detail
+/// corral keeps, because the message is a runtime value the static record
+/// command template cannot carry.
+fn with_message(command: &[String], message: Option<&str>) -> Vec<String> {
+    let mut args = command.to_vec();
     if let Some(m) = message {
         let guarded = if m.starts_with('-') || m.starts_with('@') {
             format!(" {m}")
@@ -44,26 +38,31 @@ fn pi_args(session: Option<&str>, message: Option<&str>) -> Vec<String> {
 
 pub struct KittyLauncher;
 
-impl KittyLauncher {
-    /// Launch `kitty --directory <cwd> -e pi <pi_args...>`, detached from the
-    /// board.
+impl Launcher for KittyLauncher {
+    /// Launch `kitty --directory <cwd> -e <command…> [message]`, detached from
+    /// the caller.
     ///
     /// `setsid --fork` reparents kitty to init, which matters twice over: the
     /// window outlives the board and leaves no zombie child, and — critically —
     /// the window is no longer a descendant of corral. The focus seam finds a
-    /// window by walking up pi's `/proc` parent chain; if the spawned kitty
-    /// were a child of corral, that walk would continue past it into corral's
-    /// own terminal and could focus or close the board itself. Detaching stops
-    /// the walk at `pi -> kitty -> init`. `setsid` exits immediately after
-    /// forking, so waiting on it reaps at once.
-    fn launch(&self, cwd: &Path, pi_args: &[String]) -> Result<(), String> {
+    /// window by walking up the agent's `/proc` parent chain; if the spawned
+    /// kitty were a child of corral, that walk would continue past it into
+    /// corral's own terminal and could focus or close the board itself.
+    /// Detaching stops the walk at `agent -> kitty -> init`. `setsid` exits
+    /// immediately after forking, so waiting on it reaps at once.
+    fn launch(&self, cwd: &Path, command: &[String], message: Option<&str>) -> Result<(), String> {
+        let Some((program, rest)) = command.split_first() else {
+            return Err("launch: empty command".into());
+        };
+        let args = with_message(rest, message);
         let ok = Command::new("setsid")
             .arg("--fork")
             .arg("kitty")
             .arg("--directory")
             .arg(cwd)
-            .args(["-e", "pi"])
-            .args(pi_args)
+            .arg("-e")
+            .arg(program)
+            .args(&args)
             .status()
             .map_err(|e| format!("kitty launch failed: {e}"))?
             .success();
@@ -72,19 +71,6 @@ impl KittyLauncher {
         } else {
             Err("kitty launch returned non-zero".into())
         }
-    }
-}
-
-impl Launcher for KittyLauncher {
-    // One OS window per agent; --directory roots it.
-    fn spawn(&self, cwd: &Path, message: Option<&str>) -> Result<(), String> {
-        self.launch(cwd, &pi_args(None, message))
-    }
-
-    // `pi --session <path|id>` reloads that session, keeping its sessionId, so
-    // the resumed process reconnects live under the same identity.
-    fn resume(&self, cwd: &Path, resume: &str, message: Option<&str>) -> Result<(), String> {
-        self.launch(cwd, &pi_args(Some(resume), message))
     }
 }
 
@@ -101,33 +87,30 @@ pub fn default_cwd(cwd: Option<&str>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::pi_args;
+    use super::with_message;
 
     #[test]
-    fn spawn_no_message_is_empty() {
-        assert!(pi_args(None, None).is_empty());
+    fn no_message_is_the_bare_command() {
+        assert_eq!(with_message(&["pi".to_string()], None), ["pi"]);
     }
 
     #[test]
-    fn resume_passes_session() {
-        assert_eq!(pi_args(Some("/s.json"), None), ["--session", "/s.json"]);
-    }
-
-    #[test]
-    fn message_is_a_positional_arg() {
-        assert_eq!(pi_args(None, Some("hello")), ["hello"]);
+    fn message_is_appended_as_final_arg() {
         assert_eq!(
-            pi_args(Some("/s.json"), Some("hello")),
-            ["--session", "/s.json", "hello"]
+            with_message(&["pi".to_string(), "--session".to_string(), "/s".to_string()], Some("hello")),
+            ["pi", "--session", "/s", "hello"]
         );
     }
 
     #[test]
     fn leading_dash_or_at_is_space_guarded() {
-        // pi would otherwise parse these as a flag / file argument.
-        assert_eq!(pi_args(None, Some("-x")), [" -x"]);
-        assert_eq!(pi_args(None, Some("@f")), [" @f"]);
+        // An arg parser would otherwise read these as a flag / file argument.
+        assert_eq!(with_message(&["pi".to_string()], Some("-x")), ["pi", " -x"]);
+        assert_eq!(with_message(&["pi".to_string()], Some("@f")), ["pi", " @f"]);
         // A tag-prefixed agent message starts with '[', so it is untouched.
-        assert_eq!(pi_args(None, Some("[from agent] hi")), ["[from agent] hi"]);
+        assert_eq!(
+            with_message(&["pi".to_string()], Some("[from agent] hi")),
+            ["pi", "[from agent] hi"]
+        );
     }
 }

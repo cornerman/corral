@@ -13,8 +13,8 @@
 //! board's job), so it delivers optimistically and falls back on a connect
 //! failure — a dead socket (crashed session) is resumed from its record rather
 //! than tracked. Delivery to a not-yet-live target hands the message to the
-//! launcher as the new session's first prompt (`pi "<message>"`), atomic with
-//! no wait-for-announce dance.
+//! launcher as the new session's first prompt (appended to the record's launch
+//! command), atomic with no wait-for-announce dance.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -169,10 +169,24 @@ fn deliver_dir(
             // Socket present but dead: fall through and spawn a fresh agent.
         }
     }
-    match launcher.spawn(Path::new(dir), Some(&msg.tagged())) {
+    // The spawn command rides in a record; corral names no agent kind. Reuse
+    // any record (live or dormant) for this dir. A dir corral has never seen an
+    // agent in has no known kind, so it cannot be spawned into.
+    let Some(command) = spawn_command_for_dir(entries, dir) else {
+        return format!("route: no known agent kind for {dir} (never announced there)");
+    };
+    match launcher.launch(Path::new(dir), command, Some(&msg.tagged())) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
     }
+}
+
+/// A spawn command announced by any record whose cwd is `dir`, live or dormant.
+fn spawn_command_for_dir<'a>(entries: &'a [RegistryEntry], dir: &str) -> Option<&'a [String]> {
+    entries
+        .iter()
+        .filter(|e| e.cwd.as_deref() == Some(dir))
+        .find_map(|e| e.spawn_command.as_deref())
 }
 
 /// Session target: deliver to that exact agent over its socket if live, else
@@ -193,9 +207,9 @@ fn deliver_session(
         }
         // Socket present but dead: fall through and resume from the record.
     }
-    match (&entry.cwd, &entry.resume) {
-        (Some(cwd), Some(resume)) => {
-            match launcher.resume(Path::new(cwd), resume, Some(&msg.tagged())) {
+    match (&entry.cwd, &entry.resume_command) {
+        (Some(cwd), Some(command)) => {
+            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged())) {
                 Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
                 Err(e) => format!("route resume: {e}"),
             }
@@ -233,7 +247,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
 
-    /// Records spawn/resume calls and the initial message they carried.
+    /// Records launch calls, classifying by the argv the record carried: a
+    /// resume command contains `--session`, a fresh spawn does not.
     #[derive(Default)]
     struct StubLauncher {
         spawns: Cell<usize>,
@@ -241,13 +256,12 @@ mod tests {
         last_msg: RefCell<Option<String>>,
     }
     impl Launcher for StubLauncher {
-        fn spawn(&self, _cwd: &Path, message: Option<&str>) -> Result<(), String> {
-            self.spawns.set(self.spawns.get() + 1);
-            *self.last_msg.borrow_mut() = message.map(str::to_owned);
-            Ok(())
-        }
-        fn resume(&self, _cwd: &Path, _resume: &str, message: Option<&str>) -> Result<(), String> {
-            self.resumes.set(self.resumes.get() + 1);
+        fn launch(&self, _cwd: &Path, command: &[String], message: Option<&str>) -> Result<(), String> {
+            if command.iter().any(|a| a == "--session") {
+                self.resumes.set(self.resumes.get() + 1);
+            } else {
+                self.spawns.set(self.spawns.get() + 1);
+            }
             *self.last_msg.borrow_mut() = message.map(str::to_owned);
             Ok(())
         }
@@ -260,13 +274,29 @@ mod tests {
         .unwrap()
     }
 
+    /// A record for `cwd` carrying a spawn command but no live socket: the
+    /// daemon learns a dir's agent kind from any record there.
+    fn dir_record(cwd: &str) -> RegistryEntry {
+        RegistryEntry {
+            session_id: format!("rec{cwd}"),
+            cwd: Some(cwd.into()),
+            title: None,
+            socket: None,
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: None,
+            label: Some("pi".into()),
+            last_seen: None,
+        }
+    }
+
     fn dormant(session_id: &str, cwd: &str, resume: &str) -> RegistryEntry {
         RegistryEntry {
             session_id: session_id.into(),
             cwd: Some(cwd.into()),
             title: None,
             socket: None,
-            resume: Some(resume.into()),
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), resume.into()]),
             label: Some("pi".into()),
             last_seen: None,
         }
@@ -292,8 +322,9 @@ mod tests {
         let mut r = Router::new(whitelist);
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
+        let entries = [dir_record("/b")];
 
-        r.poll(&[], &launcher);
+        r.poll(&entries, &launcher);
         assert!(r.pending().is_none(), "whitelisted needs no decision");
         assert_eq!(launcher.spawns.get(), 1, "spawned an agent in the target");
         assert_eq!(
@@ -313,16 +344,17 @@ mod tests {
         let mut r = Router::new(whitelist.clone());
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
+        let entries = [dir_record("/b")];
 
-        r.poll(&[], &launcher); // -> pending (not yet whitelisted)
+        r.poll(&entries, &launcher); // -> pending (not yet whitelisted)
         assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0);
 
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
-        r.poll(&[], &launcher); // whitelist edit picked up -> delivered
+        r.poll(&entries, &launcher); // whitelist edit picked up -> delivered
         assert!(r.pending().is_none(), "released by the whitelist edit");
         assert_eq!(launcher.spawns.get(), 1);
-        r.poll(&[], &launcher); // nothing left to do
+        r.poll(&entries, &launcher); // nothing left to do
         assert_eq!(launcher.spawns.get(), 1, "released message delivers only once");
     }
 
@@ -333,13 +365,14 @@ mod tests {
         let mut r = Router::new(whitelist.clone());
         r.enqueue(dir_msg("1", "/a", "/b"));
         let launcher = StubLauncher::default();
+        let entries = [dir_record("/b")];
 
-        r.poll(&[], &launcher); // -> pending
+        r.poll(&entries, &launcher); // -> pending
         r.apply(ApprovalAction::AllowAlways).unwrap();
         assert!(mailbox::is_whitelisted(&whitelist, "/a", "/b"));
-        r.poll(&[], &launcher); // re-queued -> delivered
+        r.poll(&entries, &launcher); // re-queued -> delivered
         assert_eq!(launcher.spawns.get(), 1);
-        r.poll(&[], &launcher); // no residual re-delivery
+        r.poll(&entries, &launcher); // no residual re-delivery
         assert_eq!(launcher.spawns.get(), 1, "allow_always delivers only once");
     }
 
@@ -420,7 +453,8 @@ mod tests {
             cwd: Some("/b".into()),
             title: None,
             socket: Some(sock.clone()),
-            resume: Some("/s/sid-7.jsonl".into()),
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), "/s/sid-7.jsonl".into()]),
             label: Some("pi".into()),
             last_seen: None,
         }];

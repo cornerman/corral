@@ -36,8 +36,8 @@ session cannot reach the latter.
 
 ## 2. Registry Record (MUST)
 
-Each live session writes one JSON record naming its socket and enough to resume
-it later.
+Each live session writes one JSON record naming its socket and the commands a
+consumer runs to relaunch it later.
 
 - Path: `$HOME/.corral/registry/<sessionId>.json`. A consumer and agent MAY
   override the directory with `$CORRAL_REGISTRY_DIR`.
@@ -53,10 +53,19 @@ Fields:
 | `sessionId` | string          | Stable session identity. MUST match the record's filename and the `sessionId` returned by `session/list`. MUST NOT be the session-file path. |
 | `cwd`       | string          | Absolute working directory of the session. |
 | `title`     | string \| null  | Human-readable session title; `null` when unnamed. |
-| `label`     | string          | Agent kind (e.g. `"pi"`). A consumer MAY use it to label the session and it appears in the socket filename. A missing `label` SHOULD default to `pi`. |
+| `label`     | string          | Agent kind (e.g. `"pi"`). Appears in the socket filename; a consumer MAY use it to identify a dormant session's kind. |
 | `socket`    | string \| null  | Absolute path to the live socket, or `null` when the session is dormant (cleanly shut down, resumable). |
-| `resume`    | string \| null  | Path a consumer passes to relaunch this exact session (e.g. `pi --session <resume>`); `null` when the session is not resumable (ephemeral). |
+| `spawnCommand`  | string[] \| null | argv a consumer runs (in a terminal, rooted at a chosen cwd) to start a *fresh* session of this kind, e.g. `["pi"]`. `null` when the agent does not support consumer-launched spawn. |
+| `resumeCommand` | string[] \| null | argv a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "<sessionId>"]`. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
 | `lastSeen`  | string          | ISO-8601 timestamp, refreshed while the session runs. Lets a consumer age out stale dormant records. |
+
+The consumer runs `spawnCommand` / `resumeCommand` **verbatim and never parses
+them**, so it stays agent-neutral: pi's `--session` grammar, opencode's, and any
+other kind's live in the agent, not the consumer. The consumer wraps the argv in
+its own terminal (`<terminal> -e <argv…>`) rooted at `cwd`, and MAY append an
+initial user message as a trailing positional argument (see §2a). A resume
+command SHOULD launch in the record's `cwd`, so an agent MAY address the session
+by a short id (resolved per-project) rather than an absolute path.
 
 Example:
 
@@ -67,13 +76,24 @@ Example:
   "title": "fix the flaky retry test",
   "label": "pi",
   "socket": "/home/dev/projects/widget/.corral/pi-48213.sock",
-  "resume": "/home/dev/.local/state/pi/sessions/6f1c2e7a.jsonl",
+  "spawnCommand": ["pi"],
+  "resumeCommand": ["pi", "--session", "6f1c2e7a-3b4d-4c5e-9a10-2f8b1d0e4c33"],
   "lastSeen": "2026-07-13T09:41:07.512Z"
 }
 ```
 
 A record with `socket == null` denotes a **dormant** session: not running, but
-resumable via `resume`.
+resumable via `resumeCommand`.
+
+### 2a. Launch (initial message injection)
+
+When a consumer launches a session (`spawnCommand` or `resumeCommand`) to
+deliver a message, it appends the message as the final positional argument of
+the argv. As a generic CLI-safety convention it space-guards a message that
+starts with `-` or `@` (prefixes one space) so an arg parser does not read it as
+a flag or a file. An agent that accepts an initial message this way gets
+atomic launch-with-delivery; one that does not simply ignores the trailing
+argument.
 
 ## 3. Workdir-Local Socket (MUST)
 
@@ -194,8 +214,8 @@ For richer board cards, an agent MAY broadcast message and tool activity:
   dormant (still resumable) rather than delete it, and a freshly starting
   socket that has not yet been proven dead SHOULD stay on the live path so it
   does not flicker through the dormant view.
-- **Pruning.** Forgetting dormant records (e.g. when the `resume` target no
-  longer exists, or after a staleness horizon measured from `lastSeen`) is
+- **Pruning.** Forgetting dormant records (e.g. a record with no
+  `resumeCommand`, or after a staleness horizon measured from `lastSeen`) is
   consumer policy and is not specified here.
 
 ## 7. ACP Conformance

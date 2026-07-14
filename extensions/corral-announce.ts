@@ -452,6 +452,17 @@ export default function (pi: ExtensionAPI) {
 		const sessionId = ctx.sessionManager.getSessionId();
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 		registryFile = path.join(dir, `${sessionId}.json`);
+		// Launch commands corral runs verbatim (it never parses them): the argv
+		// to spawn a fresh pi and to resume this exact session. This is where
+		// pi's CLI grammar lives, so corral stays agent-neutral. A second agent
+		// kind ships its own adapter writing its own argv.
+		//
+		// resumeCommand uses the sessionId, not the session-file path: corral
+		// always resumes in the session's own cwd (`kitty --directory <cwd>`), so
+		// pi's per-project `--session <id>` lookup resolves it. The id is already
+		// the record key, so this avoids duplicating the file path. null for an
+		// ephemeral (--no-session) session, which pi cannot resume.
+		const resumable = ctx.sessionManager.getSessionFile() != null;
 		const record = {
 			sessionId,
 			cwd: ctx.cwd,
@@ -459,9 +470,8 @@ export default function (pi: ExtensionAPI) {
 			// Agent kind, so corral can label a dormant card (no socket to parse).
 			label: "pi",
 			socket,
-			// The session file path is what `pi --session <path>` resumes; null
-			// for an ephemeral (--no-session) session, which is not resumable.
-			resume: ctx.sessionManager.getSessionFile() ?? null,
+			spawnCommand: ["pi"],
+			resumeCommand: resumable ? ["pi", "--session", sessionId] : null,
 			lastSeen: new Date().toISOString(),
 		};
 		const tmp = `${registryFile}.${process.pid}.tmp`;

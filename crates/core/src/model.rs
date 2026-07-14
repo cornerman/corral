@@ -81,9 +81,14 @@ pub struct Agent {
     pub cwd: Option<String>,
     pub state: State,
     pub origin: Origin,
-    /// The session-file path to resume a dormant session (`pi --session`).
-    /// `None` for live agents and ephemeral sessions.
-    pub resume: Option<String>,
+    /// argv to spawn a fresh session of this agent's kind (from the record's
+    /// `spawnCommand`), rooted at a cwd the caller supplies. Carried on both
+    /// live and dormant agents so Shift+Enter beside a card spawns the same
+    /// kind. `None` when the producer announced no spawn command.
+    pub spawn_command: Option<Vec<String>>,
+    /// argv to resume this exact dormant session (from the record's
+    /// `resumeCommand`). `None` for live agents and non-resumable sessions.
+    pub resume_command: Option<Vec<String>>,
     /// The current or most recent tool activity (from a `tool_call`
     /// broadcast), e.g. "edit model.rs". Shows what a running agent is doing
     /// and what an idle one just finished. `None` until the first tool runs.
@@ -195,7 +200,7 @@ impl Board {
         let mut recs: Vec<&RegistryEntry> = entries
             .iter()
             .filter(|e| {
-                if e.resume.is_none() {
+                if e.resume_command.is_none() {
                     return false;
                 }
                 // A set, non-dead socket means the process is live or still
@@ -217,17 +222,29 @@ impl Board {
                 socket_path: PathBuf::new(),
                 pid: 0,
                 // Agent kind from the record; the board stays agent-agnostic.
-                label: e.label.clone().unwrap_or_else(|| "pi".into()),
+                label: e.label.clone().unwrap_or_else(|| "agent".into()),
                 session_id: Some(e.session_id.clone()),
                 title: e.title.clone(),
                 cwd: e.cwd.clone(),
                 state: State::Idle,
                 origin: Origin::Dormant,
-                resume: e.resume.clone(),
+                spawn_command: e.spawn_command.clone(),
+                resume_command: e.resume_command.clone(),
                 // Dormant records carry no live activity.
                 activity: None,
             })
             .collect();
+
+        // A live agent's socket cannot report its spawn command (that is the
+        // record's job), so stamp it from the matching record by session id.
+        // Shift+Enter beside a live card then spawns the same kind.
+        for a in self.live.values_mut() {
+            if let Some(sid) = a.session_id.as_deref() {
+                if let Some(e) = entries.iter().find(|e| e.session_id == sid) {
+                    a.spawn_command = e.spawn_command.clone();
+                }
+            }
+        }
     }
 
     /// Live agents in a given state, in stable order.
@@ -293,7 +310,8 @@ mod tests {
             cwd: None,
             state,
             origin: Origin::Live,
-            resume: None,
+            spawn_command: None,
+            resume_command: None,
             activity: None,
         }
     }
@@ -304,7 +322,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: Some(id.into()),
             socket: None,
-            resume: Some(format!("/s/{id}.jsonl")),
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), format!("/s/{id}.jsonl")]),
             label: Some("pi".into()),
             last_seen: Some(last_seen.into()),
         }
@@ -392,9 +411,9 @@ mod tests {
                 socket: Some(PathBuf::from("/p/.corral/pi-1.sock")),
                 ..dormant_record("a", "/p", "t")
             },
-            // Ephemeral: no resume.
+            // Ephemeral: no resume command.
             RegistryEntry {
-                resume: None,
+                resume_command: None,
                 ..dormant_record("b", "/q", "t")
             },
         ];

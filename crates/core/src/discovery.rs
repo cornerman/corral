@@ -24,7 +24,15 @@ pub struct RegistryEntry {
     pub cwd: Option<String>,
     pub title: Option<String>,
     pub socket: Option<PathBuf>,
-    pub resume: Option<String>,
+    /// argv to spawn a fresh session of this kind, rooted at a cwd the consumer
+    /// supplies (e.g. `["pi"]`). The consumer runs it verbatim and never parses
+    /// it, so it stays agent-neutral. `None` means this producer did not
+    /// announce a spawn command (not launchable-fresh by the consumer).
+    pub spawn_command: Option<Vec<String>>,
+    /// argv to relaunch this exact session (e.g. `["pi", "--session", "<file>"]`).
+    /// `None` for an ephemeral (non-resumable) session. A dormant record is
+    /// resumable exactly when this is set.
+    pub resume_command: Option<Vec<String>>,
     /// The agent kind (e.g. `pi`). Live cards read this from the socket
     /// filename; dormant cards (no socket) rely on this field, so the board
     /// stays agent-agnostic. Absent means an older/unknown producer.
@@ -39,12 +47,22 @@ pub struct RegistryEntry {
 pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let str_field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
+    // A command is a JSON array of strings; a non-array or non-string element
+    // yields None so a malformed command never launches a garbled argv.
+    let cmd_field = |k: &str| {
+        v.get(k).and_then(|x| x.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+    };
     Some(RegistryEntry {
         session_id: str_field("sessionId")?,
         cwd: str_field("cwd"),
         title: str_field("title"),
         socket: str_field("socket").map(PathBuf::from),
-        resume: str_field("resume"),
+        spawn_command: cmd_field("spawnCommand"),
+        resume_command: cmd_field("resumeCommand"),
         label: str_field("label"),
         last_seen: str_field("lastSeen"),
     })
@@ -121,10 +139,17 @@ mod tests {
     #[test]
     fn parses_live_registry_record() {
         let json = r#"{"sessionId":"abc","cwd":"/tmp/p","title":"fix bug",
-            "socket":"/tmp/p/.corral/pi-42.sock","resume":"/s/abc.jsonl","lastSeen":"t"}"#;
+            "socket":"/tmp/p/.corral/pi-42.sock",
+            "spawnCommand":["pi"],
+            "resumeCommand":["pi","--session","/s/abc.jsonl"],"lastSeen":"t"}"#;
         let e = parse_registry_json(json).unwrap();
         assert_eq!(e.session_id, "abc");
         assert_eq!(e.cwd.as_deref(), Some("/tmp/p"));
+        assert_eq!(e.spawn_command.as_deref(), Some(["pi".to_string()].as_slice()));
+        assert_eq!(
+            e.resume_command.as_deref().unwrap(),
+            ["pi", "--session", "/s/abc.jsonl"]
+        );
         let sock = live_socket(&e).unwrap();
         assert_eq!(sock.label, "pi");
         assert_eq!(sock.pid, 42);
@@ -136,6 +161,17 @@ mod tests {
         let e = parse_registry_json(r#"{"sessionId":"abc","socket":null}"#).unwrap();
         assert_eq!(e.socket, None);
         assert_eq!(live_socket(&e), None);
+    }
+
+    #[test]
+    fn command_fields_absent_or_malformed_are_none() {
+        // Absent commands are None (older producer): discoverable, not launchable.
+        let e = parse_registry_json(r#"{"sessionId":"a"}"#).unwrap();
+        assert_eq!(e.spawn_command, None);
+        assert_eq!(e.resume_command, None);
+        // A non-array command is ignored rather than launched as garbage.
+        let e = parse_registry_json(r#"{"sessionId":"a","spawnCommand":"pi"}"#).unwrap();
+        assert_eq!(e.spawn_command, None);
     }
 
     #[test]
