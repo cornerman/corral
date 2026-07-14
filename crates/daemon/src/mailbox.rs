@@ -7,6 +7,8 @@
 use std::io::Write;
 use std::path::Path;
 
+use corral_core::discovery::RegistryEntry;
+
 /// Who a message is addressed to. A directory reaches whoever works there
 /// (spawning one if none); a session reaches exactly that agent (resuming it if
 /// dormant) and is what a precise reply uses, since a directory can hold zero,
@@ -117,17 +119,53 @@ impl Ack {
 
 /// Classify a parsed message from resolved facts (pure, trivially tested).
 /// `target_cwd` is `Some` when the recipient is found (a known session's cwd,
-/// or an existing target directory), else `None`. `whitelisted` is consulted
-/// only when the recipient is found.
-pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) -> Ack {
+/// or an existing target directory), else `None`. `authorized` (whitelisted OR
+/// same task-group) is consulted only when the recipient is found.
+pub fn classify(target: &Target, target_cwd: Option<&str>, authorized: bool) -> Ack {
     match target_cwd {
         None => match target {
             Target::Session(_) => Ack::RecipientNotFound,
             Target::Dir(_) => Ack::DirectoryNotKnown,
         },
-        Some(_) if whitelisted => Ack::Accepted,
+        Some(_) if authorized => Ack::Accepted,
         Some(_) => Ack::ApprovalNeeded,
     }
+}
+
+/// The sender's task-group, resolved from its session record. Groups ride in
+/// the registry, not the message, so the sender is looked up by its
+/// `from_session`. `None` when ungrouped, unknown, or the sender stamped no
+/// session id.
+pub fn sender_group<'a>(msg: &Message, entries: &'a [RegistryEntry]) -> Option<&'a str> {
+    let sid = msg.from_session.as_deref()?;
+    entries
+        .iter()
+        .find(|e| e.session_id == sid)
+        .and_then(|e| e.group.as_deref())
+}
+
+/// The target's task-group. A session target reads it from the target record; a
+/// directory target is ambiguous (a dir may host several groups over time), so
+/// it returns `None` and stays gated by the whitelist/approval path.
+pub fn target_group<'a>(msg: &Message, entries: &'a [RegistryEntry]) -> Option<&'a str> {
+    match &msg.target {
+        Target::Session(sid) => entries
+            .iter()
+            .find(|e| &e.session_id == sid)
+            .and_then(|e| e.group.as_deref()),
+        Target::Dir(_) => None,
+    }
+}
+
+/// Same-group membership implicitly authorizes delivery: both ends carry the
+/// same non-null group. The spawn act already authorized the swarm, so
+/// intra-swarm traffic skips the whitelist/approval gate. Fails closed (an
+/// ungrouped end, an unknown session, or a dir target is never same-group).
+pub fn same_group(msg: &Message, entries: &[RegistryEntry]) -> bool {
+    matches!(
+        (sender_group(msg, entries), target_group(msg, entries)),
+        (Some(a), Some(b)) if a == b
+    )
 }
 
 /// Parse one mailbox JSON document. Requires `id`, `fromCwd`, `message`, and a
@@ -261,6 +299,69 @@ mod tests {
         assert!(Ack::ApprovalNeeded.routable());
         assert!(!Ack::RecipientNotFound.routable());
         assert!(!Ack::DirectoryNotKnown.routable());
+    }
+
+    /// A minimal registry entry carrying just an id and a group, enough for the
+    /// group-authorization helpers.
+    fn grouped(sid: &str, group: Option<&str>) -> RegistryEntry {
+        RegistryEntry {
+            session_id: sid.into(),
+            cwd: Some("/x".into()),
+            title: None,
+            socket: None,
+            spawn_command: None,
+            resume_command: None,
+            label: None,
+            last_seen: None,
+            gui: false,
+            message_flag: None,
+            group: group.map(String::from),
+            name: None,
+        }
+    }
+
+    fn session_msg(from_session: Option<&str>, target_session: &str) -> Message {
+        Message {
+            id: "1".into(),
+            from_cwd: "/a".into(),
+            from_session: from_session.map(String::from),
+            target: Target::Session(target_session.into()),
+            message: "hi".into(),
+            force_new: false,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn same_group_authorizes_only_matching_non_null_groups() {
+        let entries = [grouped("snd", Some("g1")), grouped("tgt", Some("g1"))];
+        // Both ends in group g1 -> same group.
+        assert!(same_group(&session_msg(Some("snd"), "tgt"), &entries));
+        // Different groups -> not same.
+        let entries = [grouped("snd", Some("g1")), grouped("tgt", Some("g2"))];
+        assert!(!same_group(&session_msg(Some("snd"), "tgt"), &entries));
+        // Either end ungrouped -> not same (fails closed).
+        let entries = [grouped("snd", None), grouped("tgt", Some("g1"))];
+        assert!(!same_group(&session_msg(Some("snd"), "tgt"), &entries));
+        // Sender not in the registry -> not same.
+        let entries = [grouped("tgt", Some("g1"))];
+        assert!(!same_group(&session_msg(Some("ghost"), "tgt"), &entries));
+        // A dir target is ambiguous -> never same-group.
+        let dir = Message {
+            target: Target::Dir("/x".into()),
+            ..session_msg(Some("snd"), "tgt")
+        };
+        let entries = [grouped("snd", Some("g1"))];
+        assert!(!same_group(&dir, &entries));
+    }
+
+    #[test]
+    fn same_group_makes_classify_accept_without_whitelist() {
+        let entries = [grouped("snd", Some("g1")), grouped("tgt", Some("g1"))];
+        let msg = session_msg(Some("snd"), "tgt");
+        // authorized = same_group || whitelisted; here whitelist is empty.
+        let authorized = same_group(&msg, &entries);
+        assert_eq!(classify(&msg.target, Some("/x"), authorized), Ack::Accepted);
     }
 
     #[test]
