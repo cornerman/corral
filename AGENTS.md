@@ -145,10 +145,18 @@ ratatui / egui, the daemon keeps ksni).
     real server timestamp fetched via a property round-trip, so focus-stealing
     prevention does not defer it — this also switches workspaces); `close`
     kills the window's `_NET_WM_PID`. Works on any EWMH WM (i3, bspwm, openbox,
-    X11 KWin/Mutter). `SwayFocuser` correlates by a `/proc` parent-walk (socket
-    pid up the PPid chain to the terminal pid sway reports), then `swaymsg
-    [con_id=..] focus`; `close` kills that terminal pid. The sway tree walk is
-    unit-tested.
+    X11 KWin/Mutter). On Wayland the compositor's own IPC is the only
+    path that reports pid (and switches workspaces): `SwayFocuser` correlates
+    by a `/proc` parent-walk (socket pid up the PPid chain to the terminal pid
+    sway reports) then `swaymsg [con_id=..] focus`; `HyprlandFocuser` matches
+    the pid in `hyprctl clients -j` then focuses by window address;
+    `NiriFocuser` matches the pid in `niri msg --json windows` then
+    `focus-window --id`. `detect()` picks Hyprland/niri/sway by the marker env
+    var each exports (`HYPRLAND_INSTANCE_SIGNATURE` / `NIRI_SOCKET` / else
+    sway). All `close` by killing the window pid. The sway tree walk and the
+    pid-matching are unit-tested. GNOME/KDE on Wayland have no such pid path (a
+    Shell extension / KWin script would be needed) and are unsupported; they
+    focus fine under X11 via EWMH.
   - `src/picker.rs` — a directory-grouped fuzzy picker (library module,
     unit-tested). No longer wired to a shell now that both filter inline; kept
     for reuse.

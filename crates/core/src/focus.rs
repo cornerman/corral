@@ -30,9 +30,18 @@ pub trait WindowFocuser {
 /// in behind this seam. Selection is by environment: `$WAYLAND_DISPLAY` marks
 /// a Wayland session, `$DISPLAY` an X11 one.
 pub fn detect() -> Box<dyn WindowFocuser> {
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    if !wayland && std::env::var_os("DISPLAY").is_some() {
+    let has = |k: &str| std::env::var_os(k).is_some();
+    // X11 first: EWMH covers every X11 WM (incl. KDE/GNOME on X11) by pid.
+    if !has("WAYLAND_DISPLAY") && has("DISPLAY") {
         return Box::new(X11Focuser);
+    }
+    // Wayland: each compositor's own IPC is the only path that reports pid and
+    // switches workspaces. Chosen by the marker env var each one exports.
+    if has("HYPRLAND_INSTANCE_SIGNATURE") {
+        return Box::new(HyprlandFocuser);
+    }
+    if has("NIRI_SOCKET") {
+        return Box::new(NiriFocuser);
     }
     Box::new(SwayFocuser)
 }
@@ -139,6 +148,115 @@ fn sway_get_tree() -> Result<serde_json::Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| format!("bad sway tree json: {e}"))
 }
 
+// --- Wayland: per-compositor IPC (the only path that reports pid) ---
+
+/// Kill a window's process, the shared `close` mechanism: a compositor
+/// close request is refused by kitty's confirm-on-close, but killing the
+/// process takes the window and agent with it, leaving a dormant record.
+fn kill_pid(pid: u32) -> Result<(), String> {
+    let ok = Command::new("kill")
+        .arg(pid.to_string())
+        .status()
+        .map_err(|e| format!("kill failed: {e}"))?
+        .success();
+    if ok {
+        Ok(())
+    } else {
+        Err("kill returned non-zero".into())
+    }
+}
+
+/// Run a JSON-emitting IPC command and parse its stdout as an array.
+fn json_array(program: &str, args: &[&str]) -> Result<Vec<serde_json::Value>, String> {
+    let out = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{program} failed: {e}"))?;
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .ok_or_else(|| format!("{program}: expected a JSON array"))
+}
+
+/// The first window entry whose `pid` is the agent's pid or an ancestor (the
+/// terminal owning the window is an ancestor of the agent's socket pid).
+fn entry_for_pid<'a>(
+    list: &'a [serde_json::Value],
+    ancestors: &HashSet<u32>,
+) -> Option<&'a serde_json::Value> {
+    list.iter().find(|e| {
+        e.get("pid")
+            .and_then(|p| p.as_u64())
+            .is_some_and(|p| ancestors.contains(&(p as u32)))
+    })
+}
+
+/// Hyprland via `hyprctl`: match the agent's pid in `clients -j`, then focus by
+/// the window's stable address (which also switches to its workspace).
+pub struct HyprlandFocuser;
+
+impl WindowFocuser for HyprlandFocuser {
+    fn focus(&self, agent: &Agent) -> Result<(), String> {
+        let clients = json_array("hyprctl", &["clients", "-j"])?;
+        let ancestors = ancestor_pids(agent.pid);
+        let addr = entry_for_pid(&clients, &ancestors)
+            .and_then(|e| e.get("address").and_then(|a| a.as_str()))
+            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid))?;
+        let ok = Command::new("hyprctl")
+            .args(["dispatch", "focuswindow", &format!("address:{addr}")])
+            .status()
+            .map_err(|e| format!("hyprctl failed: {e}"))?
+            .success();
+        if ok {
+            Ok(())
+        } else {
+            Err("hyprctl focuswindow returned non-zero".into())
+        }
+    }
+
+    fn close(&self, agent: &Agent) -> Result<(), String> {
+        let clients = json_array("hyprctl", &["clients", "-j"])?;
+        let ancestors = ancestor_pids(agent.pid);
+        let pid = entry_for_pid(&clients, &ancestors)
+            .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
+            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid))?;
+        kill_pid(pid as u32)
+    }
+}
+
+/// niri via `niri msg`: match the agent's pid in the window list, then focus by
+/// the window id (which also switches to its workspace).
+pub struct NiriFocuser;
+
+impl WindowFocuser for NiriFocuser {
+    fn focus(&self, agent: &Agent) -> Result<(), String> {
+        let windows = json_array("niri", &["msg", "--json", "windows"])?;
+        let ancestors = ancestor_pids(agent.pid);
+        let id = entry_for_pid(&windows, &ancestors)
+            .and_then(|e| e.get("id").and_then(|i| i.as_u64()))
+            .ok_or_else(|| format!("no niri window for pid {}", agent.pid))?;
+        let ok = Command::new("niri")
+            .args(["msg", "action", "focus-window", "--id", &id.to_string()])
+            .status()
+            .map_err(|e| format!("niri failed: {e}"))?
+            .success();
+        if ok {
+            Ok(())
+        } else {
+            Err("niri focus-window returned non-zero".into())
+        }
+    }
+
+    fn close(&self, agent: &Agent) -> Result<(), String> {
+        let windows = json_array("niri", &["msg", "--json", "windows"])?;
+        let ancestors = ancestor_pids(agent.pid);
+        let pid = entry_for_pid(&windows, &ancestors)
+            .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
+            .ok_or_else(|| format!("no niri window for pid {}", agent.pid))?;
+        kill_pid(pid as u32)
+    }
+}
+
 // --- X11 (EWMH) ---
 
 use x11rb::connection::Connection;
@@ -191,16 +309,7 @@ impl WindowFocuser for X11Focuser {
     fn close(&self, agent: &Agent) -> Result<(), String> {
         let (conn, _root, win) = self.find(agent)?;
         let pid = window_pid(&conn, win).ok_or("x11: window has no _NET_WM_PID")?;
-        let ok = Command::new("kill")
-            .arg(pid.to_string())
-            .status()
-            .map_err(|e| format!("kill failed: {e}"))?
-            .success();
-        if ok {
-            Ok(())
-        } else {
-            Err("kill returned non-zero".into())
-        }
+        kill_pid(pid)
     }
 }
 
@@ -300,5 +409,33 @@ mod tests {
         let mut pids = HashSet::new();
         pids.insert(9999);
         assert_eq!(find_window(&tree, &pids), None);
+    }
+
+    #[test]
+    fn entry_for_pid_matches_hyprland_and_niri_shapes() {
+        // hyprctl clients -j: address + pid; niri msg windows: id + pid.
+        let hypr = serde_json::json!([
+            {"address": "0xaaa", "pid": 10},
+            {"address": "0xbbb", "pid": 84669}
+        ]);
+        let niri = serde_json::json!([
+            {"id": 1, "pid": 10},
+            {"id": 7, "pid": 84669}
+        ]);
+        let mut pids = HashSet::new();
+        pids.insert(84669);
+        assert_eq!(
+            entry_for_pid(hypr.as_array().unwrap(), &pids)
+                .and_then(|e| e.get("address").and_then(|a| a.as_str())),
+            Some("0xbbb")
+        );
+        assert_eq!(
+            entry_for_pid(niri.as_array().unwrap(), &pids)
+                .and_then(|e| e.get("id").and_then(|i| i.as_u64())),
+            Some(7)
+        );
+        pids.clear();
+        pids.insert(999);
+        assert_eq!(entry_for_pid(niri.as_array().unwrap(), &pids), None);
     }
 }
