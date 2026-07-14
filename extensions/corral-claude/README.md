@@ -24,6 +24,10 @@ Two sockets under `<cwd>/.corral/`: `claude-<pid>.sock` (ACP, corral connects
 here; pid is the interactive Claude process so focus correlation works) and
 `.claude-ctl-<sessionId>.sock` (control, hook.ts connects here).
 
+It ships as a Claude Code **plugin**: `.claude-plugin/plugin.json` plus
+`hooks/hooks.json`, whose commands reference `${CLAUDE_PLUGIN_ROOT}` so nothing
+is hardcoded and no `settings.json` is hand-edited.
+
 ## Live-session messaging: the two injection vectors
 
 corral's `m` and inter-agent delivery reach the *live* session through Claude's
@@ -44,13 +48,29 @@ exposes no external turn-abort.
 
 ## Install
 
-1. Install `bun` (the sidecar and shim run on it) and make sure it is on PATH.
-2. Symlink or copy this directory somewhere stable, e.g.
-   `~/.claude/corral-claude/`.
-3. Merge the `hooks` block from `settings.json` into `~/.claude/settings.json`
-   (all your projects) or a project's `.claude/settings.json`, replacing every
-   `ABSOLUTE_PATH` with the absolute path to this directory.
-4. Start `claude` in any project. It appears on the corral board within ~1s.
+First install `bun` (the sidecar and shim run on it) and put it on PATH. Then
+pick one path:
+
+**Marketplace (updatable).** From a clone of the corral repo, or by URL:
+
+```
+claude plugin marketplace add cornerman/corral
+claude plugin install corral-claude@corral
+```
+
+**Zero-install (skills-dir plugin).** Symlink this directory under your personal
+skills dir; it loads as `corral-claude@skills-dir` on the next session with no
+install step and no marketplace:
+
+```
+ln -s "$PWD/extensions/corral-claude" ~/.claude/skills/corral-claude
+```
+
+**Session-only.** `claude --plugin-dir extensions/corral-claude`.
+
+Then start `claude` in any project; it appears on the corral board within ~1s.
+Verify the plugin loaded with `claude plugin list` or `/plugin`, and inspect its
+hooks with `claude plugin validate extensions/corral-claude`.
 
 ## Status: UNVERIFIED
 
@@ -71,6 +91,10 @@ Known unknowns, to confirm against a live Claude:
 
 - One session per working directory at a time (the control socket is keyed by
   session id, but focus/resume assume the common single-session case).
+- Alternative lifecycle not taken: Claude's plugin **monitor** component could
+  host the sidecar (lifetime = session, auto-reaped, no detach or liveness
+  probe), but monitors are experimental, skipped on some hosts, and receive no
+  session id, so the hook-spawned sidecar is the robust choice for now.
 - The sidecar is a detached process; it is reaped on SessionEnd, on a Claude
   process-death probe (5s), and finally by corral's dead-socket sweep.
 - Title updates after a `/rename` mid-session are not caught (no rename hook);

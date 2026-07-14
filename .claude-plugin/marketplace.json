@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "corral",
+  "owner": { "name": "corral", "url": "https://github.com/cornerman/corral" },
+  "plugins": [
+    {
+      "name": "corral-claude",
+      "source": "./extensions/corral-claude",
+      "description": "Announce this interactive Claude Code session to the corral attention board over ACP."
+    }
+  ]
+}

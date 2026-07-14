@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "corral-claude",
+  "displayName": "corral (Claude Code adapter)",
+  "version": "0.1.0",
+  "description": "Announce this interactive Claude Code session to the corral attention board over ACP: discoverable, focusable, resumable, live triage state, and messageable.",
+  "author": { "name": "corral", "url": "https://github.com/cornerman/corral" },
+  "homepage": "https://github.com/cornerman/corral/tree/main/extensions/corral-claude",
+  "repository": "https://github.com/cornerman/corral",
+  "license": "MIT",
+  "keywords": ["corral", "acp", "attention-board", "agent-client-protocol"]
+}

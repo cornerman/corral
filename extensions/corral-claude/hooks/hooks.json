@@ -1,0 +1,41 @@
+{
+  "//": "corral-claude plugin hooks. Auto-discovered when the plugin is enabled; no manual settings.json merge. ${CLAUDE_PLUGIN_ROOT} is substituted per arg (exec form), so paths are never hardcoded. Requires `bun` on PATH.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }]
+      }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"], "timeout": 5 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] }] },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts", "await"],
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 360
+          }
+        ]
+      }
+    ]
+  }
+}

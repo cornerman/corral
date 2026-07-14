@@ -361,8 +361,13 @@ ratatui / iced, the daemon keeps ksni).
   `session/cancel` is a no-op (no external turn-abort). Runs on `bun`, external
   to Claude. UNVERIFIED in this repo (no Claude harness here): hook payload
   fields and the block/asyncRewake injection semantics are coded from the hooks
-  reference and probed defensively. Install: merge `settings.json`'s hooks block
-  into `~/.claude/settings.json`. See `extensions/corral-claude/README.md`.
+  reference and probed defensively. Ships as a Claude Code **plugin**
+  (`.claude-plugin/plugin.json` + `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}`,
+  so no hardcoded paths and no `settings.json` hand-edit); installable via the
+  repo-root `.claude-plugin/marketplace.json` (`claude plugin marketplace add
+  cornerman/corral` then `claude plugin install corral-claude@corral`), a
+  `~/.claude/skills/` symlink (zero-install skills-dir plugin), or
+  `--plugin-dir`. See `extensions/corral-claude/README.md`.
 
 ## Inter-Agent Messaging
 
