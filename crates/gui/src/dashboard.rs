@@ -195,7 +195,7 @@ impl Dashboard {
                 [w, 28.0],
                 TextEdit::singleline(&mut self.filter)
                     .frame(egui::Frame::NONE)
-                    .hint_text("filter…")
+                    .hint_text("type to filter…")
                     .font(FontId::proportional(18.0)),
             );
             ui.painter().hline(

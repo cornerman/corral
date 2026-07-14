@@ -117,6 +117,20 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
 /// so the status line shows through.
 pub fn render_filter(frame: &mut Frame, filter: &str, filtering: bool) {
     let area = filter_area(frame.area());
+    // The corral wordmark, top-left and faint, mirroring the GUI header.
+    let mark = Rect {
+        x: area.x + PAD,
+        y: area.y,
+        width: area.width.saturating_sub(PAD).min(6),
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "corral",
+            Style::default().add_modifier(Modifier::DIM),
+        ))),
+        mark,
+    );
     // A centered field, prominent like a launcher's input line.
     let w = ((area.width as u32 * 7 / 10) as u16).clamp(30.min(area.width), area.width);
     let x = area.x + area.width.saturating_sub(w) / 2;
