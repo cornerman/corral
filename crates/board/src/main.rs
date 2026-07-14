@@ -369,16 +369,16 @@ fn run(
                         }
                         filter.clear();
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Down => {
                         selected = nav::move_row(selected, &counts, true);
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Up => {
                         selected = nav::move_row(selected, &counts, false);
                     }
-                    KeyCode::Left | KeyCode::Char('h') => {
+                    KeyCode::Left => {
                         selected = nav::move_col(selected, &counts, false);
                     }
-                    KeyCode::Right | KeyCode::Char('l') => {
+                    KeyCode::Right => {
                         selected = nav::move_col(selected, &counts, true);
                     }
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {

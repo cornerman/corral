@@ -28,18 +28,24 @@ It ships as a Claude Code **plugin**: `.claude-plugin/plugin.json` plus
 `hooks/hooks.json`, whose commands reference `${CLAUDE_PLUGIN_ROOT}` so nothing
 is hardcoded and no `settings.json` is hand-edited.
 
-## Live-session messaging: the two injection vectors
+## Live-session messaging: one visible delivery, one doorbell
 
 corral's `m` and inter-agent delivery reach the *live* session through Claude's
 own hook feedback, deferred to a hook boundary (matching the fire-and-forget
-contract):
+contract). All delivery goes through the synchronous `Stop` hook so the message
+text is visible in the transcript:
 
-- **Turn boundary** — the `Stop` hook returns `{"decision":"block","reason":…}`,
-  which continues the conversation with the queued message as Claude's next
-  instruction. Delivered when the current turn ends.
-- **Idle** — an `asyncRewake` hook (async, on `Stop`) long-polls the sidecar; a
-  message arriving while the session is idle makes it exit 2, which wakes Claude
-  immediately with the message on stderr.
+- **Delivery (every message)** — the `Stop` hook returns
+  `{"decision":"block","reason":…,"systemMessage":…}`. `reason` continues the
+  conversation with the queued message as Claude's next instruction; `systemMessage`
+  is the one hook field shown to the user, so the message text appears in the
+  transcript instead of an opaque "Stop hook feedback" line. Delivered when the
+  current turn ends.
+- **Idle doorbell** — an `asyncRewake` hook (async, on `Stop`) long-polls the
+  sidecar. A message arriving on an idle session (no upcoming `Stop`) makes it
+  exit 2 with only a neutral wake note, waking Claude so its next `Stop` fires
+  and delivers the message visibly via the path above. The doorbell never
+  carries the message text itself.
 
 `state_update` is driven natively and is richer than pi's: `UserPromptSubmit` →
 running, `Stop` → idle, and `Notification[permission_prompt]` →
@@ -78,7 +84,8 @@ hooks with `claude plugin validate extensions/corral-claude`.
 
 No Claude Code binary or hook harness runs in corral's build sandbox, so the
 hook payload field names and the injection semantics (Stop `decision:block`
-reason as next instruction; `asyncRewake` exit-2 wake) are implemented from the
+reason as next instruction, `systemMessage` as the user-visible line;
+`asyncRewake` exit-2 wake as a doorbell) are implemented from the
 Claude Code hooks reference and probed defensively, not exercised end to end.
 Known unknowns, to confirm against a live Claude:
 

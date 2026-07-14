@@ -26,12 +26,17 @@
  * Served ACP surface (see handleAcp):
  *   initialize      identity (agentInfo name "claude")
  *   session/list    this session: id, title, cwd
- *   session/prompt  queue a user message; delivered into the LIVE session at the
- *                   next turn boundary (Stop hook, decision:block) or, if the
- *                   session is idle, immediately by the asyncRewake hook. The
- *                   request resolves with stopReason once the message is handed
- *                   to a hook (see flushTo). This deferred delivery matches the
- *                   fire-and-forget contract and pi's "queue while busy".
+ *   session/prompt  queue a user message; always delivered into the LIVE session
+ *                   at the next turn boundary by the synchronous Stop hook
+ *                   (decision:block reason -> the model, plus systemMessage so
+ *                   the text is VISIBLE in the transcript instead of an opaque
+ *                   "Stop hook feedback" line). If the session is idle there is no
+ *                   upcoming Stop, so the asyncRewake hook is rung as a doorbell
+ *                   to wake it; the woken turn ends and its Stop delivers the
+ *                   queued message. The request resolves with stopReason once the
+ *                   Stop hook takes it (see flushTo). This deferred delivery
+ *                   matches the fire-and-forget contract and pi's "queue while
+ *                   busy".
  *   session/cancel  no-op: Claude exposes no external turn-abort. Documented
  *                   limitation, answered as a notification.
  * Broadcasts (session/update): state_update (running/idle/requires_action),
@@ -92,8 +97,14 @@ const readBuffers = new Map<unknown, string>();
 // the message is handed to a hook (delivered into the live session).
 type Pending = { text: string; resolve: () => void };
 const outbox: Pending[] = [];
-// A held asyncRewake connection waiting for a message to wake an idle session.
+// A held asyncRewake connection: a doorbell that wakes an idle session so its
+// Stop hook fires. It never carries the message text (delivery is the Stop
+// hook's job); respond(WAKE_NOTE) wakes, respond(null) cancels without waking.
 let heldAwait: { respond: (text: string | null) => void; timer: ReturnType<typeof setTimeout> } | undefined;
+// System reminder shown to Claude on an asyncRewake wake. Neutral on purpose: the
+// real message arrives as the immediately following Stop hook's instruction, so
+// Claude should not answer this note itself.
+const WAKE_NOTE = "A message from corral is about to arrive as your next instruction. Do not respond to this note; wait for the message.";
 
 // --- socket line framing shared by both servers ---
 // Node net (not Bun): bun's JavaScriptCore SIGTRAP-crashes under a Landlock
@@ -182,13 +193,14 @@ function handleAcp(line: string, conn: Sock) {
 				.map((b) => b.text)
 				.join("\n");
 			if (!text) return fail(-32602, "prompt has no text content");
-			// Queue for delivery into the live session. Resolve the ACP request once
-			// a hook takes it (flushTo), not now: corral's operator/inter-agent send
-			// is fire-and-forget, so a deferred stopReason is fine.
+			// Queue for delivery by the next Stop hook (flushTo), which shows the text
+			// via systemMessage. Resolve the ACP request when the Stop hook takes it,
+			// not now: corral's send is fire-and-forget, so a deferred stopReason is fine.
 			outbox.push({ text, resolve: () => reply({ stopReason: "end_turn" }) });
-			// If an asyncRewake hook is parked (session idle), wake it immediately so
-			// the message lands without waiting for the next human turn.
-			if (heldAwait) flushTo((t) => heldAwait!.respond(t));
+			// Idle: no upcoming Stop, so ring the parked doorbell to wake the session;
+			// the woken turn's Stop then delivers this message visibly. Running: leave it
+			// queued for the current turn's Stop (never wake mid-turn).
+			if (currentState === "idle" && heldAwait) heldAwait.respond(WAKE_NOTE);
 			break;
 		}
 		default:
@@ -196,9 +208,10 @@ function handleAcp(line: string, conn: Sock) {
 	}
 }
 
-// Hand all queued messages to one consumer (a Stop-hook reply or a parked
-// asyncRewake), resolving each ACP request. Returns the joined text, or null if
-// the outbox was empty.
+// Hand all queued messages to the Stop-hook reply, resolving each ACP request.
+// Returns the joined text, or null if the outbox was empty. Only the Stop hook
+// consumes (the asyncRewake doorbell never drains), so delivery always carries a
+// systemMessage and shows in the transcript.
 function flushTo(consume: (text: string | null) => void): void {
 	if (outbox.length === 0) return consume(null);
 	const batch = outbox.splice(0, outbox.length);
@@ -213,8 +226,9 @@ function flushTo(consume: (text: string | null) => void): void {
 
 // --- control channel (hook.ts connects here, one line per hook event) ---
 // Request:  { kind: "event", event: <hook payload> }  |  { kind: "await", timeoutMs?: n }
-// Response: { inject: string|null }  (for "event" only Stop uses inject; for
-//           "await" inject is the message that should wake an idle Claude)
+// Response: { inject: string|null }  (for "event" only Stop uses inject, the
+//           delivered message; for "await" inject is a neutral wake note, never
+//           the message text — the doorbell only wakes, the Stop hook delivers)
 function handleControl(line: string, conn: Sock) {
 	let req: { kind?: string; event?: Record<string, unknown>; timeoutMs?: number };
 	try {
@@ -230,9 +244,10 @@ function handleControl(line: string, conn: Sock) {
 	};
 
 	if (req.kind === "await") {
-		// asyncRewake long-poll: deliver at once if something is queued, else park
-		// until a message arrives or the hold elapses (then the hook re-arms).
-		if (outbox.length > 0) return flushTo(respond);
+		// asyncRewake doorbell. If a message is already queued on an idle session,
+		// wake at once; otherwise park until a message rings it or the hold elapses
+		// (then the hook re-arms). Never drains the outbox: the Stop hook delivers.
+		if (currentState === "idle" && outbox.length > 0) return respond(WAKE_NOTE);
 		if (heldAwait) heldAwait.respond(null); // only one parked waiter
 		const timer = setTimeout(() => {
 			heldAwait = undefined;

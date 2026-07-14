@@ -211,7 +211,7 @@ ratatui / iced, the daemon keeps ksni).
   - `src/main.rs` — the imperative shell: scan/prune/watch/draw/dispatch. `/`
     focuses the inline filter (narrows cards by whole content); while filtering
     Enter goes / Shift+Enter spawns directly, arrows navigate. Command keys:
-    Up/Down or j/k, Left/Right or h/l, Enter go, Shift+Enter spawn, `m` message
+    Up/Down, Left/Right, Enter go, Shift+Enter spawn, `m` message
     (compose overlay), `d` dismiss, `q` quit; a two-stage left click and a
     clickable footer. Esc peels one layer per press and quits at the last
     (edit-mode blur -> clear filter -> exit), matching the GUI. `--launcher`
@@ -361,10 +361,13 @@ ratatui / iced, the daemon keeps ksni).
   (`claude-<claudePid>.sock`, pid = the interactive Claude process so focus
   correlation works). SessionStart spawns the sidecar detached; SessionEnd (or a
   5s Claude-liveness probe, or corral's dead-socket sweep) reaps it. Live-session
-  delivery uses Claude's own hook feedback: the `Stop` hook returns
-  `decision:block` to continue with a queued message as the next instruction
-  (turn boundary), and an `asyncRewake` hook on `Stop` exits 2 to wake an idle
-  session immediately. `state_update` is native and richer than pi's
+  delivery uses Claude's own hook feedback, always via the synchronous `Stop`
+  hook so the text is visible: it returns `decision:block` (reason = the queued
+  message as the next instruction) plus `systemMessage` (the one hook field shown
+  to the user, so the message shows in the transcript, not an opaque "Stop hook
+  feedback" line). An `asyncRewake` hook on `Stop` is a doorbell only: on an idle
+  session it exits 2 with a neutral wake note to make the next `Stop` fire and
+  deliver visibly; it never carries the message text. `state_update` is native and richer than pi's
   (`UserPromptSubmit`->running, `Stop`->idle,
   `Notification[permission_prompt]`->requires_action, a real approval gate);
   `session/cancel` is a no-op (no external turn-abort). Runs on `node` (not
@@ -444,8 +447,8 @@ message/tool updates) is ACP v1.
 ## Interfaces to the Outside World
 
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
-  Dormant. Up/Down (or j/k, or scroll) move within a column; Left/Right (or
-  h/l) switch columns; Enter or left-click goes to the selected agent (focus a
+  Dormant. Up/Down (or scroll) move within a column; Left/Right switch
+  columns; Enter or left-click goes to the selected agent (focus a
   live window, resume a dormant session by running its `resumeCommand`);
   Shift+Enter spawns a fresh agent of the selected card's kind (its
   `spawnCommand`) in the selected agent's cwd; `/` focuses a prominent

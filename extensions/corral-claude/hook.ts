@@ -8,13 +8,15 @@
  * Modes (selected by the first CLI arg in settings.json):
  *   (default)   forward one hook event. On SessionStart, spawn the sidecar
  *               detached if it is not already up. For Stop, if the sidecar hands
- *               back queued messages, print {decision:"block",reason:…} so Claude
- *               continues with them as its next instruction — this is how a
- *               corral message reaches the LIVE session at a turn boundary.
- *   await       the asyncRewake entry (async:true, asyncRewake:true, on Stop):
- *               long-poll the sidecar for a message that arrives while the
- *               session is idle; if one comes, print it to stderr and exit 2 so
- *               Claude wakes and receives it even with no human turn.
+ *               back queued messages, print {decision:"block",reason,systemMessage}
+ *               so Claude continues with them as its next instruction AND the
+ *               text shows in the transcript — this is how a corral message
+ *               reaches the LIVE session at a turn boundary, visibly.
+ *   await       the asyncRewake doorbell (async:true, asyncRewake:true, on Stop):
+ *               long-poll the sidecar; when a message is queued on an idle
+ *               session it returns a neutral wake note, which we print to stderr
+ *               and exit 2 so Claude wakes and its next Stop delivers the message
+ *               visibly. The note is never the message text itself.
  *
  * Never throws into Claude and never blocks a tool: any error or missing sidecar
  * exits 0 silently. Only the two intentional paths (Stop block, await wake)
@@ -47,11 +49,13 @@ async function main() {
 	const controlSocket = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 
 	if (MODE === "await") {
-		const inject = await requestAwait(controlSocket);
-		if (inject) {
-			// asyncRewake: stderr is shown to Claude as a system reminder and exit 2
-			// wakes it, even when idle.
-			process.stderr.write(inject);
+		const note = await requestAwait(controlSocket);
+		if (note) {
+			// asyncRewake doorbell: exit 2 wakes an idle session so its Stop hook fires
+			// and delivers the queued message visibly (systemMessage). We only wake
+			// here; `note` is a neutral reminder (stderr shown to Claude), never the
+			// message text itself.
+			process.stderr.write(note);
 			process.exit(2);
 		}
 		return; // nothing queued within the hold window; re-armed next turn
@@ -65,10 +69,11 @@ async function main() {
 	}
 	const inject = await requestEvent(controlSocket, ev);
 	if (name === "Stop" && inject) {
-		// Deliver queued corral messages as the next instruction. Framed as
-		// information + instruction (not an out-of-band system command) so Claude's
-		// prompt-injection defense does not just surface it to the user.
-		process.stdout.write(JSON.stringify({ decision: "block", reason: inject }));
+		// Deliver queued corral messages as the next instruction (reason -> the
+		// model). reason is fed to Claude only and renders as an opaque "Stop hook
+		// feedback" line, so also emit systemMessage: the one hook field shown to the
+		// user, making the incoming message text visible in the transcript.
+		process.stdout.write(JSON.stringify({ decision: "block", reason: inject, systemMessage: inject }));
 	}
 }
 
@@ -125,8 +130,9 @@ function talk(socketPath: string, payload: unknown, timeoutMs: number): Promise<
 }
 
 const requestEvent = (s: string, ev: unknown) => talk(s, { kind: "event", event: ev }, 10_000);
-// Long hold: the sidecar responds early on a message or when its own hold
-// elapses; keep the socket timeout above that so we do not cut it short.
+// Long hold: the sidecar rings this doorbell early when a message is queued on
+// an idle session, or lets its own hold elapse; keep the socket timeout above
+// that so we do not cut it short. The returned value is a neutral wake note.
 const requestAwait = (s: string) => talk(s, { kind: "await" }, 360_000);
 
 function isUp(socketPath: string): Promise<boolean> {

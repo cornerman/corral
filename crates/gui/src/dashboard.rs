@@ -5,7 +5,7 @@
 //! base16-themed, following the system light/dark preference.
 //!
 //! Interaction mirrors the TUI, keeping the egui shell's learnings: `/` focuses
-//! the filter (narrows cards by whole content); arrows / `hjkl` move, Enter
+//! the filter (narrows cards by whole content); arrows move, Enter
 //! goes, Shift+Enter spawns, `m` messages (compose overlay), `d` dismisses,
 //! `Esc` clears the filter then quits, `q` quits; a two-stage card click (first
 //! click selects, click the selected card goes); selection survives a filter
@@ -359,10 +359,6 @@ impl Board {
                 };
             }
             keyboard::Key::Character(c) => match c.as_str() {
-                "j" => self.selected = nav::move_row(self.selected, &counts, true),
-                "k" => self.selected = nav::move_row(self.selected, &counts, false),
-                "l" => self.selected = nav::move_col(self.selected, &counts, true),
-                "h" => self.selected = nav::move_col(self.selected, &counts, false),
                 "m" => return self.update(Message::OpenCompose),
                 "d" => return self.update(Message::Dismiss),
                 "q" => std::process::exit(0),
@@ -792,7 +788,7 @@ impl Board {
         // Same keys, order and keycap styling as the TUI footer (ui.rs
         // footer_items / footer_layout).
         row![
-            hint("hjkl", "move", None),
+            hint("arrows", "move", None),
             hint("enter", "go", Some(Message::Go)),
             hint("shift+enter", "new", Some(Message::Spawn)),
             hint("/", "filter", Some(Message::FocusFilter)),

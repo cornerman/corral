@@ -204,7 +204,7 @@ const FOOTER_GAP: u16 = 2;
 /// font; the keycap styling in `footer_layout` supplies the visual polish.
 fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 7] {
     [
-        (None, "hjkl", "move"),
+        (None, "arrows", "move"),
         (Some(FooterAction::Go), "enter", "go"),
         (Some(FooterAction::New), "shift+enter", "new"),
         (Some(FooterAction::Jump), "/", "filter"),
