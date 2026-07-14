@@ -82,8 +82,14 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.sync_theme(ui.ctx());
-        // A uniform breathing margin so content never touches the window edge.
-        egui::Frame::default()
+        // eframe snapshots the root ui's style before our set_visuals, so adopt
+        // the fresh visuals here or widgets (buttons, selection) render with
+        // egui defaults instead of the palette.
+        let style = ui.ctx().style_of(ui.ctx().theme());
+        ui.set_style(style.clone());
+        // `central_panel` fills the whole area with the palette background;
+        // `Frame::default` paints nothing, leaving the window clear color (black).
+        egui::Frame::central_panel(&style)
             .inner_margin(egui::Margin::symmetric(18, 12))
             .show(ui, |ui| self.dashboard.ui(ui, self.dark));
     }

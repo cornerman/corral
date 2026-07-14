@@ -214,9 +214,11 @@ For richer board cards, an agent MAY broadcast message and tool activity:
   dormant (still resumable) rather than delete it, and a freshly starting
   socket that has not yet been proven dead SHOULD stay on the live path so it
   does not flicker through the dormant view.
-- **Pruning.** Forgetting dormant records (e.g. a record with no
-  `resumeCommand`, or after a staleness horizon measured from `lastSeen`) is
-  consumer policy and is not specified here.
+- **Pruning.** Forgetting dormant records is consumer policy and is not
+  specified here. A consumer SHOULD prune conservatively — e.g. only past a
+  staleness horizon measured from `lastSeen` — and MUST NOT delete a record it
+  cannot parse or does not understand (a schema change or a newer producer must
+  never destroy history); such a record is ignored, not removed.
 
 ## 7. ACP Conformance
 

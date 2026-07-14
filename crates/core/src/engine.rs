@@ -158,10 +158,12 @@ impl Engine {
     }
 }
 
-/// Prune dormant records that are not resumable or have not been touched in
-/// `DORMANT_MAX_AGE`. Live records (socket set) are never pruned. A deleted
-/// session file is no longer detected here (the resume command is an opaque
-/// argv, not a path to stat); such a record fails at resume time and ages out.
+/// Prune dormant records only when they have gone untouched past
+/// `DORMANT_MAX_AGE`. Deletion is deliberately conservative: a record is
+/// removed solely on age, never because it looks unresumable or fails to
+/// parse. An unreadable or unfamiliar record is ignored (skipped from the
+/// view), not deleted, so a schema change or a newer producer can never
+/// destroy history. Live records (socket set) are never pruned.
 fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
     entries
         .into_iter()
@@ -169,14 +171,13 @@ fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
             if e.socket.is_some() {
                 return true; // live: not ours to prune
             }
-            let dead = e.resume_command.is_none();
             let file = dir.join(format!("{}.json", e.session_id));
             let stale = std::fs::metadata(&file)
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|age| age > DORMANT_MAX_AGE);
-            if dead || stale {
+            if stale {
                 let _ = std::fs::remove_file(&file);
                 return false;
             }
