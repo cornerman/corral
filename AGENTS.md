@@ -285,7 +285,8 @@ ratatui / iced, the daemon keeps ksni).
   `turn_start`/`turn_end` and while the interactive `question` tool blocks on
   the user. A newly connected client is seeded with the current `state_update`.
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
-  (`target_dir` or `target_session`, `message`, `force_new`) that submits a
+  (`target_dir` or `target_session`, `message`, `force_new`, optional `label`)
+  that submits a
   cross-session message over `~/.corral/corrald.sock` (stamped with the
   sender's `fromSession` as a reply handle) and reports corral's ack (accepted
   / approval_needed / recipient_not_found / directory_not_known); a connect failure is
@@ -349,7 +350,11 @@ the daemon boundary coincide.
 A message is addressed either by **directory** (`target_dir`: reach whoever
 works there, spawning one if none, or a dedicated one for `force_new`) or by
 **session id** (`target_session`: reach that exact agent, resuming it from its
-dormant record if not live). Session addressing is what makes a reply precise:
+dormant record if not live). When a `target_dir` message has to spawn a fresh
+agent, the optional `label` picks its kind (matched against a record's `label`,
+resolved from any directory so a kind seen anywhere can start here); omitted, it
+falls back to that directory's own record kind, and an unknown label fails loud
+instead of spawning an arbitrary kind. Session addressing is what makes a reply precise:
 the provenance tag carries the sender's session id as a reply handle, so the
 receiver answers with `corral_message_agent(target_session = ..)` and it lands on the
 agent that actually asked, never a sibling that happens to share the directory.

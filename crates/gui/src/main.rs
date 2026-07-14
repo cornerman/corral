@@ -14,7 +14,11 @@ use dashboard::Board;
 
 fn main() -> iced::Result {
     let launcher = std::env::args().any(|a| a == "--launcher");
-    let app_id = if launcher { "corral-launcher" } else { "corral" };
+    let app_id = if launcher {
+        "corral-launcher"
+    } else {
+        "corral"
+    };
     let window = iced::window::Settings {
         size: iced::Size::new(900.0, 600.0),
         platform_specific: iced::window::settings::PlatformSpecific {

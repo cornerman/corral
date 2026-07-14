@@ -90,7 +90,9 @@ export default function (pi: ExtensionAPI) {
 			"target_dir (reach whoever works in that directory, spawning one if none) " +
 			"OR by target_session (reach that exact agent, resuming it if dormant) — " +
 			"give exactly one. To reply to a message you received, pass its session id " +
-			"(shown as 'session <id>' in the incoming tag) as target_session. corral " +
+			"(shown as 'session <id>' in the incoming tag) as target_session. Optionally " +
+			"set label (e.g. \"pi\", \"opencode\") to choose which agent kind to start when " +
+			"target_dir has to spawn a fresh one. corral " +
 			"routes it and tags it as coming from you. Fire-and-forget: no reply is awaited.",
 		parameters: Type.Object({
 			target_dir: Type.Optional(
@@ -107,6 +109,13 @@ export default function (pi: ExtensionAPI) {
 			force_new: Type.Optional(
 				Type.Boolean({
 					description: "With target_dir: spawn a dedicated fresh agent instead of reusing one.",
+				}),
+			),
+			label: Type.Optional(
+				Type.String({
+					description:
+						"Agent kind (e.g. \"pi\", \"opencode\") to start if target_dir spawns a fresh " +
+						"agent; defaults to that directory's existing kind.",
 				}),
 			),
 		}),
@@ -135,6 +144,8 @@ export default function (pi: ExtensionAPI) {
 			};
 			if (hasDir) record.targetDir = params.target_dir;
 			else record.targetSession = params.target_session;
+			// Optional: which agent kind to spawn if target_dir has no live agent.
+			if (params.label) record.label = params.label;
 			const dest = hasDir ? params.target_dir : `session ${params.target_session}`;
 			// Submit over corral's control socket. A connect failure means corral is
 			// not running: fail loud here rather than silently queue undelivered.

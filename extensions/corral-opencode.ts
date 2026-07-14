@@ -521,7 +521,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"target_dir (reach whoever works in that directory, spawning one if none) " +
 					"OR by target_session (reach that exact agent, resuming it if dormant) — " +
 					"give exactly one. To reply to a message you received, pass its session id " +
-					"(shown as 'session <id>' in the incoming tag) as target_session. corral " +
+					"(shown as 'session <id>' in the incoming tag) as target_session. Optionally " +
+					"set label (e.g. \"pi\", \"opencode\") to choose which agent kind to start when " +
+					"target_dir has to spawn a fresh one. corral " +
 					"routes it and tags it as coming from you. Fire-and-forget: no reply is awaited.",
 				args: {
 					target_dir: tool.schema
@@ -537,12 +539,20 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						.boolean()
 						.optional()
 						.describe("With target_dir: spawn a dedicated fresh agent instead of reusing one."),
+					label: tool.schema
+						.string()
+						.optional()
+						.describe(
+							'Agent kind (e.g. "pi", "opencode") to start if target_dir spawns a fresh ' +
+							"agent; defaults to that directory's existing kind.",
+						),
 				},
 				async execute(args: {
 					target_dir?: string;
 					target_session?: string;
 					message: string;
 					force_new?: boolean;
+					label?: string;
 				}) {
 					const home = process.env.HOME;
 					const controlSocket =
@@ -566,6 +576,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					};
 					if (hasDir) record.targetDir = args.target_dir;
 					else record.targetSession = args.target_session;
+					// Optional: which agent kind to spawn if target_dir has no live agent.
+					if (args.label) record.label = args.label;
 					const dest = hasDir ? args.target_dir : `session ${args.target_session}`;
 					// A connect failure means corral is not running: fail loud rather
 					// than silently queue undelivered.

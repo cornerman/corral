@@ -66,6 +66,7 @@ pub enum Message {
     Focused(bool),
     OpenCompose,
     Dismiss,
+    Quit,
     ComposeInput(String),
     ComposeSend,
     ComposeCancel,
@@ -255,6 +256,7 @@ impl Board {
                     self.status = self.dismiss(&a);
                 }
             }
+            Message::Quit => return iced::exit(),
             Message::ComposeInput(s) => {
                 if let Some(c) = &mut self.compose {
                     c.buf = s;
@@ -487,9 +489,7 @@ impl Board {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::Escape),
-                iced::Event::Window(iced::window::Event::Focused) => {
-                    Some(Message::Focused(true))
-                }
+                iced::Event::Window(iced::window::Event::Focused) => Some(Message::Focused(true)),
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::Focused(false))
                 }
@@ -608,12 +608,12 @@ impl Board {
             // underline color so the UI has one structural-line tone.
             if i + 1 < Column::ALL.len() {
                 cols = cols.push(
-                    container(Space::new(Length::Fixed(1.0), Length::Fill)).style(
-                        move |_t| container::Style {
+                    container(Space::new(Length::Fixed(1.0), Length::Fill)).style(move |_t| {
+                        container::Style {
                             background: Some(Background::Color(underline)),
                             ..container::Style::default()
-                        },
-                    ),
+                        }
+                    }),
                 );
             }
         }
@@ -737,13 +737,15 @@ impl Board {
                 .interaction(mouse::Interaction::Pointer)
                 .into()
         };
+        // Same labels, symbols and order as the TUI footer (ui.rs footer_items).
         row![
-            text("arrows move").size(13).color(dim),
-            hint("Enter go", Message::Go),
-            hint("Shift+Enter new", Message::Spawn),
-            hint("m message", Message::OpenCompose),
-            hint("d dismiss", Message::Dismiss),
+            text("↑↓←→ move").size(13).color(dim),
+            hint("⏎ go", Message::Go),
+            hint("⇧⏎ new", Message::Spawn),
             hint("/ filter", Message::FocusFilter),
+            hint("m msg", Message::OpenCompose),
+            hint("d delete", Message::Dismiss),
+            hint("q quit", Message::Quit),
             Space::new(Length::Fill, 0.0),
             canvas(Mark { color: dim })
                 .width(Length::Fixed(14.0))

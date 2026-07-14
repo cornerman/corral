@@ -27,6 +27,10 @@ pub struct Message {
     pub target: Target,
     pub message: String,
     pub force_new: bool,
+    /// Agent kind to start if a `target_dir` message spawns a fresh agent
+    /// (matched against a registry record's `label`). `None` = caller did not
+    /// choose; the router falls back to the dir's own record.
+    pub label: Option<String>,
 }
 
 impl Message {
@@ -143,6 +147,7 @@ pub fn parse_message(text: &str) -> Option<Message> {
         target,
         message: s("message")?,
         force_new: v.get("forceNew").and_then(|x| x.as_bool()).unwrap_or(false),
+        label: s("label"),
     })
 }
 
@@ -187,6 +192,7 @@ mod tests {
             target: Target::Dir("/b".into()),
             message: "hi".into(),
             force_new: false,
+            label: None,
         }
     }
 
@@ -208,6 +214,19 @@ mod tests {
         assert_eq!(m.target_label(), "session sid-7");
         // The reply handle (sender's session) rides in the provenance tag.
         assert_eq!(m.tagged(), "[from agent in /a (session sid-9)] hi");
+    }
+
+    #[test]
+    fn parses_label_when_present_else_none() {
+        let with = parse_message(
+            r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","label":"opencode"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.label.as_deref(), Some("opencode"));
+        // Absent -> None (the msg() fixture has no label key).
+        let without =
+            parse_message(r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi"}"#).unwrap();
+        assert_eq!(without.label, None);
     }
 
     #[test]

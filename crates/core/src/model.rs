@@ -131,9 +131,7 @@ impl Agent {
 /// lowercased by the caller.
 fn is_subsequence(needle: &str, hay: &str) -> bool {
     let mut chars = hay.chars();
-    needle
-        .chars()
-        .all(|c| chars.by_ref().any(|hc| hc == c))
+    needle.chars().all(|c| chars.by_ref().any(|hc| hc == c))
 }
 
 /// A change pushed from a watcher thread to the UI thread.
@@ -278,8 +276,7 @@ impl Board {
     /// live and dormant. Drives the within-column grouping: cards sharing a
     /// cwd sit together, and the busiest directories float to the top.
     fn cwd_occurrences(&self) -> std::collections::HashMap<&str, usize> {
-        let mut counts: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for a in self.live.values().chain(self.dormant.iter()) {
             *counts.entry(a.cwd.as_deref().unwrap_or("")).or_default() += 1;
         }
@@ -305,8 +302,14 @@ impl Board {
         };
         let counts = self.cwd_occurrences();
         list.sort_by(|a, b| {
-            let (ca, cb) = (a.cwd.as_deref().unwrap_or(""), b.cwd.as_deref().unwrap_or(""));
-            let (na, nb) = (counts.get(ca).copied().unwrap_or(0), counts.get(cb).copied().unwrap_or(0));
+            let (ca, cb) = (
+                a.cwd.as_deref().unwrap_or(""),
+                b.cwd.as_deref().unwrap_or(""),
+            );
+            let (na, nb) = (
+                counts.get(ca).copied().unwrap_or(0),
+                counts.get(cb).copied().unwrap_or(0),
+            );
             nb.cmp(&na).then_with(|| ca.cmp(cb))
         });
         list

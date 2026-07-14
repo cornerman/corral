@@ -169,11 +169,20 @@ fn deliver_dir(
             // Socket present but dead: fall through and spawn a fresh agent.
         }
     }
-    // The spawn command rides in a record; corral names no agent kind. Reuse
-    // any record (live or dormant) for this dir. A dir corral has never seen an
-    // agent in has no known kind, so it cannot be spawned into.
-    let Some(command) = spawn_command_for_dir(entries, dir) else {
-        return format!("route: no known agent kind for {dir} (never announced there)");
+    // The spawn command rides in a record; corral names no agent kind. A
+    // caller-chosen `label` wins (resolved from any record of that kind, so it
+    // works even where the kind never ran), else reuse any record for this dir.
+    // A dir corral has never seen an agent in, with no label given, has no
+    // known kind and cannot be spawned into.
+    let command = match msg.label.as_deref() {
+        Some(label) => match spawn_command_for_label(entries, label) {
+            Some(c) => c,
+            None => return format!("route spawn: unknown label {label}"),
+        },
+        None => match spawn_command_for_dir(entries, dir) {
+            Some(c) => c,
+            None => return format!("route: no known agent kind for {dir} (never announced there)"),
+        },
     };
     match launcher.launch(Path::new(dir), command, Some(&msg.tagged())) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
@@ -186,6 +195,15 @@ fn spawn_command_for_dir<'a>(entries: &'a [RegistryEntry], dir: &str) -> Option<
     entries
         .iter()
         .filter(|e| e.cwd.as_deref() == Some(dir))
+        .find_map(|e| e.spawn_command.as_deref())
+}
+
+/// A spawn command from any record whose `label` matches, in any directory, so
+/// a caller-chosen kind can be started even in a dir that never hosted it.
+fn spawn_command_for_label<'a>(entries: &'a [RegistryEntry], label: &str) -> Option<&'a [String]> {
+    entries
+        .iter()
+        .filter(|e| e.label.as_deref() == Some(label))
         .find_map(|e| e.spawn_command.as_deref())
 }
 
@@ -254,6 +272,7 @@ mod tests {
         spawns: Cell<usize>,
         resumes: Cell<usize>,
         last_msg: RefCell<Option<String>>,
+        last_command: RefCell<Option<Vec<String>>>,
     }
     impl Launcher for StubLauncher {
         fn launch(
@@ -268,6 +287,7 @@ mod tests {
                 self.spawns.set(self.spawns.get() + 1);
             }
             *self.last_msg.borrow_mut() = message.map(str::to_owned);
+            *self.last_command.borrow_mut() = Some(command.to_vec());
             Ok(())
         }
     }
@@ -277,6 +297,28 @@ mod tests {
             r#"{{"id":"{id}","fromCwd":"{from}","targetDir":"{target}","message":"hi"}}"#
         ))
         .unwrap()
+    }
+
+    fn dir_msg_label(id: &str, from: &str, target: &str, label: &str) -> Message {
+        mailbox::parse_message(&format!(
+            r#"{{"id":"{id}","fromCwd":"{from}","targetDir":"{target}","message":"hi","label":"{label}"}}"#
+        ))
+        .unwrap()
+    }
+
+    /// A record whose `label` and single-word spawn command are `label`, in
+    /// `cwd`. Lets a test assert which kind the router chose to spawn.
+    fn labeled_record(cwd: &str, label: &str) -> RegistryEntry {
+        RegistryEntry {
+            session_id: format!("rec-{label}"),
+            cwd: Some(cwd.into()),
+            title: None,
+            socket: None,
+            spawn_command: Some(vec![label.into()]),
+            resume_command: None,
+            label: Some(label.into()),
+            last_seen: None,
+        }
     }
 
     /// A record for `cwd` carrying a spawn command but no live socket: the
@@ -317,6 +359,37 @@ mod tests {
         assert!(r.poll(&[], &launcher).is_none());
         assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0, "no delivery before approval");
+    }
+
+    #[test]
+    fn caller_label_chooses_the_spawned_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        let mut r = Router::new(whitelist);
+        // /b has only pi; opencode was seen in another dir. The caller's label
+        // must win over the dir's own kind.
+        let entries = [dir_record("/b"), labeled_record("/c", "opencode")];
+        r.enqueue(dir_msg_label("1", "/a", "/b", "opencode"));
+        let launcher = StubLauncher::default();
+        r.poll(&entries, &launcher);
+        assert_eq!(launcher.spawns.get(), 1);
+        let cmd = launcher.last_command.borrow();
+        assert_eq!(cmd.as_deref(), Some(["opencode".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn unknown_label_fails_loud_without_spawning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        let mut r = Router::new(whitelist);
+        let entries = [dir_record("/b")];
+        r.enqueue(dir_msg_label("1", "/a", "/b", "ghost"));
+        let launcher = StubLauncher::default();
+        let status = r.poll(&entries, &launcher);
+        assert_eq!(launcher.spawns.get(), 0);
+        assert!(status.unwrap().contains("unknown label ghost"));
     }
 
     #[test]

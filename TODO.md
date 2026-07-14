@@ -95,21 +95,22 @@ One per-session file drives discovery, isolation, and resume.
 - [ ] OPEN: delivery-target policy when the target is Running. v1 reuses +
       queues as follow-up; never-inject-Running and always-new are the
       alternatives. Settle with real use.
-- [ ] OPEN: harness choice when a `target_dir` message spawns a fresh agent.
-      TODAY: the router picks the FIRST registry record whose cwd matches the
-      dir and uses its `spawnCommand` (`router.rs::spawn_command_for_dir`,
-      `entries.iter().filter(cwd==dir).find_map(spawn_command)`) — arbitrary
-      when a dir has hosted more than one kind (pi vs opencode), and the caller
-      cannot choose. DIRECTION: `target_session` already fixes the harness (the
-      session's own kind), so the ambiguity is only the "start something new
-      here" case. Make it caller-defined: add an optional `label`/harness arg to
-      `corral_message_agent`, resolved to a spawnCommand from the registry
-      catalog; if omitted, default deterministically to the dir's MOST-USED
-      label (occurrence), then global most-used; fail loud on an unknown label
-      rather than spawn an arbitrary kind. NOTE: the target dir need NOT be
+- [x] Label override: a `target_dir` message may set an optional `label` to
+      choose the agent kind spawned when none is live. Resolved from any
+      registry record of that kind (`router.rs::spawn_command_for_label`), so a
+      kind seen anywhere can start in any dir; an unknown label fails loud (no
+      arbitrary kind). Omitted keeps the prior behavior
+      (`spawn_command_for_dir`, first record for the dir). Wired through the
+      `label` field on the mailbox `Message` and both extensions' tool schema.
+      Plan: `docs/superpowers/plans/2026-07-14-label-override-via-tool-call.md`.
+- [ ] OPEN: smarter default when `label` is omitted. TODAY the router still
+      picks the FIRST registry record whose cwd matches the dir
+      (`spawn_command_for_dir`, arbitrary when a dir hosted several kinds).
+      DIRECTION: default deterministically to the dir's MOST-USED label
+      (occurrence), then the global most-used. NOTE: the target dir need NOT be
       previously announced — any existing directory works, used directly as the
-      new agent's cwd. Such a dir has no local label history, so its harness
-      comes from the caller's `label` else the global most-used default. (So
+      new agent's cwd. Such a dir has no local label history, so its kind comes
+      from the caller's `label` else the global most-used default. (So
       `directory_not_known` should mean only "path does not exist", never
       "no record here yet".)
 - [ ] OPEN: expose available sessions to agents (discovery), so a caller can
