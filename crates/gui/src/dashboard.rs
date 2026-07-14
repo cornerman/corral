@@ -32,6 +32,13 @@ use crate::theme::{self, Base16};
 
 /// Fixed card height (points): fits title + cwd + activity·age with padding.
 const CARD_H: f32 = 62.0;
+/// Vertical gap between cards in a column (the list `spacing`).
+const CARD_GAP: f32 = 6.0;
+
+/// A column's scrollable id (for programmatic scroll-into-view).
+fn col_scroll_id(c: usize) -> scrollable::Id {
+    scrollable::Id::new(format!("corral-col-{c}"))
+}
 
 /// The filter field's focus id (for programmatic focus/blur).
 fn filter_id() -> text_input::Id {
@@ -43,6 +50,7 @@ fn filter_id() -> text_input::Id {
 pub enum Message {
     Tick,
     Key(keyboard::Key, keyboard::Modifiers),
+    Scrolled(usize, scrollable::Viewport),
     FilterInput(String),
     FilterSubmit,
     FocusFilter,
@@ -95,6 +103,8 @@ pub struct Board {
     in_state: HashMap<PathBuf, String>,
     quiet: HashMap<PathBuf, String>,
     dormant_ages: HashMap<String, String>,
+    /// Latest scroll viewport per column, for minimal scroll-into-view.
+    viewports: [Option<scrollable::Viewport>; 4],
 }
 
 impl Board {
@@ -118,6 +128,7 @@ impl Board {
             in_state: HashMap::new(),
             quiet: HashMap::new(),
             dormant_ages: HashMap::new(),
+            viewports: [None; 4],
         };
         b.refresh();
         b
@@ -235,6 +246,11 @@ impl Board {
             }
             Message::ComposeCancel => self.compose = None,
             Message::Key(key, mods) => return self.on_key(key, mods),
+            Message::Scrolled(c, vp) => {
+                if let Some(slot) = self.viewports.get_mut(c) {
+                    *slot = Some(vp);
+                }
+            }
         }
         Task::none()
     }
@@ -310,6 +326,39 @@ impl Board {
                 _ => {}
             },
             _ => {}
+        }
+        // Any nav arm falls through to here; keep the selection visible.
+        self.scroll_to_selection()
+    }
+
+    /// Scroll the selected card's column just enough to keep it visible (a no-op
+    /// when it is already in view), mirroring the TUI/egui behavior.
+    fn scroll_to_selection(&self) -> Task<Message> {
+        let mut idx = self.selected;
+        for (c, col) in self.columns.iter().enumerate() {
+            if idx < col.len() {
+                let card_top = idx as f32 * (CARD_H + CARD_GAP);
+                let card_bottom = card_top + CARD_H;
+                let (off, h) = match &self.viewports[c] {
+                    Some(v) => (v.absolute_offset().y, v.bounds().height),
+                    None => return Task::none(),
+                };
+                let new_off = if card_top < off {
+                    card_top
+                } else if h > 0.0 && card_bottom > off + h {
+                    card_bottom - h
+                } else {
+                    return Task::none();
+                };
+                return scrollable::scroll_to(
+                    col_scroll_id(c),
+                    scrollable::AbsoluteOffset {
+                        x: 0.0,
+                        y: new_off.max(0.0),
+                    },
+                );
+            }
+            idx -= col.len();
         }
         Task::none()
     }
@@ -464,7 +513,11 @@ impl Board {
                 list = list.push(self.card(agent, col, s, age, idx));
             }
             base += count;
-            let body = scrollable(list).height(Length::Fill).width(Length::Fill);
+            let body = scrollable(list)
+                .id(col_scroll_id(i))
+                .on_scroll(move |vp| Message::Scrolled(i, vp))
+                .height(Length::Fill)
+                .width(Length::Fill);
             cols = cols.push(
                 column![header, body]
                     .spacing(8)
