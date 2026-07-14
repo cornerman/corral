@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Agent, Column, Origin, State};
-use corral_core::{engine::Engine, nav, paths, prompt};
+use corral_core::{engine::Engine, nav, palette::color_index, paths, prompt};
 
 use iced::widget::{
     canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
@@ -30,10 +30,11 @@ use iced::{
 
 use crate::theme::{self, Base16};
 
-/// Fixed card height (points): three text lines (title ~18, cwd ~16,
-/// activity·age ~16) plus 2px gaps and 8px top/bottom padding — ~70, rounded up
-/// so the third line is never clipped.
-const CARD_H: f32 = 78.0;
+/// Fixed card height (points): two text rows (title/age ~18, the
+/// pill+badge+activity row ~18) plus the 2px gap and 8px top/bottom padding,
+/// rounded up so the second row is never clipped. Compressed from three rows —
+/// the cwd pill replaced the full-path line and age moved onto the title row.
+const CARD_H: f32 = 56.0;
 /// Vertical gap between cards in a column (the list `spacing`).
 const CARD_GAP: f32 = 6.0;
 
@@ -665,7 +666,8 @@ impl Board {
             ..state_color(agent, s)
         };
 
-        // Title row: title truncated (clipped) on the left, kind badge right.
+        // Title row: title (fill, clipped) on the left, the column age dim on
+        // the right (moved off the info line to free the second row).
         let title = container(
             text(agent.title.clone().unwrap_or_else(|| "(unnamed)".into()))
                 .size(14)
@@ -675,35 +677,54 @@ impl Board {
         )
         .width(Length::Fill)
         .clip(true);
-        let title_row = row![title, text(&agent.label).size(11).color(dim)]
-            .spacing(6)
-            .align_y(Alignment::Center);
+        let mut title_row = row![title].spacing(6).align_y(Alignment::Center);
+        if !age.is_empty() {
+            title_row = title_row.push(text(age).size(11).color(dim));
+        }
 
         let mut body = column![title_row].spacing(2);
+
+        // Second row: the colored basename pill, the kind badge, then the
+        // activity hint filling the rest. The pill's color is a stable hash of
+        // the full cwd, so same-directory cards read in the same color.
+        let mut meta_row = row![].spacing(6).align_y(Alignment::Center);
         if let Some(cwd) = &agent.cwd {
-            body = body.push(
-                text(tilde(cwd))
-                    .size(12)
-                    .color(dim)
+            let pc = Color {
+                a,
+                ..cwd_color(cwd, s)
+            };
+            let ptext = Color { a, ..s.base[0] };
+            let pill = container(
+                text(basename(cwd).to_string())
+                    .size(11)
+                    .color(ptext)
                     .wrapping(text::Wrapping::None),
+            )
+            .padding([1, 6])
+            .style(move |_t| container::Style {
+                background: Some(Background::Color(pc)),
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            });
+            meta_row = meta_row.push(pill);
+        }
+        meta_row = meta_row.push(text(&agent.label).size(11).color(dim));
+        if let Some(info) = agent.activity.as_deref().filter(|s| !s.is_empty()) {
+            meta_row = meta_row.push(
+                container(
+                    text(info.to_string())
+                        .size(12)
+                        .color(dim)
+                        .wrapping(text::Wrapping::None),
+                )
+                .width(Length::Fill)
+                .clip(true),
             );
         }
-        let info = agent.activity.as_deref().unwrap_or("");
-        let mut parts = Vec::new();
-        if !info.is_empty() {
-            parts.push(info.to_string());
-        }
-        if !age.is_empty() {
-            parts.push(age);
-        }
-        if !parts.is_empty() {
-            body = body.push(
-                text(parts.join("  ·  "))
-                    .size(12)
-                    .color(dim)
-                    .wrapping(text::Wrapping::None),
-            );
-        }
+        body = body.push(meta_row);
 
         // Thin state-colored left bar + faint accent tint when selected. Cards
         // are a fixed height (like the TUI): variable content stays aligned,
@@ -985,6 +1006,18 @@ fn state_color(agent: &Agent, s: &Base16) -> Color {
             State::Idle => s.base[5],
         },
     }
+}
+
+/// Accent color for a cwd pill: a stable hash of the full path into the eight
+/// base16 accents (`core::palette`), so a directory reads in the same color
+/// across the board and the eye groups cards by color.
+fn cwd_color(cwd: &str, s: &Base16) -> Color {
+    s.accent[color_index(cwd, s.accent.len())]
+}
+
+/// The last path component (the working directory's leaf), shown in the pill.
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Replace a leading `$HOME` with `~` for a compact path.

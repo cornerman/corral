@@ -12,8 +12,9 @@ use ratatui::text::{Line, Span, Text};
 const PAD: u16 = 1;
 /// Rows above a column's cards: the heading and its underline rule.
 const HEAD_ROWS: u16 = 2;
-/// Rows one card spans: title, meta, and a blank spacer for air.
-const CARD_ROWS: u16 = 4;
+/// Rows one card spans: title/age, the pill+badge+activity row, and a blank
+/// spacer for air.
+const CARD_ROWS: u16 = 3;
 /// Rows reserved at the top for the filter: the input line, its underline, and
 /// breathing room beneath before the columns.
 const FILTER_ROWS: u16 = 4;
@@ -26,6 +27,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use corral_core::model::{Agent, Board, Column, Origin};
+use corral_core::palette::color_index;
 
 /// The heading shown above each column. Bound to the column identity (not a
 /// parallel array), so it cannot drift from `Column::ALL`.
@@ -256,99 +258,33 @@ fn truncate(s: &str, width: usize) -> String {
     }
 }
 
-/// Middle-ellipsize `s` to at most `width` columns: keep a head and a tail with
-/// `…` between, so both ends stay readable. Never overflows.
-fn middle_ellipsis(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n <= width {
-        return s.to_string();
-    }
-    if width <= 1 {
-        return "…".repeat(width);
-    }
-    let keep = width - 1; // one column for the ellipsis
-    let tail = keep / 2;
-    let head = keep - tail; // head takes the odd extra column
-    let chars: Vec<char> = s.chars().collect();
-    let head_str: String = chars[..head].iter().collect();
-    let tail_str: String = chars[n - tail..].iter().collect();
-    format!("{head_str}…{tail_str}")
-}
+/// Accent colors for cwd pills, indexed by a stable hash of the full cwd path
+/// (`core::palette::color_index`) so a directory always reads in the same
+/// color across the board — the eye groups cards by color at a glance. These
+/// are terminal ANSI accents (cards carry no other color), chosen to stay
+/// distinct on both dark and light backgrounds.
+const CWD_PALETTE: [Color; 8] = [
+    Color::Blue,
+    Color::Cyan,
+    Color::Green,
+    Color::Yellow,
+    Color::Magenta,
+    Color::Red,
+    Color::LightBlue,
+    Color::LightMagenta,
+];
 
-/// Replace a `$HOME` prefix of `path` with `~`.
-fn tilde(path: &str, home: Option<&str>) -> String {
-    match home {
-        Some(h) if !h.is_empty() && path == h => "~".to_string(),
-        Some(h) if !h.is_empty() => match path.strip_prefix(&format!("{h}/")) {
-            Some(rest) => format!("~/{rest}"),
-            None => path.to_string(),
-        },
-        _ => path.to_string(),
+/// The colored basename pill for a cwd: ` <leaf> ` on a hash-picked background
+/// with dark text for contrast. `dim` fades it for dormant cards. Returns None
+/// when the cwd is unknown (no pill drawn).
+fn cwd_pill(cwd: Option<&str>, dim: bool) -> Option<Span<'static>> {
+    let cwd = cwd?;
+    let color = CWD_PALETTE[color_index(cwd, CWD_PALETTE.len())];
+    let mut style = Style::default().bg(color).fg(Color::Black);
+    if dim {
+        style = style.add_modifier(Modifier::DIM);
     }
-}
-
-/// Abbreviate a filesystem path to fit `width` columns, never overflowing.
-/// Replaces the home prefix with `~`, then shortens leading components to their
-/// first character (leftmost first, keeping the leaf whole) until it fits, and
-/// finally middle-ellipsizes as a hard backstop. Keeps the root anchor and the
-/// leaf — the most meaningful parts — readable. Pure, unit-tested.
-fn abbreviate_path(path: &str, home: Option<&str>, width: usize) -> String {
-    let tilded = tilde(path, home);
-    if tilded.chars().count() <= width {
-        return tilded;
-    }
-    let segs: Vec<&str> = tilded.split('/').collect();
-    // Shorten the middle components (between the anchor at 0 and the leaf) to a
-    // single char, adding one more from the left each pass until it fits.
-    let leaf = segs.len() - 1;
-    let mut best = tilded.clone();
-    for depth in 1..leaf {
-        let shortened: Vec<String> = segs
-            .iter()
-            .enumerate()
-            .map(|(i, seg)| {
-                if (1..=depth).contains(&i) && i < leaf {
-                    seg.chars().next().map(String::from).unwrap_or_default()
-                } else {
-                    (*seg).to_string()
-                }
-            })
-            .collect();
-        best = shortened.join("/");
-        if best.chars().count() <= width {
-            return best;
-        }
-    }
-    // Even fully shortened it overflows (a deep tree or a long leaf): clamp.
-    middle_ellipsis(&best, width)
-}
-
-/// Abbreviate a working-directory path to `width`, reading `$HOME` for the
-/// tilde. Thin wrapper over the pure `abbreviate_path`.
-fn abbrev_cwd(path: &str, width: usize) -> String {
-    abbreviate_path(path, std::env::var("HOME").ok().as_deref(), width)
-}
-
-/// Split a path into its prefix (up to and including the last `/`) and its leaf
-/// (the basename). No slash: empty prefix, the whole string is the leaf.
-fn split_at_leaf(path: &str) -> (&str, &str) {
-    match path.rfind('/') {
-        Some(i) => (&path[..=i], &path[i + 1..]),
-        None => ("", path),
-    }
-}
-
-/// Render a path so the basename stays legible while the leading path recedes:
-/// the prefix in `prefix` style (dimmer), the leaf in `leaf` style. Neither is
-/// bold.
-fn path_line(path: &str, leaf: Style, prefix: Style) -> Line<'static> {
-    let (p, l) = split_at_leaf(path);
-    let mut spans = Vec::new();
-    if !p.is_empty() {
-        spans.push(Span::styled(p.to_string(), prefix));
-    }
-    spans.push(Span::styled(l.to_string(), leaf));
-    Line::from(spans)
+    Some(Span::styled(format!(" {} ", basename(cwd)), style))
 }
 
 /// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
@@ -387,20 +323,12 @@ pub struct CardMeta<'a> {
     pub dormant_age: &'a HashMap<String, String>,
 }
 
-/// The card's info line: what the agent is doing (or last did, or is asking)
-/// and a column-specific age. The directory has its own line, so it is not
-/// repeated here. The age differs per column because the triage question does:
-/// time blocked when it needs you, time since the last activity while running,
-/// time idle (how long it has been waiting for you) when idle, and record age
-/// when dormant.
-fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    // What it is doing (Running) or last did (Idle), or asking (Requires
-    // Action, where the activity is often the question).
-    if let Some(a) = agent.activity.as_deref() {
-        parts.push(a);
-    }
-    let age = match col {
+/// The column-specific age shown at the card's top-right. It differs per column
+/// because the triage question does: time blocked when it needs you, time since
+/// the last activity while running, time idle (how long it has been waiting for
+/// you) when idle, and record age when dormant.
+fn card_age(agent: &Agent, col: Column, meta: &CardMeta) -> Option<String> {
+    match col {
         // Idle reuses in_state (time since entering the state) to show how long
         // the agent has been waiting for the user.
         Column::RequiresAction | Column::Idle => meta.in_state.get(&agent.socket_path),
@@ -409,68 +337,68 @@ fn card_meta_line(agent: &Agent, col: Column, meta: &CardMeta) -> String {
             .session_id
             .as_deref()
             .and_then(|id| meta.dormant_age.get(id)),
-    };
-    if let Some(age) = age {
-        parts.push(age);
     }
-    parts.join(" · ")
+    .cloned()
 }
 
-/// The three card lines, top to bottom (spacer excluded): the title, the cwd
-/// basename (empty when unknown), and the info line. Fixed at three so cards
-/// keep a uniform height and `hit_test` can divide clicks by `CARD_ROWS`.
-/// Pure, unit-tested.
-fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [String; 2] {
-    // The full working directory (~-abbreviated, shortened to fit) on its own
-    // line, so same-named leaves under different roots stay distinguishable.
-    let dir = agent
-        .cwd
-        .as_deref()
-        .map(|c| abbrev_cwd(c, width))
-        .unwrap_or_default();
-    let info = card_meta_line(agent, col, meta);
-    [dir, truncate(&info, width)]
-}
-
-/// The title line: the session name, with the agent kind as a dim badge
-/// right-aligned in the card width. The badge readies the board for mixed
-/// agent kinds (pi, opencode, …); with one kind it reads as a quiet tag.
+/// The title line: the session name on the left, the column-specific age dim
+/// and right-aligned in the card width. Age moved here (off the info line) to
+/// keep the second row free for the cwd pill, badge, and activity.
 fn title_line(
-    agent: &Agent,
+    name: &str,
+    age: Option<&str>,
     width: usize,
     title_style: Style,
-    badge_style: Style,
+    age_style: Style,
 ) -> Line<'static> {
-    let name_raw = agent.title.as_deref().unwrap_or("(unnamed)");
-    let badge = &agent.label;
-    let badge_w = badge.chars().count();
-    // Reserve the badge plus one separating space; the name takes the rest.
-    let name = truncate(name_raw, width.saturating_sub(badge_w + 1));
-    let pad = width.saturating_sub(name.chars().count() + badge_w);
+    let age = age.unwrap_or("");
+    let age_w = age.chars().count();
+    // Reserve the age plus one separating space; the name takes the rest.
+    let name = truncate(name, width.saturating_sub(age_w + 1));
+    let pad = width.saturating_sub(name.chars().count() + age_w);
     Line::from(vec![
         Span::styled(name, title_style),
         Span::raw(" ".repeat(pad)),
-        Span::styled(badge.clone(), badge_style),
+        Span::styled(age.to_string(), age_style),
     ])
 }
 
 fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'static> {
+    let dormant = matches!(agent.origin, Origin::Dormant);
     // Dormant cards are dimmed whole: they are context, not a call to act.
-    let title_style = match agent.origin {
-        Origin::Dormant => Style::default().add_modifier(Modifier::DIM),
-        Origin::Live => Style::default(),
+    let title_style = if dormant {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    // The leading path recedes (dark gray) so the basename reads first; the
-    // kind badge recedes the same way.
+    // The kind badge recedes (dark gray) so the pill and activity read first.
     let faint = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM);
-    let [dir, info] = card_lines(agent, col, meta, width);
+    let name = agent.title.as_deref().unwrap_or("(unnamed)");
+    let age = card_age(agent, col, meta);
+
+    // Second row: colored basename pill, kind badge, then the activity hint
+    // filling the rest. Widths are counted so the activity truncates to fit.
+    let mut row2 = Vec::new();
+    let mut used = 0usize;
+    if let Some(pill) = cwd_pill(agent.cwd.as_deref(), dormant) {
+        used += pill.content.chars().count() + 1; // pill + a separating space
+        row2.push(pill);
+        row2.push(Span::raw(" "));
+    }
+    used += agent.label.chars().count();
+    row2.push(Span::styled(agent.label.clone(), faint));
+    if let Some(a) = agent.activity.as_deref() {
+        let act_w = width.saturating_sub(used + 2); // two spaces before activity
+        row2.push(Span::raw("  "));
+        row2.push(Span::styled(truncate(a, act_w), dim));
+    }
+
     ListItem::new(vec![
-        title_line(agent, width, title_style, faint),
-        path_line(&dir, dim, faint),
-        Line::from(Span::styled(info, dim)),
+        title_line(name, age.as_deref(), width, title_style, dim),
+        Line::from(row2),
         Line::from(""), // blank spacer: air between cards
     ])
 }
@@ -668,11 +596,11 @@ mod tests {
         let no_scroll = [0usize; 4];
 
         // Columns start below FILTER_ROWS=4; then HEAD_ROWS=2 (heading+rule),
-        // so the first card's top row is 4 + 2 = 6, and cards are 4 rows tall.
+        // so the first card's top row is 4 + 2 = 6, and cards are 3 rows tall.
         assert_eq!(hit_test(area, &b, 5, 6, no_scroll), Some(0));
-        assert_eq!(hit_test(area, &b, 5, 10, no_scroll), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 9, no_scroll), Some(1));
         assert_eq!(hit_test(area, &b, 5, 5, no_scroll), None); // heading/rule row
-        assert_eq!(hit_test(area, &b, 5, 18, no_scroll), None); // past the two cards
+        assert_eq!(hit_test(area, &b, 5, 12, no_scroll), None); // past the two cards
 
         // Second column (Idle) is empty.
         assert_eq!(hit_test(area, &b, 30, 6, no_scroll), None);
@@ -729,7 +657,7 @@ mod card_tests {
     }
 
     #[test]
-    fn idle_info_line_shows_activity_and_time_idle() {
+    fn idle_age_is_time_in_state() {
         let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
         let m = CardMeta {
             in_state: &i,
@@ -737,100 +665,47 @@ mod card_tests {
             dormant_age: &d,
         };
         let a = agent(State::Idle, Some("edit model.rs"));
-        // The path is not under the test HOME, so it shows in full (fits 40).
-        assert_eq!(
-            card_lines(&a, Column::Idle, &m, 40),
-            ["/home/u/projects/corral", "edit model.rs · 5m"]
-        );
+        assert_eq!(card_age(&a, Column::Idle, &m).as_deref(), Some("5m"));
     }
 
     #[test]
-    fn title_line_appends_the_kind_badge_right_aligned() {
-        let a = agent(State::Idle, None); // label "pi", title "fix the auth flow"
-        let line = title_line(&a, 30, Style::default(), Style::default());
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text.chars().count(), 30, "fills the card width exactly");
-        assert!(text.starts_with("fix the auth flow"));
-        assert!(text.ends_with("pi"), "kind badge is right-aligned");
-    }
-
-    #[test]
-    fn idle_info_line_is_age_only_without_activity() {
-        let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
-        let m = CardMeta {
-            in_state: &i,
-            quiet: &q,
-            dormant_age: &d,
-        };
-        let a = agent(State::Idle, None);
-        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[1], "5m");
-    }
-
-    #[test]
-    fn requires_action_info_line_is_question_then_age() {
-        let (i, q, d) = meta(&[("/s/a.sock", "3m")]);
-        let m = CardMeta {
-            in_state: &i,
-            quiet: &q,
-            dormant_age: &d,
-        };
-        let a = agent(State::RequiresAction, Some("Which branch?"));
-        assert_eq!(
-            card_lines(&a, Column::RequiresAction, &m, 40),
-            ["/home/u/projects/corral", "Which branch? · 3m"]
-        );
-    }
-
-    #[test]
-    fn path_fits_shows_tilde_form() {
-        assert_eq!(
-            abbreviate_path("/home/u/projects/corral", Some("/home/u"), 40),
-            "~/projects/corral"
-        );
-        assert_eq!(abbreviate_path("/home/u", Some("/home/u"), 40), "~");
-    }
-
-    #[test]
-    fn path_shortens_leading_components_leftmost_first() {
-        // "~/projects/corral/crates/board" is 30 cols; at 20 it shortens the two
-        // leftmost components to one letter each, keeping the leaf whole.
-        assert_eq!(
-            abbreviate_path("/home/u/projects/corral/crates/board", Some("/home/u"), 20),
-            "~/p/c/crates/board"
-        );
-    }
-
-    #[test]
-    fn path_never_overflows_even_when_fully_shortened() {
-        for w in 1..30 {
-            let out = abbreviate_path("/home/u/projects/corral/crates/board", Some("/home/u"), w);
-            assert!(out.chars().count() <= w, "width {w}: {out:?}");
-        }
-    }
-
-    #[test]
-    fn split_at_leaf_separates_prefix_and_basename() {
-        assert_eq!(split_at_leaf("~/p/c/board"), ("~/p/c/", "board"));
-        assert_eq!(split_at_leaf("board"), ("", "board"));
-        assert_eq!(split_at_leaf("~"), ("", "~"));
-    }
-
-    #[test]
-    fn middle_ellipsis_keeps_both_ends() {
-        assert_eq!(middle_ellipsis("abcdefgh", 5), "ab…gh");
-        assert_eq!(middle_ellipsis("short", 10), "short");
-    }
-
-    #[test]
-    fn basename_is_empty_string_when_cwd_missing() {
+    fn age_is_none_when_unknown() {
         let (i, q, d) = meta(&[]);
         let m = CardMeta {
             in_state: &i,
             quiet: &q,
             dormant_age: &d,
         };
-        let mut a = agent(State::Idle, None);
-        a.cwd = None;
-        assert_eq!(card_lines(&a, Column::Idle, &m, 40)[0], "");
+        let a = agent(State::Idle, None);
+        assert_eq!(card_age(&a, Column::Idle, &m), None);
+    }
+
+    #[test]
+    fn title_line_puts_age_right_aligned() {
+        let line =
+            title_line("fix the auth flow", Some("5m"), 30, Style::default(), Style::default());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text.chars().count(), 30, "fills the card width exactly");
+        assert!(text.starts_with("fix the auth flow"));
+        assert!(text.ends_with("5m"), "age is right-aligned");
+    }
+
+    #[test]
+    fn cwd_pill_is_the_padded_basename() {
+        let pill = cwd_pill(Some("/home/u/projects/corral"), false).unwrap();
+        assert_eq!(pill.content.as_ref(), " corral ");
+    }
+
+    #[test]
+    fn cwd_pill_color_is_stable_per_path() {
+        // Same path -> same color; the whole grouping premise.
+        let a = cwd_pill(Some("/a/corral"), false).unwrap().style.bg;
+        let a2 = cwd_pill(Some("/a/corral"), false).unwrap().style.bg;
+        assert_eq!(a, a2);
+    }
+
+    #[test]
+    fn cwd_pill_is_none_when_cwd_missing() {
+        assert!(cwd_pill(None, false).is_none());
     }
 }

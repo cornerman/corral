@@ -163,6 +163,10 @@ ratatui / iced, the daemon keeps ksni).
     loop inline; converging it onto the engine, or retiring it, is a TODO.)
   - `src/nav.rs` — pure selection math: move within a column or across columns
     over the per-column counts. Unit-tested.
+  - `src/palette.rs` — `color_index`: a stable FNV-1a hash of a cwd path into a
+    palette bucket, so both shells color a directory's basename pill the same
+    way (same color per path, keyed on the full path). Pure, unit-tested; each
+    shell owns its own palette (ratatui ANSI vs base16 accents).
   - `src/focus.rs` — `WindowFocuser` seam, with `focus::detect()` picking an
     implementation by session: EWMH on X11; sway / Hyprland / niri on Wayland.
     `X11Focuser` (via `x11rb`, no libX11) finds the
@@ -198,9 +202,12 @@ ratatui / iced, the daemon keeps ksni).
   state; launch it as many times as you like.
   - `src/ui.rs` — ratatui: a prominent centered filter box (underline, top
     padding) over four columns (Requires Action / Idle / Running / Dormant) of
-    fixed-height cards, and a clickable key-hint footer. Owns card / heading /
-    footer / filter-box / path-abbreviation / age formatting; `column_layout`
-    and `hit_test` share one geometry (top rows reserved for the filter).
+    fixed-height cards, and a clickable key-hint footer. Each card is two rows:
+    the session title with the column age dim at the top-right, then a
+    hash-colored cwd basename pill (see `core::palette`), the kind badge, and
+    the activity hint. Owns card / heading / footer / filter-box / cwd-pill /
+    age formatting; `column_layout` and `hit_test` share one geometry (top rows
+    reserved for the filter).
   - `src/main.rs` — the imperative shell: scan/prune/watch/draw/dispatch. `/`
     focuses the inline filter (narrows cards by whole content); while filtering
     Enter goes / Shift+Enter spawns directly, arrows navigate. Command keys:
@@ -221,8 +228,10 @@ ratatui / iced, the daemon keeps ksni).
   filter over the four columns of fixed-height cards; click a card to go
   (two-stage: select then go), Shift+Enter spawns the selected card's kind in
   its dir, a bottom key-hint footer with the canvas-drawn corral mark, the same
-  keys as the TUI. Each card shows a dim kind badge (the `label`) right of the
-  title; the Dormant column is faded. `src/theme.rs` is the base16 theming
+  keys as the TUI. Each card is two rows: the title with the column age at the
+  top-right, then a hash-colored cwd basename pill (`core::palette`, same color
+  per directory) beside the dim kind badge and the activity hint; the Dormant
+  column is faded. `src/theme.rs` is the base16 theming
   system: a lenient tinted-theming YAML parser (no YAML dependency), Solarized
   dark/light built-ins, and an env-selected (`CORRAL_THEME_DARK` /
   `CORRAL_THEME_LIGHT`) dark/light preset pair loaded from built-ins plus
