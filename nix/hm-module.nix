@@ -47,18 +47,26 @@ in
         default = true;
         description = "Symlink the opencode adapter into ~/.config/opencode/plugin.";
       };
-      # The Claude Code adapter is not yet on main; the option exists so a
-      # future release can wire it without a breaking rename.
+      # The Claude adapter is a plugin directory loaded as a skills-dir plugin
+      # (~/.claude/skills/corral-claude); its hooks run on bun, pulled in below.
       claude.enable = lib.mkOption {
         type = lib.types.bool;
-        default = false;
-        description = "Install the Claude Code adapter (not yet available).";
+        default = true;
+        description = ''
+          Symlink the Claude Code adapter into ~/.claude/skills (loads as
+          corral-claude@skills-dir) and put bun on PATH for its hooks.
+        '';
       };
     };
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+    # The Claude adapter's hooks run as external `bun hook.ts` subprocesses
+    # (Claude ships no runtime for hook commands), unlike the pi/opencode
+    # adapters that the harness itself loads. So bun is a hard dependency
+    # whenever the adapter is linked.
+    home.packages = [ cfg.package ]
+      ++ lib.optional cfg.extensions.claude.enable pkgs.bun;
 
     # corrald is a singleton; the user service is its keep-alive. It reads the
     # filesystem registry and owns the control socket, so it needs no ordering
@@ -86,11 +94,9 @@ in
         ".config/opencode/plugin/corral-opencode.ts".source =
           "${extDir}/corral-opencode.ts";
       })
+      (lib.mkIf cfg.extensions.claude.enable {
+        ".claude/skills/corral-claude".source = "${extDir}/corral-claude";
+      })
     ];
-
-    assertions = [{
-      assertion = !cfg.extensions.claude.enable;
-      message = "programs.corral.extensions.claude is not yet available on this release.";
-    }];
   };
 }
