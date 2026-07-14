@@ -90,7 +90,7 @@ impl eframe::App for App {
         // `central_panel` fills the whole area with the palette background;
         // `Frame::default` paints nothing, leaving the window clear color (black).
         egui::Frame::central_panel(&style)
-            .inner_margin(egui::Margin::symmetric(18, 12))
+            .inner_margin(egui::Margin::symmetric(10, 7))
             .show(ui, |ui| self.dashboard.ui(ui, self.dark));
     }
 }

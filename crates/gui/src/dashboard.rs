@@ -104,8 +104,10 @@ impl Dashboard {
         };
         let _hints = egui::Panel::bottom(egui::Id::new("hints"))
             .show_separator_line(false)
+            // Tight frame: the default panel frame adds fat inner margins that
+            // make the footer look like a thick bar; keep just a thin gap.
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 1)))
             .show(ui, |ui| {
-                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.label(RichText::new("arrows move").weak().size(13.0));
@@ -128,13 +130,12 @@ impl Dashboard {
                         act = Act::Quit;
                     }
                     // The corral mark, bottom-right and faint: "the pen" — a
-                    // bracketed enclosure holding three dots, matching the TUI
+                    // rounded enclosure holding three dots, matching the TUI
                     // footer and the tray icon.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("⟦∴⟧").weak().size(13.0));
+                        paint_mark(ui, 14.0);
                     });
                 });
-                ui.add_space(8.0);
             });
 
         let scheme = theme::scheme(dark);
@@ -175,24 +176,30 @@ impl Dashboard {
         }
         let dormant_ages = self.engine.dormant_ages().clone();
 
-        // --- top: mark + status, then the centered filter bar ---
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("corral").weak());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.status.is_empty() {
-                    ui.label(RichText::new(&self.status).weak());
-                }
-            });
-        });
-        ui.add_space(8.0);
+        // Everything above the footer goes in a central panel so egui clips it
+        // to the space the bottom panel left free. Without one, the columns
+        // (auto_shrink off, filling height) overflow and paint over the footer.
+        // `no_frame`: the outer central_panel in main.rs already paints the
+        // background and margin, so this inner one must add neither.
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+        ui.add_space(10.0);
+        // --- top row: "corral" wordmark left, filter centered, status right ---
+        // One horizontal row (which vertically centers its children), so the
+        // wordmark sits at the filter's height instead of on a line above it.
         let mut filter_resp = None;
-        ui.vertical_centered(|ui| {
-            let w = (ui.available_width() * 0.5).clamp(240.0, 560.0);
+        ui.horizontal(|ui| {
+            let row_left = ui.cursor().left();
+            let total = ui.available_width();
+            let w = (total * 0.5).clamp(240.0, 560.0);
+            ui.label(RichText::new("corral").weak());
+            // Pad so the field is centered in the whole row regardless of the
+            // wordmark's width.
+            let pad = (row_left + (total - w) / 2.0 - ui.cursor().left()).max(8.0);
+            ui.add_space(pad);
             // Frameless, left-aligned text (centering the text makes the caret
-            // jump); the field itself is centered on screen, with a thin
-            // underline instead of a filled box.
+            // jump); a thin underline instead of a filled box.
             let r = ui.add_sized(
-                [w, 28.0],
+                [w, 22.0],
                 TextEdit::singleline(&mut self.filter)
                     .frame(egui::Frame::NONE)
                     .hint_text("type to filter…")
@@ -203,6 +210,11 @@ impl Dashboard {
                 r.rect.bottom() + 2.0,
                 egui::Stroke::new(1.0, scheme.base[2]),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.status.is_empty() {
+                    ui.label(RichText::new(&self.status).weak());
+                }
+            });
             filter_resp = Some(r);
         });
         let filter_resp = filter_resp.unwrap();
@@ -314,6 +326,7 @@ impl Dashboard {
                 flat += counts[i];
             }
         });
+        }); // end CentralPanel
 
         self.run(act, &columns);
     }
@@ -510,15 +523,26 @@ fn card(
             ui.set_width(ui.available_width());
             // Title line: name on the left, the agent kind as a dim badge on
             // the right. The badge readies the board for mixed kinds (pi,
-            // opencode, …); with one kind it reads as a quiet tag.
+            // opencode, …); with one kind it reads as a quiet tag. The badge is
+            // pinned right and the title TRUNCATES into the space that is left,
+            // so a long name never widens the card (which would overflow the
+            // column past the window edge).
             ui.horizontal(|ui| {
-                ui.label(RichText::new(agent.title.as_deref().unwrap_or("(unnamed)")).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(&agent.label).weak().small());
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(agent.title.as_deref().unwrap_or("(unnamed)"))
+                                    .strong(),
+                            )
+                            .truncate(),
+                        );
+                    });
                 });
             });
             if let Some(cwd) = &agent.cwd {
-                ui.label(RichText::new(tilde(cwd)).weak().small());
+                ui.add(egui::Label::new(RichText::new(tilde(cwd)).weak().small()).truncate());
             }
             let info = agent.activity.as_deref().unwrap_or("");
             let mut parts = Vec::new();
@@ -529,7 +553,9 @@ fn card(
                 parts.push(age);
             }
             if !parts.is_empty() {
-                ui.label(RichText::new(parts.join("  ·  ")).weak().small());
+                ui.add(
+                    egui::Label::new(RichText::new(parts.join("  ·  ")).weak().small()).truncate(),
+                );
             }
         });
     let rect = inner.response.rect;
@@ -543,6 +569,34 @@ fn card(
     );
     ui.add_space(6.0);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Paint the corral "pen" mark: a rounded-square frame enclosing three dots
+/// (the `∴` arrangement), the same geometry as the tray icon (daemon
+/// `icon.rs`). Painted rather than drawn as text because egui's default font
+/// has no glyphs for `⟦ ∴ ⟧` (they render as tofu boxes). `side` is the box
+/// edge in points; drawn in the theme's faint text color. Fractions match
+/// `icon.rs` so both surfaces read identically.
+fn paint_mark(ui: &mut egui::Ui, side: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), Sense::hover());
+    let color = ui.visuals().weak_text_color();
+    let p = ui.painter();
+    let n = side;
+    let frame = Rect::from_min_max(
+        rect.min + egui::vec2(n * 0.14, n * 0.14),
+        rect.min + egui::vec2(n * 0.86, n * 0.86),
+    );
+    let thickness = (n / 13.0).max(1.0);
+    p.rect_stroke(
+        frame,
+        n * 0.24,
+        egui::Stroke::new(thickness, color),
+        egui::StrokeKind::Inside,
+    );
+    let dr = n * 0.09;
+    for (fx, fy) in [(0.5, 0.40), (0.375, 0.61), (0.625, 0.61)] {
+        p.circle_filled(rect.min + egui::vec2(n * fx, n * fy), dr, color);
+    }
 }
 
 /// The age string a column shows.
