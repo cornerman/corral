@@ -24,14 +24,16 @@ use iced::widget::{
     canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
 };
 use iced::{
-    keyboard, mouse, Alignment, Background, Border, Color, Element, Font, Length, Point,
-    Rectangle, Renderer, Size, Subscription, Task, Theme,
+    keyboard, mouse, Alignment, Background, Border, Color, Element, Font, Length, Point, Rectangle,
+    Renderer, Size, Subscription, Task, Theme,
 };
 
 use crate::theme::{self, Base16};
 
-/// Fixed card height (points): fits title + cwd + activity·age with padding.
-const CARD_H: f32 = 62.0;
+/// Fixed card height (points): three text lines (title ~18, cwd ~16,
+/// activity·age ~16) plus 2px gaps and 8px top/bottom padding — ~70, rounded up
+/// so the third line is never clipped.
+const CARD_H: f32 = 78.0;
 /// Vertical gap between cards in a column (the list `spacing`).
 const CARD_GAP: f32 = 6.0;
 
@@ -109,8 +111,7 @@ pub struct Board {
 
 impl Board {
     pub fn new() -> Self {
-        let dir =
-            paths::registry_dir().expect("registry dir (set $HOME or $CORRAL_REGISTRY_DIR)");
+        let dir = paths::registry_dir().expect("registry dir (set $HOME or $CORRAL_REGISTRY_DIR)");
         let mut b = Board {
             engine: Engine::new(dir.clone()),
             focuser: focus::detect(),
@@ -304,12 +305,12 @@ impl Board {
                     self.filtering = false;
                     self.refresh();
                     return text_input::focus(text_input::Id::new("corral-blur"));
-                } else if self.filtering {
-                    // Focused but empty: leave filter mode without quitting.
+                } else {
+                    // Empty filter: leave filter mode / blur. Escape never
+                    // quits — only `q` does.
                     self.filtering = false;
                     return text_input::focus(text_input::Id::new("corral-blur"));
                 }
-                std::process::exit(0);
             }
             keyboard::Key::Character(c) => match c.as_str() {
                 "j" => self.selected = nav::move_row(self.selected, &counts, true),
@@ -415,7 +416,10 @@ impl Board {
             ComposeTarget::Dormant {
                 cwd,
                 resume_command,
-            } => match self.launcher.launch(Path::new(cwd), resume_command, Some(text)) {
+            } => match self
+                .launcher
+                .launch(Path::new(cwd), resume_command, Some(text))
+            {
                 Ok(()) => format!("resuming {label} to deliver"),
                 Err(e) => format!("resume: {e}"),
             },
@@ -497,13 +501,19 @@ impl Board {
         for (i, col) in Column::ALL.into_iter().enumerate() {
             let count = self.columns[i].len();
             // The Dormant column is faded: it holds inactive, resumable records.
-            let fade = if matches!(col, Column::Dormant) { 0.55 } else { 1.0 };
+            let fade = if matches!(col, Column::Dormant) {
+                0.55
+            } else {
+                1.0
+            };
             let header = row![
                 text(col.title())
                     .size(15)
                     .color(Color { a: fade, ..fg })
                     .font(semibold()),
-                text(format!("{count}")).size(15).color(Color { a: fade, ..dim }),
+                text(format!("{count}"))
+                    .size(15)
+                    .color(Color { a: fade, ..dim }),
             ]
             .spacing(8);
             let mut list = column![].spacing(6);
@@ -550,7 +560,11 @@ impl Board {
     ) -> Element<'a, Message> {
         let selected = idx == self.selected;
         // Fade the Dormant column's cards (inactive, resumable records).
-        let a = if matches!(col, Column::Dormant) { 0.55 } else { 1.0 };
+        let a = if matches!(col, Column::Dormant) {
+            0.55
+        } else {
+            1.0
+        };
         let dim = Color { a, ..s.base[3] };
         let fg = Color { a, ..s.base[5] };
         let accent = Color {
@@ -838,9 +852,10 @@ fn card_age(
 ) -> String {
     match column {
         Column::Running => quiet.get(&agent.socket_path).cloned().unwrap_or_default(),
-        Column::RequiresAction | Column::Idle => {
-            in_state.get(&agent.socket_path).cloned().unwrap_or_default()
-        }
+        Column::RequiresAction | Column::Idle => in_state
+            .get(&agent.socket_path)
+            .cloned()
+            .unwrap_or_default(),
         Column::Dormant => agent
             .session_id
             .as_deref()

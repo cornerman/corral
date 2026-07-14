@@ -37,7 +37,7 @@ board *ARGS:
 daemon *ARGS:
     cargo run -p corral-daemon -- {{ARGS}}
 
-# Run the desktop (egui) attention board
+# Run the desktop (iced) attention board
 gui *ARGS:
     cargo run -p corral-gui -- {{ARGS}}
 

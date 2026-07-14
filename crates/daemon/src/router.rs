@@ -256,7 +256,12 @@ mod tests {
         last_msg: RefCell<Option<String>>,
     }
     impl Launcher for StubLauncher {
-        fn launch(&self, _cwd: &Path, command: &[String], message: Option<&str>) -> Result<(), String> {
+        fn launch(
+            &self,
+            _cwd: &Path,
+            command: &[String],
+            message: Option<&str>,
+        ) -> Result<(), String> {
             if command.iter().any(|a| a == "--session") {
                 self.resumes.set(self.resumes.get() + 1);
             } else {
@@ -355,7 +360,11 @@ mod tests {
         assert!(r.pending().is_none(), "released by the whitelist edit");
         assert_eq!(launcher.spawns.get(), 1);
         r.poll(&entries, &launcher); // nothing left to do
-        assert_eq!(launcher.spawns.get(), 1, "released message delivers only once");
+        assert_eq!(
+            launcher.spawns.get(),
+            1,
+            "released message delivers only once"
+        );
     }
 
     #[test]
@@ -454,7 +463,11 @@ mod tests {
             title: None,
             socket: Some(sock.clone()),
             spawn_command: Some(vec!["pi".into()]),
-            resume_command: Some(vec!["pi".into(), "--session".into(), "/s/sid-7.jsonl".into()]),
+            resume_command: Some(vec![
+                "pi".into(),
+                "--session".into(),
+                "/s/sid-7.jsonl".into(),
+            ]),
             label: Some("pi".into()),
             last_seen: None,
         }];

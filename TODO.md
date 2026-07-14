@@ -116,7 +116,7 @@ One per-session file drives discovery, isolation, and resume.
       (agentclientprotocol.com/rfds/v2/prompt). When `state_update` stabilizes,
       corral already speaks it; retire any interim shim.
 
-## Desktop GUI (corral-gui, egui/eframe)
+## Desktop GUI (corral-gui, iced)
 
 - [x] Spike + packaging: themed eframe window (base16 Solarized, follows system
       light/dark), flake graphics deps (`libGL`/`libxkbcommon`/`wayland`/X11)

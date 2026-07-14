@@ -40,11 +40,7 @@ fn parse_hex(s: &str) -> Option<Color> {
         return None;
     }
     let n = u32::from_str_radix(s, 16).ok()?;
-    Some(Color::from_rgb8(
-        (n >> 16) as u8,
-        (n >> 8) as u8,
-        n as u8,
-    ))
+    Some(Color::from_rgb8((n >> 16) as u8, (n >> 8) as u8, n as u8))
 }
 
 /// Parse a tinted-theming base16 scheme. Returns `None` unless all sixteen
@@ -151,10 +147,8 @@ pub fn presets() -> HashMap<String, Base16> {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for e in entries.flatten() {
                 let p = e.path();
-                let is_yaml = matches!(
-                    p.extension().and_then(|x| x.to_str()),
-                    Some("yaml" | "yml")
-                );
+                let is_yaml =
+                    matches!(p.extension().and_then(|x| x.to_str()), Some("yaml" | "yml"));
                 if !is_yaml {
                     continue;
                 }

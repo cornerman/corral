@@ -43,9 +43,8 @@ fn on_path(prog: &str) -> bool {
     if p.is_absolute() {
         return p.is_file();
     }
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file()))
 }
 
 /// Resolve how to open a terminal (pure): the argv prefix to which the agent
@@ -184,13 +183,19 @@ mod tests {
     #[test]
     fn ladder_none_when_nothing_resolves() {
         // No xdg, no CORRAL_TERMINAL, and $TERMINAL binary absent -> error path.
-        assert_eq!(resolve_terminal_from(false, None, Some("foot"), &only(&[])), None);
+        assert_eq!(
+            resolve_terminal_from(false, None, Some("foot"), &only(&[])),
+            None
+        );
         assert_eq!(resolve_terminal_from(false, None, None, &only(&[])), None);
     }
 
     #[test]
     fn ladder_ignores_empty_env_values() {
-        assert_eq!(resolve_terminal_from(false, Some(""), Some(""), &only(&[""])), None);
+        assert_eq!(
+            resolve_terminal_from(false, Some(""), Some(""), &only(&[""])),
+            None
+        );
     }
 
     #[test]
@@ -201,7 +206,10 @@ mod tests {
     #[test]
     fn message_is_appended_as_final_arg() {
         assert_eq!(
-            with_message(&["pi".to_string(), "--session".to_string(), "/s".to_string()], Some("hello")),
+            with_message(
+                &["pi".to_string(), "--session".to_string(), "/s".to_string()],
+                Some("hello")
+            ),
             ["pi", "--session", "/s", "hello"]
         );
     }

@@ -323,7 +323,11 @@ mod tests {
             title: Some(id.into()),
             socket: None,
             spawn_command: Some(vec!["pi".into()]),
-            resume_command: Some(vec!["pi".into(), "--session".into(), format!("/s/{id}.jsonl")]),
+            resume_command: Some(vec![
+                "pi".into(),
+                "--session".into(),
+                format!("/s/{id}.jsonl"),
+            ]),
             label: Some("pi".into()),
             last_seen: Some(last_seen.into()),
         }

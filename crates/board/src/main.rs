@@ -31,7 +31,7 @@ mod ui;
 
 use corral_core::discovery::{self, RegistryEntry};
 use corral_core::focus::{self, WindowFocuser};
-use corral_core::launch::{self, TerminalLauncher, Launcher};
+use corral_core::launch::{self, Launcher, TerminalLauncher};
 use corral_core::model::{Board, Origin, Update};
 use corral_core::prompt;
 use corral_core::{model, nav, paths, watch};
@@ -78,7 +78,10 @@ enum ComposeTarget {
     /// A live agent: deliver straight to its socket.
     Live(PathBuf),
     /// A dormant session: resume it with the message as its first prompt.
-    Dormant { cwd: String, resume_command: Vec<String> },
+    Dormant {
+        cwd: String,
+        resume_command: Vec<String>,
+    },
 }
 
 /// The operator composing a message (opened with `m`): the target, a display
@@ -125,11 +128,15 @@ fn handle_overlay(
                         }
                         // Dormant: resume the session with the message as its
                         // first prompt (atomic, no wait-for-announce).
-                        ComposeTarget::Dormant { cwd, resume_command } => {
-                            *status = match launcher.launch(Path::new(cwd), resume_command, Some(text)) {
-                                Ok(()) => format!("resuming {} to deliver", c.label),
-                                Err(e) => format!("resume: {e}"),
-                            };
+                        ComposeTarget::Dormant {
+                            cwd,
+                            resume_command,
+                        } => {
+                            *status =
+                                match launcher.launch(Path::new(cwd), resume_command, Some(text)) {
+                                    Ok(()) => format!("resuming {} to deliver", c.label),
+                                    Err(e) => format!("resume: {e}"),
+                                };
                         }
                     }
                 }
@@ -289,7 +296,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
         if event::poll(POLL)? {
             let ev = event::read()?;
             // Filter edit mode: printable keys edit the query, arrows still
-            // navigate, Enter keeps it, Esc clears and exits.
+            // navigate, Enter keeps it, Esc leaves filter mode (never quits).
             if filtering {
                 if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
@@ -332,12 +339,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Esc => {
-                        if filter.is_empty() {
-                            break;
-                        }
-                        filter.clear();
-                    }
+                    // Esc clears the filter but never quits — only `q` does.
+                    KeyCode::Esc => filter.clear(),
                     KeyCode::Down | KeyCode::Char('j') => {
                         selected = nav::move_row(selected, &counts, true);
                     }
@@ -353,9 +356,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                         spawn_new(&launcher, &board, selected, &mut status);
                     }
-                    KeyCode::Enter => {
-                        activate_selected(focuser.as_ref(), &launcher, &board, selected, &mut status)
-                    }
+                    KeyCode::Enter => activate_selected(
+                        focuser.as_ref(),
+                        &launcher,
+                        &board,
+                        selected,
+                        &mut status,
+                    ),
                     KeyCode::Char('d') => {
                         dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
                     }
@@ -399,9 +406,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                     status.clear();
                                     overlay = open_compose(&board, selected);
                                 }
-                                ui::FooterAction::Delete => {
-                                    dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status)
-                                }
+                                ui::FooterAction::Delete => dismiss_selected(
+                                    dir,
+                                    focuser.as_ref(),
+                                    &board,
+                                    selected,
+                                    &mut status,
+                                ),
                                 ui::FooterAction::Quit => break,
                             }
                         } else {

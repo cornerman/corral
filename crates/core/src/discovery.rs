@@ -145,7 +145,10 @@ mod tests {
         let e = parse_registry_json(json).unwrap();
         assert_eq!(e.session_id, "abc");
         assert_eq!(e.cwd.as_deref(), Some("/tmp/p"));
-        assert_eq!(e.spawn_command.as_deref(), Some(["pi".to_string()].as_slice()));
+        assert_eq!(
+            e.spawn_command.as_deref(),
+            Some(["pi".to_string()].as_slice())
+        );
         assert_eq!(
             e.resume_command.as_deref().unwrap(),
             ["pi", "--session", "/s/abc.jsonl"]

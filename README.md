@@ -51,12 +51,14 @@ harness-neutral convention, specified independently of pi and corral in
   and the core never names them. `m` messages the selected agent directly and
   ungated (the operator is trusted).
 - **corral-gui** (`crates/gui`) — the same attention board as a desktop
-  (egui/eframe) window: a second parallel viewer for when no terminal is
-  wanted. Flat, base16-Solarized, follows the system light/dark; a centered
-  filter line over the four columns, click a card to go, Shift+Enter to spawn
-  the selected card's kind, the same keys as the TUI. Drives the shared
-  `corral-core::engine`. The daemon's
-  tray “Open board” launches it.
+  (iced) window: a second parallel viewer for when no terminal is
+  wanted. iced renders text via cosmic-text (crisp, shaped). Flat and
+  base16-themed, follows the system light/dark; an underline-only centered
+  filter over the four columns, click a card to go, Shift+Enter to spawn
+  the selected card's kind, the same keys as the TUI. Theme is an env-selected
+  base16 dark/light pair (Solarized by default) from built-ins plus
+  `~/.config/corral/themes`. Drives the shared `corral-core::engine`. The
+  daemon's tray “Open board” launches it.
 - **corrald** (`crates/daemon`) — the headless message-routing daemon, a
   singleton owning inter-agent messaging: it binds the control socket
   (`$HOME/.corral/corrald.sock`), authorizes `(sender -> target)` directory

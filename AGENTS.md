@@ -14,7 +14,7 @@ injects over that agent's socket.
 
 Three binaries ship from this workspace, over a shared `corral-core` library.
 `corral` is the board as a terminal TUI, and `corral-gui` is the same board as a
-desktop (egui) window — two parallel presentation shells, both pure viewers of
+desktop (iced) window — two parallel presentation shells, both pure viewers of
 the registry, launchable many times over. `corrald` is a headless singleton
 daemon that owns inter-agent messaging (the control socket, the whitelist gate,
 the approval tray). They share only the filesystem registry and never talk to
@@ -91,7 +91,7 @@ control socket; the board is a pure registry reflector, so any number may run.
 Four workspace crates: `core` (shared logic), `board` (TUI `corral`), `gui`
 (desktop `corral-gui`), `daemon` (`corrald`). `core` holds everything the three
 binaries share, so no UI links another's dependencies (board + gui keep
-ratatui / egui, the daemon keeps ksni).
+ratatui / iced, the daemon keeps ksni).
 
 - `crates/core` — `corral-core` (lib): the shared foundation, UI-free
   (`serde_json` only).
@@ -186,17 +186,22 @@ ratatui / egui, the daemon keeps ksni).
     via `core::prompt` / `core::launch`; no router.
 
 - `crates/gui` — the desktop attention board (binary name `corral-gui`,
-  egui/eframe), a second parallel viewer over the same registry via
-  `core::engine::Engine`. Flat and base16-Solarized (dark/light polled from the
-  freedesktop appearance portal and applied per frame, so egui's defaults never
-  leak); a centered filter line over the four columns of cards; click a card to
-  go, Shift+Enter spawns the selected card's kind in its dir, a bottom key-hint
-  footer, the same keys as the TUI. Each card shows a dim kind badge (the
-  `label`) right of the title, readying the board for mixed agent kinds.
-  `src/theme.rs` maps a base16 palette onto egui `Visuals` (Solarized dark +
-  light); `src/dashboard.rs` renders and drives the actions (focus/resume via
-  `core::focus`/`core::launch`, message compose, dismiss). Links `eframe`/`egui`
-  plus the graphics libs (libGL/wayland/X11/xkbcommon); the TUI and daemon do
+  iced), a second parallel viewer over the same registry via
+  `core::engine::Engine`. iced renders text via cosmic-text (crisp, shaped),
+  the reason for the toolkit over egui. Flat and base16-themed (dark/light
+  polled from the freedesktop appearance portal); an underline-only centered
+  filter over the four columns of fixed-height cards; click a card to go
+  (two-stage: select then go), Shift+Enter spawns the selected card's kind in
+  its dir, a bottom key-hint footer with the canvas-drawn corral mark, the same
+  keys as the TUI. Each card shows a dim kind badge (the `label`) right of the
+  title; the Dormant column is faded. `src/theme.rs` is the base16 theming
+  system: a lenient tinted-theming YAML parser (no YAML dependency), Solarized
+  dark/light built-ins, and an env-selected (`CORRAL_THEME_DARK` /
+  `CORRAL_THEME_LIGHT`) dark/light preset pair loaded from built-ins plus
+  `~/.config/corral/themes` (override `CORRAL_THEME_DIR`); `src/dashboard.rs`
+  maps a `Base16` onto iced styling and drives the actions (focus/resume via
+  `core::focus`/`core::launch`, message compose, dismiss). Links iced's wgpu
+  graphics stack (vulkan-loader/libGL/wayland/X11/xkbcommon); the TUI and daemon do
   not.
 
 - `crates/daemon` — the message-routing daemon (binary name `corrald`), a
@@ -359,7 +364,7 @@ message/tool updates) is ACP v1.
   visible; live cards show time-in-state. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir; uses `swaymsg` and `kitty` for
   focus and spawn.
-- CLI `corral-gui` — the same attention board as a desktop (egui/eframe) window,
+- CLI `corral-gui` — the same attention board as a desktop (iced) window,
   a second parallel viewer for when no terminal is wanted. Flat,
   base16-Solarized, follows the system light/dark (freedesktop appearance
   portal). A centered filter line over the four columns; click a card to go,

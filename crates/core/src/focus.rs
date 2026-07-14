@@ -362,9 +362,11 @@ impl X11Focuser {
     /// Connect and find the agent's window: the first client whose
     /// `_NET_WM_PID` is the agent's pid or one of its ancestors (the terminal
     /// that owns the window is an ancestor of the agent's socket pid).
-    fn find(&self, agent: &Agent) -> Result<(x11rb::rust_connection::RustConnection, Window, Window), String> {
-        let (conn, screen) =
-            x11rb::connect(None).map_err(|e| format!("x11 connect: {e}"))?;
+    fn find(
+        &self,
+        agent: &Agent,
+    ) -> Result<(x11rb::rust_connection::RustConnection, Window, Window), String> {
+        let (conn, screen) = x11rb::connect(None).map_err(|e| format!("x11 connect: {e}"))?;
         let root = conn.setup().roots[screen].root;
         let ancestors = ancestor_pids(agent.pid);
         let list = intern(&conn, b"_NET_CLIENT_LIST")?;
@@ -424,7 +426,10 @@ fn server_time(conn: &impl Connection, root: Window) -> Result<u32, String> {
         .map_err(|e| format!("x11 mark: {e}"))?;
     conn.flush().map_err(|e| format!("x11 flush: {e}"))?;
     loop {
-        match conn.wait_for_event().map_err(|e| format!("x11 event: {e}"))? {
+        match conn
+            .wait_for_event()
+            .map_err(|e| format!("x11 event: {e}"))?
+        {
             Event::PropertyNotify(ev) if ev.atom == marker => return Ok(ev.time),
             _ => continue,
         }
@@ -489,11 +494,21 @@ mod tests {
         let with = |present: &'static [&'static str]| move |k: &str| present.contains(&k);
         // Wayland compositor markers win (even alongside DISPLAY from Xwayland).
         assert_eq!(
-            detect_kind(with(&["HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY", "DISPLAY"])),
+            detect_kind(with(&[
+                "HYPRLAND_INSTANCE_SIGNATURE",
+                "WAYLAND_DISPLAY",
+                "DISPLAY"
+            ])),
             FocuserKind::Hyprland
         );
-        assert_eq!(detect_kind(with(&["NIRI_SOCKET", "WAYLAND_DISPLAY"])), FocuserKind::Niri);
-        assert_eq!(detect_kind(with(&["SWAYSOCK", "WAYLAND_DISPLAY"])), FocuserKind::Sway);
+        assert_eq!(
+            detect_kind(with(&["NIRI_SOCKET", "WAYLAND_DISPLAY"])),
+            FocuserKind::Niri
+        );
+        assert_eq!(
+            detect_kind(with(&["SWAYSOCK", "WAYLAND_DISPLAY"])),
+            FocuserKind::Sway
+        );
         // Pure X11 session.
         assert_eq!(detect_kind(with(&["DISPLAY"])), FocuserKind::X11);
         // GNOME/KDE Wayland: WAYLAND_DISPLAY but no known marker -> unsupported

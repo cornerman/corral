@@ -435,7 +435,12 @@ fn card_lines(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> [Str
 /// The title line: the session name, with the agent kind as a dim badge
 /// right-aligned in the card width. The badge readies the board for mixed
 /// agent kinds (pi, opencode, …); with one kind it reads as a quiet tag.
-fn title_line(agent: &Agent, width: usize, title_style: Style, badge_style: Style) -> Line<'static> {
+fn title_line(
+    agent: &Agent,
+    width: usize,
+    title_style: Style,
+    badge_style: Style,
+) -> Line<'static> {
     let name_raw = agent.title.as_deref().unwrap_or("(unnamed)");
     let badge = &agent.label;
     let badge_w = badge.chars().count();
