@@ -20,12 +20,14 @@
       # Pin the Rust toolchain via rust-overlay; rust-toolchain.toml is the
       # single source of truth for the version.
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-      # The GUI shell (corral-gui, egui/eframe) links these graphics libraries.
-      # winit needs the Wayland + X11 client libs and libxkbcommon; eframe's
-      # glow backend needs libGL. libxcb is a link-time dep of the X11 path.
-      # On mainstream distros these already sit in standard paths, so a built
-      # binary just runs; NixOS needs them named explicitly (build + runtime).
+      # The GUI shell (corral-gui, iced) links these graphics libraries.
+      # winit needs the Wayland + X11 client libs and libxkbcommon; iced's wgpu
+      # renderer needs the Vulkan loader (with a libGL fallback). libxcb is a
+      # link-time dep of the X11 path. On mainstream distros these already sit
+      # in standard paths, so a built binary just runs; NixOS needs them named
+      # explicitly (build + runtime).
       guiLibsFor = pkgs: with pkgs; [
+        vulkan-loader
         libGL
         libxkbcommon
         wayland
