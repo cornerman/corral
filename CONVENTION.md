@@ -59,6 +59,7 @@ Fields:
 | `resumeCommand` | string[] \| null | argv a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "<sessionId>"]`. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
 | `lastSeen`  | string          | ISO-8601 timestamp, refreshed while the session runs. Lets a consumer age out stale dormant records. |
 | `gui`       | boolean         | Optional; default `false`. `true` when the agent draws its own window (a GUI app like quine), so the consumer launches `spawnCommand`/`resumeCommand` **directly** rather than wrapping them in a terminal. Absent or `false` means terminal-wrapped, so every existing terminal agent keeps its behavior unchanged. |
+| `messageFlag` | string \| null | Optional CLI flag that carries the initial launch message (see §2a), e.g. `"--message"` for quine. When set, the consumer passes the message as this flag's value (`… --message "<text>"`); absent/null means the message is a trailing positional argument. Lets a flag-based agent take a launch message without accepting a positional. |
 
 The consumer runs `spawnCommand` / `resumeCommand` **verbatim and never parses
 them**, so it stays agent-neutral: pi's `--session` grammar, opencode's, and any
@@ -90,6 +91,7 @@ terminal wrapper.)
 
 ```text
 (illustrative GUI record fields: "label": "quine", "gui": true,
+ "messageFlag": "--message",
  "spawnCommand": ["quine", "--corral"],
  "resumeCommand": ["quine", "--session", "<sessionId>", "--corral"])
 ```
@@ -100,12 +102,14 @@ resumable via `resumeCommand`.
 ### 2a. Launch (initial message injection)
 
 When a consumer launches a session (`spawnCommand` or `resumeCommand`) to
-deliver a message, it appends the message as the final positional argument of
-the argv. As a generic CLI-safety convention it space-guards a message that
-starts with `-` or `@` (prefixes one space) so an arg parser does not read it as
-a flag or a file. An agent that accepts an initial message this way gets
-atomic launch-with-delivery; one that does not simply ignores the trailing
-argument.
+deliver a message, it appends the message to the argv. By default it is the
+final positional argument, and as a generic CLI-safety convention the consumer
+space-guards a message that starts with `-` or `@` (prefixes one space) so an
+arg parser does not read it as a flag or a file. If the record sets
+`messageFlag`, the consumer instead passes the message as that flag's value
+(`… <messageFlag> "<text>"`), bound to the flag, so no guard is needed. Either
+way an agent that accepts an initial message gets atomic launch-with-delivery;
+one that does not simply ignores it.
 
 ## 3. Workdir-Local Socket (MUST)
 

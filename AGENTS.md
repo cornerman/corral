@@ -100,11 +100,14 @@ ratatui / iced, the daemon keeps ksni).
     `<label>-<pid>.sock` filename). Liveness is read straight from the record
     (`socket` set = live, cleared = dormant). Pure, unit-tested.
   - `src/launch.rs` — `Launcher` seam. `TerminalLauncher::launch(cwd, command,
-    message, gui)` runs `setsid --fork <terminal…> <command…>` rooted at `cwd`
+    message, mode)` takes a `LaunchMode { gui, message_flag }` bundling the
+    record-derived launch options (built by callers via `Agent::launch_mode` /
+    `RegistryEntry::launch_mode`, keeping this crate model-free). It runs
+    `setsid --fork <terminal…> <command…>` rooted at `cwd`
     via the child's working directory (no terminal-specific `--directory`
     flag), where `command` is the argv the registry record carried
     (`spawnCommand` for a fresh session, `resumeCommand` to resume an exact
-    one). A GUI agent (`gui: true`, e.g. quine, from the record's `gui` field)
+    one). A GUI agent (`mode.gui`, e.g. quine, from the record's `gui` field)
     is launched directly as `setsid --fork <command…>` — no terminal resolved,
     since the app draws its own window; the pure `setsid_args` builder (which
     branch to take) is unit-tested. corral names
@@ -121,7 +124,10 @@ ratatui / iced, the daemon keeps ksni).
     focus never targets its launching terminal — see `focus.rs`
     `match_pids`). An optional initial `message` is appended
     as the final positional arg (space-guarding a leading `-`/`@` as a generic
-    CLI-safety convention), so a message is delivered atomically at launch. The
+    CLI-safety convention), or — when the record sets `messageFlag` (e.g.
+    `--message` for quine) — as that flag's value (`… --message "<text>"`,
+    bound to the flag so unguarded), so a message is delivered atomically at
+    launch. The
     pure `resolve_terminal_from` ladder and `with_message` are unit-tested.
     `default_cwd` takes a plain cwd (not an `Agent`) so the crate stays free of
     the board's model.
@@ -509,7 +515,10 @@ message/tool updates) is ACP v1.
   interface in its own repo. It is also the first GUI agent, so its record
   carries `gui: true`: corral launches it directly (no terminal wrapper, see
   `launch.rs`) and focuses it by its own pid (`focus.rs` `match_pids`), since a
-  self-windowing app owns its window rather than living inside a terminal.
+  self-windowing app owns its window rather than living inside a terminal. It
+  also declares `messageFlag: "--message"`, so corral delivers a launch message
+  as `--message "<text>"` rather than a trailing positional (the flag form pi
+  and opencode do not need).
 - Kind badges become load-bearing once a second agent kind ships: the card
   already shows the `label`, so mixed pi/opencode boards read at a glance.
 - Full requires_action coverage. pi core (or a native ACP `state_update`
@@ -534,17 +543,9 @@ message/tool updates) is ACP v1.
   `gui`, `daemon`, `watch` (cargo-watch tests), and `watch-board` / `watch-gui`
   / `watch-daemon` (rebuild + rerun on change), `nix-build`. GUI builds need the
   devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`.
-- Home Manager module (`nix/hm-module.nix`, flake output
-  `homeManagerModules.default`): `programs.corral.enable = true;` installs the
-  package, runs `corrald` as a user service bound to `graphical-session.target`
-  (`programs.corral.daemon.enable`, default on), and symlinks the pi and
-  opencode adapters into their plugin dirs
-  (`programs.corral.extensions.{pi,opencode}.enable`, default on). The adapters
-  ship inside the package at `share/corral/extensions/`, so the module links one
-  artifact rather than the source tree. `extensions.claude` is a reserved stub
-  that asserts off until the Claude adapter lands on `main`.
-- Lifecycle beyond the module is deployment glue in `~/nixos`, not corral code:
+- Lifecycle is deployment glue in `~/nixos`, not corral code: a systemd user
+  service runs `corrald` (restart-on-failure) so messaging survives a crash;
   a WM keybind summons a board window — either a floating/borderless `kitty -e
   corral` scratchpad (the TUI as a launcher popup) or `corral-gui`. corrald owns
-  behavior; the module owns keep-alive, nixos/WM own visibility.
+  behavior; nixos/WM own keep-alive and visibility.
 - CI: GitHub Action runs `nix flake check` (build + tests via nix).

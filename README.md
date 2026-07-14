@@ -97,30 +97,7 @@ harness-neutral convention, specified independently of pi and corral in
   focuses it by its own window pid. corral needed one small change for this
   (the `gui` launch mode); the rest of the convention was already neutral.
 
-## Install (Home Manager)
-
-The flake exports a Home Manager module. Enabling it installs the three
-binaries, runs `corrald` as a user service, and symlinks the pi and opencode
-adapters into each harness's plugin directory.
-
-```nix
-# flake.nix
-inputs.corral.url = "github:cornerman/corral";
-
-# home configuration
-imports = [ inputs.corral.homeManagerModules.default ];
-programs.corral.enable = true;
-```
-
-Options (all default on under `enable`): `programs.corral.daemon.enable` (the
-`corrald` user service), `programs.corral.extensions.pi.enable`,
-`programs.corral.extensions.opencode.enable`. Override the build with
-`programs.corral.package`. The Claude Code adapter is not yet on `main`;
-`programs.corral.extensions.claude.enable` is a reserved stub that asserts off.
-
-## Usage (manual)
-
-Without the module, wire it up by hand:
+## Usage
 
 ```bash
 # Announce interactive pi sessions (one-time setup):
