@@ -441,6 +441,8 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            group: None,
+            name: None,
         }
     }
 
@@ -464,6 +466,8 @@ mod tests {
             gui: true,
             message_flag: Some("--message".into()),
             hidden: false,
+            group: None,
+            name: None,
         };
         board.sync_registry(&[rec], &HashSet::new());
         let dormant = board.dormant();

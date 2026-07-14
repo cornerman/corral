@@ -42,7 +42,10 @@ mod tests {
 
     #[test]
     fn same_path_same_bucket() {
-        assert_eq!(color_index("/home/u/proj", 8), color_index("/home/u/proj", 8));
+        assert_eq!(
+            color_index("/home/u/proj", 8),
+            color_index("/home/u/proj", 8)
+        );
     }
 
     #[test]
