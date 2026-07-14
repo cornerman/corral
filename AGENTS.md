@@ -100,12 +100,16 @@ ratatui / iced, the daemon keeps ksni).
     `<label>-<pid>.sock` filename). Liveness is read straight from the record
     (`socket` set = live, cleared = dormant). Pure, unit-tested.
   - `src/launch.rs` — `Launcher` seam. `TerminalLauncher::launch(cwd, command,
-    message)` runs `setsid --fork <terminal…> <command…>` rooted at `cwd` via
-    the child's working directory (no terminal-specific `--directory` flag),
-    where `command` is the argv the registry record carried (`spawnCommand`
-    for a fresh session, `resumeCommand` to resume an exact one). corral names
+    message, gui)` runs `setsid --fork <terminal…> <command…>` rooted at `cwd`
+    via the child's working directory (no terminal-specific `--directory`
+    flag), where `command` is the argv the registry record carried
+    (`spawnCommand` for a fresh session, `resumeCommand` to resume an exact
+    one). A GUI agent (`gui: true`, e.g. quine, from the record's `gui` field)
+    is launched directly as `setsid --fork <command…>` — no terminal resolved,
+    since the app draws its own window; the pure `setsid_args` builder (which
+    branch to take) is unit-tested. corral names
     neither the agent kind (the command rides in the record, so the board
-    launches whatever kind the selected card is — pi, opencode, …; pi's
+    launches whatever kind the selected card is — pi, opencode, quine, …; pi's
     `--session` grammar lives in the announce extension) nor the terminal:
     `resolve_terminal` picks one from the environment by a ladder —
     `xdg-terminal-exec` (the freedesktop standard) → `$CORRAL_TERMINAL` (an
@@ -113,7 +117,9 @@ ratatui / iced, the daemon keeps ksni).
     hardcoded terminal, so if none resolve `launch` errors and the shell shows
     it. `setsid --fork` detaches the window (survives the launcher exiting, no
     zombie, and — since it is not a descendant — the focus parent-walk cannot
-    climb into corral's own window). An optional initial `message` is appended
+    climb into corral's own window; a GUI agent is matched by its own pid, so
+    focus never targets its launching terminal — see `focus.rs`
+    `match_pids`). An optional initial `message` is appended
     as the final positional arg (space-guarding a leading `-`/`@` as a generic
     CLI-safety convention), so a message is delivered atomically at launch. The
     pure `resolve_terminal_from` ladder and `with_message` are unit-tested.
@@ -147,7 +153,10 @@ ratatui / iced, the daemon keeps ksni).
     implementation by session: EWMH on X11; sway / Hyprland / niri on Wayland.
     `X11Focuser` (via `x11rb`, no libX11) finds the
     window by matching `_NET_WM_PID` against the agent's pid and its ancestors
-    (the terminal owning the window is an ancestor of the socket pid), then
+    (the terminal owning the window is an ancestor of the socket pid; a GUI
+    agent's own pid owns its window, so `match_pids` narrows the set to just
+    the socket pid for `gui` records — never climbing to the launching
+    terminal), then
     activates it with `_NET_ACTIVE_WINDOW` (source indication 2 = pager, and a
     real server timestamp fetched via a property round-trip, so focus-stealing
     prevention does not defer it — this also switches workspaces); `close`
@@ -494,6 +503,13 @@ message/tool updates) is ACP v1.
   `state_update` just defaults the card to Idle; a missing `label` renders as
   `agent`; a missing `spawnCommand`/`resumeCommand` leaves the kind
   discoverable and drivable but not launchable by corral.
+- quine is the third worked kind and the first that serves the convention
+  *natively*: rather than a bespoke adapter file (like `corral-announce.ts` /
+  `corral-opencode.ts`), quine compiles the surface in as a `--corral`
+  interface in its own repo. It is also the first GUI agent, so its record
+  carries `gui: true`: corral launches it directly (no terminal wrapper, see
+  `launch.rs`) and focuses it by its own pid (`focus.rs` `match_pids`), since a
+  self-windowing app owns its window rather than living inside a terminal.
 - Kind badges become load-bearing once a second agent kind ships: the card
   already shows the `label`, so mixed pi/opencode boards read at a glance.
 - Full requires_action coverage. pi core (or a native ACP `state_update`

@@ -55,15 +55,18 @@ Fields:
 | `title`     | string \| null  | Human-readable session title; `null` when unnamed. |
 | `label`     | string          | Agent kind (e.g. `"pi"`). Appears in the socket filename; a consumer MAY use it to identify a dormant session's kind. |
 | `socket`    | string \| null  | Absolute path to the live socket, or `null` when the session is dormant (cleanly shut down, resumable). |
-| `spawnCommand`  | string[] \| null | argv a consumer runs (in a terminal, rooted at a chosen cwd) to start a *fresh* session of this kind, e.g. `["pi"]`. `null` when the agent does not support consumer-launched spawn. |
+| `spawnCommand`  | string[] \| null | argv a consumer runs (rooted at a chosen cwd, terminal-wrapped unless `gui`) to start a *fresh* session of this kind, e.g. `["pi"]`. `null` when the agent does not support consumer-launched spawn. |
 | `resumeCommand` | string[] \| null | argv a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "<sessionId>"]`. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
 | `lastSeen`  | string          | ISO-8601 timestamp, refreshed while the session runs. Lets a consumer age out stale dormant records. |
+| `gui`       | boolean         | Optional; default `false`. `true` when the agent draws its own window (a GUI app like quine), so the consumer launches `spawnCommand`/`resumeCommand` **directly** rather than wrapping them in a terminal. Absent or `false` means terminal-wrapped, so every existing terminal agent keeps its behavior unchanged. |
 
 The consumer runs `spawnCommand` / `resumeCommand` **verbatim and never parses
 them**, so it stays agent-neutral: pi's `--session` grammar, opencode's, and any
-other kind's live in the agent, not the consumer. The consumer wraps the argv in
-its own terminal (`<terminal> -e <argv…>`) rooted at `cwd`, and MAY append an
-initial user message as a trailing positional argument (see §2a). A resume
+other kind's live in the agent, not the consumer. For a terminal agent (`gui`
+absent/false) the consumer wraps the argv in its own terminal
+(`<terminal> -e <argv…>`) rooted at `cwd`; for a GUI agent (`gui: true`) it runs
+the argv directly (the app opens its own window). Either way the consumer MAY
+append an initial user message as a trailing positional argument (see §2a). A resume
 command SHOULD launch in the record's `cwd`, so an agent MAY address the session
 by a short id (resolved per-project) rather than an absolute path.
 
@@ -80,6 +83,15 @@ Example:
   "resumeCommand": ["pi", "--session", "6f1c2e7a-3b4d-4c5e-9a10-2f8b1d0e4c33"],
   "lastSeen": "2026-07-13T09:41:07.512Z"
 }
+```
+
+(A GUI agent adds `"gui": true`; a consumer then launches its commands without a
+terminal wrapper.)
+
+```text
+(illustrative GUI record fields: "label": "quine", "gui": true,
+ "spawnCommand": ["quine", "--corral"],
+ "resumeCommand": ["quine", "--session", "<sessionId>", "--corral"])
 ```
 
 A record with `socket == null` denotes a **dormant** session: not running, but

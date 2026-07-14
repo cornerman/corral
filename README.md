@@ -90,6 +90,12 @@ harness-neutral convention, specified independently of pi and corral in
   registry record with `label: "opencode"`, same workdir-local ACP socket, same
   `state_update` broadcast, the same `corral_message_agent` tool), so a mixed
   pi/opencode board reads at a glance. corral itself needed no change.
+- **quine** (native `--corral` interface in the quine repo) — the third worked
+  kind, and the first to serve the convention in-source rather than through an
+  adapter file. It is also the first GUI agent: its record carries `gui: true`,
+  so corral launches it directly instead of wrapping it in a terminal and
+  focuses it by its own window pid. corral needed one small change for this
+  (the `gui` launch mode); the rest of the convention was already neutral.
 
 ## Usage
 
