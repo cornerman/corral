@@ -40,6 +40,11 @@ pub struct RegistryEntry {
     /// ISO-8601 timestamp of the last observed activity. ISO-8601 sorts
     /// correctly as a plain string, so it doubles as the latest-per-cwd key.
     pub last_seen: Option<String>,
+    /// Whether corral launches this agent's command directly (a self-windowing
+    /// GUI app like quine) instead of wrapping it in a terminal. Absent/false
+    /// means terminal-wrapped, so every existing pi/opencode record keeps its
+    /// behavior; only an explicit `true` opts into direct launch.
+    pub gui: bool,
 }
 
 /// Parse one registry JSON document. Requires `sessionId`; everything else is
@@ -65,6 +70,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         resume_command: cmd_field("resumeCommand"),
         label: str_field("label"),
         last_seen: str_field("lastSeen"),
+        gui: v.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
     })
 }
 
@@ -181,5 +187,21 @@ mod tests {
     fn rejects_record_without_session_id() {
         assert_eq!(parse_registry_json(r#"{"cwd":"/tmp"}"#), None);
         assert_eq!(parse_registry_json("not json"), None);
+    }
+
+    #[test]
+    fn gui_field_parses_true_false_and_absent() {
+        // Explicit true.
+        let e = parse_registry_json(r#"{"sessionId":"s1","gui":true}"#).unwrap();
+        assert!(e.gui);
+        // Explicit false.
+        let e = parse_registry_json(r#"{"sessionId":"s2","gui":false}"#).unwrap();
+        assert!(!e.gui);
+        // Absent defaults to false (pi/opencode records have no such field).
+        let e = parse_registry_json(r#"{"sessionId":"s3"}"#).unwrap();
+        assert!(!e.gui);
+        // A non-boolean value is ignored leniently, not an error.
+        let e = parse_registry_json(r#"{"sessionId":"s4","gui":"yes"}"#).unwrap();
+        assert!(!e.gui);
     }
 }

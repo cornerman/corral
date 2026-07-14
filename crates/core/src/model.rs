@@ -366,6 +366,7 @@ mod tests {
             ]),
             label: Some("pi".into()),
             last_seen: Some(last_seen.into()),
+            gui: false,
         }
     }
 

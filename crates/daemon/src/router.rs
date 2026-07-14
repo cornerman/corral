@@ -318,6 +318,7 @@ mod tests {
             resume_command: None,
             label: Some(label.into()),
             last_seen: None,
+            gui: false,
         }
     }
 
@@ -333,6 +334,7 @@ mod tests {
             resume_command: None,
             label: Some("pi".into()),
             last_seen: None,
+            gui: false,
         }
     }
 
@@ -346,6 +348,7 @@ mod tests {
             resume_command: Some(vec!["pi".into(), "--session".into(), resume.into()]),
             label: Some("pi".into()),
             last_seen: None,
+            gui: false,
         }
     }
 
@@ -543,6 +546,7 @@ mod tests {
             ]),
             label: Some("pi".into()),
             last_seen: None,
+            gui: false,
         }];
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
