@@ -135,7 +135,9 @@ One per-session file drives discovery, isolation, and resume.
       deliberate (kept the working TUI untouched during the GUI build).
 - [x] Launcher mode (`corral-gui --launcher`): ephemeral rofi-style popup.
       Boots focused on the filter; go (Enter/focus) and new (Shift+Enter/spawn)
-      exit the process on success (m/d keep it open, q exits); sets window
+      exit the process on success (m/d keep it open, q exits); dismisses on focus
+      loss (window Unfocused, guarded on a prior Focus so boot cannot self-close);
+      sets window
       `app_id`/X11 class `corral-launcher`. Placement is a WM float/center rule
       keyed on that app_id (owns-behavior / WM-owns-visibility split), NOT
       self-positioned. Chosen deliberately (option D) to test whether a WM rule

@@ -3,9 +3,9 @@
 //! system light/dark preference; the TUI stays the zero-friction terminal path.
 //!
 //! `--launcher` turns it into an ephemeral rofi-style popup: it boots focused on
-//! the filter and exits after go / new, so a WM keybind can respawn a fresh one
-//! each summon. A distinct `app_id` (`corral-launcher`) lets a WM window rule
-//! float/center only the popup, not a normal window.
+//! the filter, exits after go / new, and dismisses on focus loss, so a WM keybind
+//! can respawn a fresh one each summon. A distinct `app_id` (`corral-launcher`)
+//! lets a WM window rule float/center only the popup, not a normal window.
 
 mod dashboard;
 mod theme;

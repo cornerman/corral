@@ -62,6 +62,8 @@ pub enum Message {
     CardClicked(usize),
     Go,
     Spawn,
+    /// Window gained (true) or lost (false) focus. Launcher dismisses on blur.
+    Focused(bool),
     OpenCompose,
     Dismiss,
     ComposeInput(String),
@@ -99,6 +101,9 @@ pub struct Board {
     /// Launcher mode (--launcher): boot focused on the filter and exit the
     /// process after go / new (ephemeral rofi-style popup; WM respawns it).
     launcher_mode: bool,
+    /// Launcher only: set once the window has been focused, so a spurious
+    /// pre-focus Unfocused event at boot cannot dismiss it before it appears.
+    focused_once: bool,
     /// Flat selection index across the (filtered) columns, TUI-style.
     selected: usize,
     status: String,
@@ -127,6 +132,7 @@ impl Board {
             filter: String::new(),
             filtering: false,
             launcher_mode,
+            focused_once: false,
             selected: 0,
             status: String::new(),
             compose: None,
@@ -224,6 +230,14 @@ impl Board {
             }
             Message::Go => return self.act_go(),
             Message::Spawn => return self.act_spawn(),
+            Message::Focused(focused) => {
+                if focused {
+                    self.focused_once = true;
+                } else if self.launcher_mode && self.focused_once {
+                    // rofi-style: the ephemeral launcher closes on focus loss.
+                    return iced::exit();
+                }
+            }
             Message::OpenCompose => {
                 if let Some(a) = self.selected_agent() {
                     self.compose = compose_for(a);
@@ -463,6 +477,12 @@ impl Board {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::Escape),
+                iced::Event::Window(iced::window::Event::Focused) => {
+                    Some(Message::Focused(true))
+                }
+                iced::Event::Window(iced::window::Event::Unfocused) => {
+                    Some(Message::Focused(false))
+                }
                 _ => None,
             }),
         ])
