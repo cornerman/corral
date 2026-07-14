@@ -96,9 +96,10 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Whether this agent's whole card content matches a filter query: every
-    /// whitespace-separated term must appear (case-insensitive) in the title,
-    /// cwd, activity, or state word. An empty query matches everything.
+    /// Whether this agent's card content fuzzily matches a filter query: every
+    /// whitespace-separated term must appear (case-insensitive) as an in-order
+    /// subsequence of the title, cwd, activity, state word, or harness label.
+    /// An empty query matches everything.
     pub fn matches_query(&self, query: &str) -> bool {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -113,15 +114,26 @@ impl Agent {
             },
         };
         let hay = format!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             self.title.as_deref().unwrap_or(""),
             self.cwd.as_deref().unwrap_or(""),
             self.activity.as_deref().unwrap_or(""),
             state,
+            self.label,
         )
         .to_lowercase();
-        q.split_whitespace().all(|term| hay.contains(term))
+        q.split_whitespace().all(|term| is_subsequence(term, &hay))
     }
+}
+
+/// Whether `needle` occurs in `hay` as an in-order (not necessarily
+/// contiguous) subsequence — the fuzzy-match primitive. Both are already
+/// lowercased by the caller.
+fn is_subsequence(needle: &str, hay: &str) -> bool {
+    let mut chars = hay.chars();
+    needle
+        .chars()
+        .all(|c| chars.by_ref().any(|hc| hc == c))
 }
 
 /// A change pushed from a watcher thread to the UI thread.
@@ -262,7 +274,21 @@ impl Board {
         self.filter = filter;
     }
 
-    /// The agents in one column, narrowed by the content filter if set.
+    /// How often each working directory occurs across all known sessions,
+    /// live and dormant. Drives the within-column grouping: cards sharing a
+    /// cwd sit together, and the busiest directories float to the top.
+    fn cwd_occurrences(&self) -> std::collections::HashMap<&str, usize> {
+        let mut counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for a in self.live.values().chain(self.dormant.iter()) {
+            *counts.entry(a.cwd.as_deref().unwrap_or("")).or_default() += 1;
+        }
+        counts
+    }
+
+    /// The agents in one column, narrowed by the content filter if set, then
+    /// grouped by cwd with the most-used directories first (a stable sort, so
+    /// the base order is preserved within each directory group).
     pub fn column(&self, column: Column) -> Vec<&Agent> {
         let base = match column {
             Column::RequiresAction => self.in_state(State::RequiresAction),
@@ -270,13 +296,20 @@ impl Board {
             Column::Running => self.in_state(State::Running),
             Column::Dormant => self.dormant(),
         };
-        if self.filter.trim().is_empty() {
+        let mut list: Vec<&Agent> = if self.filter.trim().is_empty() {
             base
         } else {
             base.into_iter()
                 .filter(|a| a.matches_query(&self.filter))
                 .collect()
-        }
+        };
+        let counts = self.cwd_occurrences();
+        list.sort_by(|a, b| {
+            let (ca, cb) = (a.cwd.as_deref().unwrap_or(""), b.cwd.as_deref().unwrap_or(""));
+            let (na, nb) = (counts.get(ca).copied().unwrap_or(0), counts.get(cb).copied().unwrap_or(0));
+            nb.cmp(&na).then_with(|| ca.cmp(cb))
+        });
+        list
     }
 
     /// The agent count of each column, in `Column::ALL` order. Drives
@@ -342,6 +375,42 @@ mod tests {
             Some(State::RequiresAction)
         );
         assert_eq!(State::from_wire("bogus"), None);
+    }
+
+    #[test]
+    fn matches_query_is_fuzzy_and_searches_the_label() {
+        let mut a = agent("/s/pi-1.sock", State::Idle);
+        a.title = Some("Fix parser".into());
+        a.cwd = Some("/home/me/corral".into());
+        a.label = "opencode".into();
+        // Non-contiguous subsequence of the title matches.
+        assert!(a.matches_query("fxprs"));
+        // The harness label is part of the haystack, fuzzily too.
+        assert!(a.matches_query("opencode"));
+        assert!(a.matches_query("ocod"));
+        // Order matters (subsequence, not anagram) and absent chars fail.
+        assert!(!a.matches_query("edocnepo"));
+        assert!(!a.matches_query("zzz"));
+    }
+
+    #[test]
+    fn column_groups_by_cwd_most_used_first() {
+        let mut b = Board::default();
+        let mk = |sock: &str, cwd: &str| {
+            let mut a = agent(sock, State::Idle);
+            a.cwd = Some(cwd.into());
+            a
+        };
+        b.apply(Update::Upsert(mk("/s/pi-1.sock", "/b")));
+        b.apply(Update::Upsert(mk("/s/pi-2.sock", "/a")));
+        b.apply(Update::Upsert(mk("/s/pi-3.sock", "/a")));
+        let cwds: Vec<&str> = b
+            .column(Column::Idle)
+            .iter()
+            .map(|a| a.cwd.as_deref().unwrap())
+            .collect();
+        // /a occurs twice, so its group sorts ahead of the single /b.
+        assert_eq!(cwds, vec!["/a", "/a", "/b"]);
     }
 
     #[test]

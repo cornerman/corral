@@ -45,8 +45,9 @@ harness-neutral convention, specified independently of pi and corral in
   selected agent (focus a live window, or resume a dormant session by running
   the record's `resumeCommand`); Shift+Enter spawns a fresh agent of the
   selected card's kind in its cwd; `/` focuses a prominent centered filter box
-  that narrows the cards by their whole content (title / cwd / activity /
-  state) — while filtering, Enter goes and Shift+Enter spawns directly. Window
+  that fuzzily narrows the cards by their content (title / cwd / activity /
+  state / harness label), grouped by cwd with the most-used directories first
+  — while filtering, Enter goes and Shift+Enter spawns directly. Window
   focus is auto-selected by session (EWMH on X11; sway/Hyprland/niri on
   Wayland) and agent spawn resolves a terminal from the environment
   (`xdg-terminal-exec` → `$CORRAL_TERMINAL` → `$TERMINAL`), both behind traits

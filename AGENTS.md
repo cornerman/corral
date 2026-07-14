@@ -129,9 +129,10 @@ ratatui / iced, the daemon keeps ksni).
   - `src/model.rs` — `Agent`/`Board`/`Column`/`State` (the ACP v2
     `state_update` vocabulary; `Column::ALL` is the single source of column
     order). `Board.set_filter` + `Agent::matches_query` power the inline content
-    filter (matches title / cwd / activity / state), applied inside `column` so
-    counts, selection, rendering and hit-testing all narrow together. Pure,
-    unit-tested.
+    filter (a fuzzy subsequence match over title / cwd / activity / state /
+    harness label), applied inside `column`, which also groups cards by cwd
+    with the most-used directories first, so counts, selection, rendering and
+    hit-testing all narrow and order together. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per live socket: seeds from
     `initialize` + `session/list`, then streams `state_update`, `tool_call`
     (summarized to a card activity string), and title updates; EOF = gone.
@@ -378,8 +379,9 @@ message/tool updates) is ACP v1.
   live window, resume a dormant session by running its `resumeCommand`);
   Shift+Enter spawns a fresh agent of the selected card's kind (its
   `spawnCommand`) in the selected agent's cwd; `/` focuses a prominent
-  centered filter box that narrows the cards by their whole content (title /
-  cwd / activity / state); while filtering, Enter goes and Shift+Enter spawns
+  centered filter box that fuzzily narrows the cards by their content (title /
+  cwd / activity / state / harness label), cards grouped by cwd with the
+  most-used directories first; while filtering, Enter goes and Shift+Enter spawns
   directly, arrows still navigate, Esc clears then exits;
   `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant
