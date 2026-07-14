@@ -192,6 +192,7 @@ mod tests {
             resume_command: None,
             activity: None,
             gui: false,
+            message_flag: None,
         }
     }
 

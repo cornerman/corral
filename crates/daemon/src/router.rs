@@ -20,7 +20,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use corral_core::discovery::RegistryEntry;
-use corral_core::launch::Launcher;
+use corral_core::launch::{LaunchMode, Launcher};
 use corral_core::prompt;
 
 use crate::mailbox::{is_whitelisted, whitelist_add, Message, Target};
@@ -173,9 +173,9 @@ fn deliver_dir(
     // caller-chosen `label` wins (resolved from any record of that kind, so it
     // works even where the kind never ran), else reuse any record for this dir.
     // A dir corral has never seen an agent in, with no label given, has no
-    // known kind and cannot be spawned into. The record's gui flag rides along
-    // so a GUI kind is launched directly.
-    let (command, gui) = match msg.label.as_deref() {
+    // known kind and cannot be spawned into. The record's launch mode (gui +
+    // message flag) rides along so a GUI kind launches directly.
+    let (command, mode) = match msg.label.as_deref() {
         Some(label) => match spawn_command_for_label(entries, label) {
             Some(c) => c,
             None => return format!("route spawn: unknown label {label}"),
@@ -185,35 +185,35 @@ fn deliver_dir(
             None => return format!("route: no known agent kind for {dir} (never announced there)"),
         },
     };
-    match launcher.launch(Path::new(dir), command, Some(&msg.tagged()), gui) {
+    match launcher.launch(Path::new(dir), command, Some(&msg.tagged()), &mode) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
     }
 }
 
 /// A spawn command announced by any record whose cwd is `dir`, live or dormant,
-/// with that record's gui launch mode (so a GUI agent is launched directly).
+/// with that record's launch mode (so a GUI agent is launched directly).
 fn spawn_command_for_dir<'a>(
     entries: &'a [RegistryEntry],
     dir: &str,
-) -> Option<(&'a [String], bool)> {
+) -> Option<(&'a [String], LaunchMode)> {
     entries
         .iter()
         .filter(|e| e.cwd.as_deref() == Some(dir))
-        .find_map(|e| e.spawn_command.as_deref().map(|c| (c, e.gui)))
+        .find_map(|e| e.spawn_command.as_deref().map(|c| (c, e.launch_mode())))
 }
 
 /// A spawn command from any record whose `label` matches, in any directory, so
 /// a caller-chosen kind can be started even in a dir that never hosted it,
-/// with that record's gui launch mode.
+/// with that record's launch mode.
 fn spawn_command_for_label<'a>(
     entries: &'a [RegistryEntry],
     label: &str,
-) -> Option<(&'a [String], bool)> {
+) -> Option<(&'a [String], LaunchMode)> {
     entries
         .iter()
         .filter(|e| e.label.as_deref() == Some(label))
-        .find_map(|e| e.spawn_command.as_deref().map(|c| (c, e.gui)))
+        .find_map(|e| e.spawn_command.as_deref().map(|c| (c, e.launch_mode())))
 }
 
 /// Session target: deliver to that exact agent over its socket if live, else
@@ -236,7 +236,7 @@ fn deliver_session(
     }
     match (&entry.cwd, &entry.resume_command) {
         (Some(cwd), Some(command)) => {
-            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), entry.gui) {
+            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), &entry.launch_mode()) {
                 Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
                 Err(e) => format!("route resume: {e}"),
             }
@@ -289,7 +289,7 @@ mod tests {
             _cwd: &Path,
             command: &[String],
             message: Option<&str>,
-            _gui: bool,
+            _mode: &LaunchMode,
         ) -> Result<(), String> {
             if command.iter().any(|a| a == "--session") {
                 self.resumes.set(self.resumes.get() + 1);
@@ -329,6 +329,7 @@ mod tests {
             label: Some(label.into()),
             last_seen: None,
             gui: false,
+            message_flag: None,
         }
     }
 
@@ -345,6 +346,7 @@ mod tests {
             label: Some("pi".into()),
             last_seen: None,
             gui: false,
+            message_flag: None,
         }
     }
 
@@ -359,6 +361,7 @@ mod tests {
             label: Some("pi".into()),
             last_seen: None,
             gui: false,
+            message_flag: None,
         }
     }
 
@@ -557,6 +560,7 @@ mod tests {
             label: Some("pi".into()),
             last_seen: None,
             gui: false,
+            message_flag: None,
         }];
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();

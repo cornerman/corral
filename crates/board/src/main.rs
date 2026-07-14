@@ -32,7 +32,7 @@ mod ui;
 
 use corral_core::discovery::{self, RegistryEntry};
 use corral_core::focus::{self, WindowFocuser};
-use corral_core::launch::{self, Launcher, TerminalLauncher};
+use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Board, Origin, Update};
 use corral_core::prompt;
 use corral_core::{model, nav, paths, watch};
@@ -85,8 +85,8 @@ enum ComposeTarget {
     Dormant {
         cwd: String,
         resume_command: Vec<String>,
-        /// Launch mode of the resumed agent (direct for a GUI kind).
-        gui: bool,
+        /// Launch options of the resumed agent (gui + message flag).
+        mode: LaunchMode,
     },
 }
 
@@ -137,10 +137,10 @@ fn handle_overlay(
                         ComposeTarget::Dormant {
                             cwd,
                             resume_command,
-                            gui,
+                            mode,
                         } => {
                             *status =
-                                match launcher.launch(Path::new(cwd), resume_command, Some(text), *gui) {
+                                match launcher.launch(Path::new(cwd), resume_command, Some(text), mode) {
                                     Ok(()) => format!("resuming {} to deliver", c.label),
                                     Err(e) => format!("resume: {e}"),
                                 };
@@ -539,7 +539,7 @@ fn activate(
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
             (Some(cwd), Some(command)) => launcher
-                .launch(Path::new(cwd), command, None, agent.gui)
+                .launch(Path::new(cwd), command, None, &agent.launch_mode())
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume command".into()),
         },
@@ -555,7 +555,7 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
             (Some(cwd), Some(command)) => Some(ComposeTarget::Dormant {
                 cwd: cwd.clone(),
                 resume_command: command.clone(),
-                gui: a.gui,
+                mode: a.launch_mode(),
             }),
             _ => None,
         },
@@ -582,7 +582,7 @@ fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &m
         return false;
     };
     let cwd = launch::default_cwd(agent.cwd.as_deref());
-    match launcher.launch(&cwd, command, None, agent.gui) {
+    match launcher.launch(&cwd, command, None, &agent.launch_mode()) {
         Ok(()) => true,
         Err(e) => {
             *status = format!("spawn: {e}");

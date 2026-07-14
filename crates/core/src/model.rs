@@ -98,9 +98,22 @@ pub struct Agent {
     /// on both dormant and live agents, so spawn/resume beside any card picks
     /// the right launch mode.
     pub gui: bool,
+    /// Optional CLI flag carrying a launch message (from the record's
+    /// `messageFlag`, e.g. `"--message"`). `None` means the message is passed
+    /// positionally. Stamped from the record like `gui`.
+    pub message_flag: Option<String>,
 }
 
 impl Agent {
+    /// The launch options this agent's kind declared (gui + message flag), for
+    /// `Launcher::launch`.
+    pub fn launch_mode(&self) -> crate::launch::LaunchMode {
+        crate::launch::LaunchMode {
+            gui: self.gui,
+            message_flag: self.message_flag.clone(),
+        }
+    }
+
     /// Whether this agent's card content fuzzily matches a filter query: every
     /// whitespace-separated term must appear (case-insensitive) as an in-order
     /// subsequence of the title, cwd, activity, state word, or harness label.
@@ -248,6 +261,7 @@ impl Board {
                 // Dormant records carry no live activity.
                 activity: None,
                 gui: e.gui,
+                message_flag: e.message_flag.clone(),
             })
             .collect();
 
@@ -259,6 +273,7 @@ impl Board {
                 if let Some(e) = entries.iter().find(|e| e.session_id == sid) {
                     a.spawn_command = e.spawn_command.clone();
                     a.gui = e.gui;
+                    a.message_flag = e.message_flag.clone();
                 }
             }
         }
@@ -357,6 +372,7 @@ mod tests {
             resume_command: None,
             activity: None,
             gui: false,
+            message_flag: None,
         }
     }
 
@@ -375,6 +391,7 @@ mod tests {
             label: Some("pi".into()),
             last_seen: Some(last_seen.into()),
             gui: false,
+            message_flag: None,
         }
     }
 
@@ -396,11 +413,17 @@ mod tests {
             label: Some("quine".into()),
             last_seen: None,
             gui: true,
+            message_flag: Some("--message".into()),
         };
         board.sync_registry(&[rec], &HashSet::new());
         let dormant = board.dormant();
         assert_eq!(dormant.len(), 1);
         assert!(dormant[0].gui, "dormant quine card must carry gui=true");
+        assert_eq!(
+            dormant[0].message_flag.as_deref(),
+            Some("--message"),
+            "dormant quine card must carry the message flag"
+        );
     }
 
     #[test]

@@ -653,6 +653,7 @@ mod tests {
             resume_command: None,
             activity: None,
             gui: false,
+            message_flag: None,
         }));
     }
 
@@ -708,6 +709,7 @@ mod card_tests {
             resume_command: None,
             activity: activity.map(String::from),
             gui: false,
+            message_flag: None,
         }
     }
 

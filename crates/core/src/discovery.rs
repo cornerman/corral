@@ -45,6 +45,23 @@ pub struct RegistryEntry {
     /// means terminal-wrapped, so every existing pi/opencode record keeps its
     /// behavior; only an explicit `true` opts into direct launch.
     pub gui: bool,
+    /// Optional CLI flag that carries an initial message on launch (e.g.
+    /// `"--message"` for quine). When set, a consumer passes the message as
+    /// this flag's value; when absent, the message is a trailing positional
+    /// argument (see §2a). Lets a flag-based agent take a launch message
+    /// without a positional.
+    pub message_flag: Option<String>,
+}
+
+impl RegistryEntry {
+    /// The launch options this record declared (gui + message flag), for
+    /// `Launcher::launch`.
+    pub fn launch_mode(&self) -> crate::launch::LaunchMode {
+        crate::launch::LaunchMode {
+            gui: self.gui,
+            message_flag: self.message_flag.clone(),
+        }
+    }
 }
 
 /// Parse one registry JSON document. Requires `sessionId`; everything else is
@@ -71,6 +88,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         label: str_field("label"),
         last_seen: str_field("lastSeen"),
         gui: v.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
+        message_flag: str_field("messageFlag"),
     })
 }
 
@@ -187,6 +205,15 @@ mod tests {
     fn rejects_record_without_session_id() {
         assert_eq!(parse_registry_json(r#"{"cwd":"/tmp"}"#), None);
         assert_eq!(parse_registry_json("not json"), None);
+    }
+
+    #[test]
+    fn message_flag_parses_when_present_else_none() {
+        let e = parse_registry_json(r#"{"sessionId":"s1","messageFlag":"--message"}"#).unwrap();
+        assert_eq!(e.message_flag.as_deref(), Some("--message"));
+        // Absent -> None (positional message, the default for pi/opencode).
+        let e = parse_registry_json(r#"{"sessionId":"s2"}"#).unwrap();
+        assert_eq!(e.message_flag, None);
     }
 
     #[test]
