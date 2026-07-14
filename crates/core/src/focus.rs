@@ -29,21 +29,66 @@ pub trait WindowFocuser {
 /// session that is not sway currently has no focuser; other compositors drop
 /// in behind this seam. Selection is by environment: `$WAYLAND_DISPLAY` marks
 /// a Wayland session, `$DISPLAY` an X11 one.
-pub fn detect() -> Box<dyn WindowFocuser> {
-    let has = |k: &str| std::env::var_os(k).is_some();
-    // X11 first: EWMH covers every X11 WM (incl. KDE/GNOME on X11) by pid.
-    if !has("WAYLAND_DISPLAY") && has("DISPLAY") {
-        return Box::new(X11Focuser);
-    }
-    // Wayland: each compositor's own IPC is the only path that reports pid and
-    // switches workspaces. Chosen by the marker env var each one exports.
+#[derive(Debug, PartialEq, Eq)]
+enum FocuserKind {
+    X11,
+    Sway,
+    Hyprland,
+    Niri,
+    /// No adapter for this environment (e.g. GNOME/KDE on Wayland).
+    Unsupported,
+}
+
+/// Classify the session from environment-variable presence (pure). Wayland
+/// compositor markers win first (a compositor also exports `DISPLAY` for
+/// Xwayland, but its windows are Wayland-native, so EWMH would not find them);
+/// a pure X11 session (no `$WAYLAND_DISPLAY`) uses EWMH; anything else
+/// (GNOME/KDE Wayland, headless) has no adapter.
+fn detect_kind(has: impl Fn(&str) -> bool) -> FocuserKind {
     if has("HYPRLAND_INSTANCE_SIGNATURE") {
-        return Box::new(HyprlandFocuser);
+        FocuserKind::Hyprland
+    } else if has("NIRI_SOCKET") {
+        FocuserKind::Niri
+    } else if has("SWAYSOCK") {
+        FocuserKind::Sway
+    } else if !has("WAYLAND_DISPLAY") && has("DISPLAY") {
+        FocuserKind::X11
+    } else {
+        FocuserKind::Unsupported
     }
-    if has("NIRI_SOCKET") {
-        return Box::new(NiriFocuser);
+}
+
+pub fn detect() -> Box<dyn WindowFocuser> {
+    match detect_kind(|k| std::env::var_os(k).is_some()) {
+        FocuserKind::X11 => Box::new(X11Focuser),
+        FocuserKind::Sway => Box::new(SwayFocuser),
+        FocuserKind::Hyprland => Box::new(HyprlandFocuser),
+        FocuserKind::Niri => Box::new(NiriFocuser),
+        FocuserKind::Unsupported => Box::new(UnsupportedFocuser),
     }
-    Box::new(SwayFocuser)
+}
+
+/// The focuser for a session corral has no adapter for: every operation fails
+/// loud with a message the shell surfaces in its status line, rather than
+/// silently guessing a compositor. GNOME/KDE on Wayland land here (they need a
+/// Shell extension / KWin script); they focus fine under X11.
+pub struct UnsupportedFocuser;
+
+impl UnsupportedFocuser {
+    fn err() -> String {
+        "no window focuser for this session (supported: X11, sway, Hyprland, niri; \
+         not GNOME/KDE on Wayland)"
+            .into()
+    }
+}
+
+impl WindowFocuser for UnsupportedFocuser {
+    fn focus(&self, _agent: &Agent) -> Result<(), String> {
+        Err(Self::err())
+    }
+    fn close(&self, _agent: &Agent) -> Result<(), String> {
+        Err(Self::err())
+    }
 }
 
 pub struct SwayFocuser;
@@ -437,5 +482,27 @@ mod tests {
         pids.clear();
         pids.insert(999);
         assert_eq!(entry_for_pid(niri.as_array().unwrap(), &pids), None);
+    }
+
+    #[test]
+    fn detect_kind_covers_all_sessions() {
+        let with = |present: &'static [&'static str]| move |k: &str| present.contains(&k);
+        // Wayland compositor markers win (even alongside DISPLAY from Xwayland).
+        assert_eq!(
+            detect_kind(with(&["HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY", "DISPLAY"])),
+            FocuserKind::Hyprland
+        );
+        assert_eq!(detect_kind(with(&["NIRI_SOCKET", "WAYLAND_DISPLAY"])), FocuserKind::Niri);
+        assert_eq!(detect_kind(with(&["SWAYSOCK", "WAYLAND_DISPLAY"])), FocuserKind::Sway);
+        // Pure X11 session.
+        assert_eq!(detect_kind(with(&["DISPLAY"])), FocuserKind::X11);
+        // GNOME/KDE Wayland: WAYLAND_DISPLAY but no known marker -> unsupported
+        // (DISPLAY from Xwayland must not fool us into EWMH).
+        assert_eq!(
+            detect_kind(with(&["WAYLAND_DISPLAY", "DISPLAY"])),
+            FocuserKind::Unsupported
+        );
+        // Headless / nothing.
+        assert_eq!(detect_kind(with(&[])), FocuserKind::Unsupported);
     }
 }

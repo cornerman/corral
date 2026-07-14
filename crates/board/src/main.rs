@@ -31,7 +31,7 @@ mod ui;
 
 use corral_core::discovery::{self, RegistryEntry};
 use corral_core::focus::{self, WindowFocuser};
-use corral_core::launch::{self, KittyLauncher, Launcher};
+use corral_core::launch::{self, TerminalLauncher, Launcher};
 use corral_core::model::{Board, Origin, Update};
 use corral_core::prompt;
 use corral_core::{model, nav, paths, watch};
@@ -152,7 +152,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
     // EWMH on X11, sway on Wayland (until other Wayland focusers land).
     let focuser = focus::detect();
-    let launcher = KittyLauncher;
+    let launcher = TerminalLauncher;
 
     let mut board = Board::default();
     let mut known: HashSet<PathBuf> = HashSet::new();

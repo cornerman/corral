@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use corral_core::focus::{self, WindowFocuser};
-use corral_core::launch::{self, KittyLauncher, Launcher};
+use corral_core::launch::{self, TerminalLauncher, Launcher};
 use corral_core::model::{Agent, Column, Origin, State};
 use corral_core::{engine::Engine, nav, paths, prompt};
 
@@ -50,7 +50,7 @@ enum Act {
 pub struct Dashboard {
     engine: Engine,
     focuser: Box<dyn WindowFocuser>,
-    launcher: KittyLauncher,
+    launcher: TerminalLauncher,
     dir: PathBuf,
     filter: String,
     /// Flat selection index across the (filtered) columns, TUI-style.
@@ -69,7 +69,7 @@ impl Dashboard {
         Self {
             engine: Engine::new(dir.clone()),
             focuser: focus::detect(),
-            launcher: KittyLauncher,
+            launcher: TerminalLauncher,
             dir,
             filter: String::new(),
             selected: 0,

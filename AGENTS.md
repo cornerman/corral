@@ -99,20 +99,26 @@ ratatui / egui, the daemon keeps ksni).
     record, and resolve a live record to its socket (parsing the
     `<label>-<pid>.sock` filename). Liveness is read straight from the record
     (`socket` set = live, cleared = dormant). Pure, unit-tested.
-  - `src/launch.rs` — `Launcher` seam. `KittyLauncher::launch(cwd, command,
-    message)` runs `setsid --fork kitty --directory <cwd> -e <command…>`, where
-    `command` is the argv the registry record carried (`spawnCommand` for a
-    fresh session, `resumeCommand` to resume an exact one). corral names no
-    agent kind: the command rides in the record, so the board launches whatever
-    kind the selected card is (pi, opencode, …). pi's `--session` grammar lives
-    in the announce extension, not here. `setsid --fork` detaches the window
-    (survives the launcher exiting, no zombie, and — since it is not a
-    descendant — the board's focus parent-walk cannot climb into corral's own
-    window). An optional initial `message` is appended as the final positional
-    arg (space-guarding a leading `-`/`@` as a generic CLI-safety convention),
-    so a message is delivered atomically at launch; `with_message` is
-    unit-tested. `default_cwd` takes a plain cwd (not an `Agent`) so the crate
-    stays free of the board's model.
+  - `src/launch.rs` — `Launcher` seam. `TerminalLauncher::launch(cwd, command,
+    message)` runs `setsid --fork <terminal…> <command…>` rooted at `cwd` via
+    the child's working directory (no terminal-specific `--directory` flag),
+    where `command` is the argv the registry record carried (`spawnCommand`
+    for a fresh session, `resumeCommand` to resume an exact one). corral names
+    neither the agent kind (the command rides in the record, so the board
+    launches whatever kind the selected card is — pi, opencode, …; pi's
+    `--session` grammar lives in the announce extension) nor the terminal:
+    `resolve_terminal` picks one from the environment by a ladder —
+    `xdg-terminal-exec` (the freedesktop standard) → `$CORRAL_TERMINAL` (an
+    explicit argv template, e.g. `"alacritty -e"`) → `$TERMINAL -e`; no
+    hardcoded terminal, so if none resolve `launch` errors and the shell shows
+    it. `setsid --fork` detaches the window (survives the launcher exiting, no
+    zombie, and — since it is not a descendant — the focus parent-walk cannot
+    climb into corral's own window). An optional initial `message` is appended
+    as the final positional arg (space-guarding a leading `-`/`@` as a generic
+    CLI-safety convention), so a message is delivered atomically at launch. The
+    pure `resolve_terminal_from` ladder and `with_message` are unit-tested.
+    `default_cwd` takes a plain cwd (not an `Agent`) so the crate stays free of
+    the board's model.
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Used by the board (operator `m`) and the daemon
@@ -156,7 +162,9 @@ ratatui / egui, the daemon keeps ksni).
     sway). All `close` by killing the window pid. The sway tree walk and the
     pid-matching are unit-tested. GNOME/KDE on Wayland have no such pid path (a
     Shell extension / KWin script would be needed) and are unsupported; they
-    focus fine under X11 via EWMH.
+    focus fine under X11 via EWMH; `detect()` returns an `UnsupportedFocuser`
+    there whose `focus`/`close` fail loud (the shell shows the message). The
+    pure `detect_kind` classifier is unit-tested across all sessions.
   - `src/picker.rs` — a directory-grouped fuzzy picker (library module,
     unit-tested). No longer wired to a shell now that both filter inline; kept
     for reuse.

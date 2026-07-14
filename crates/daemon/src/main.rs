@@ -17,7 +17,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use corral_core::discovery;
-use corral_core::launch::KittyLauncher;
+use corral_core::launch::TerminalLauncher;
 use corral_core::paths;
 
 mod control;
@@ -70,7 +70,7 @@ fn main() {
     }
     eprintln!("corrald: serving {}", socket.display());
 
-    let launcher = KittyLauncher;
+    let launcher = TerminalLauncher;
     let mut router = Router::new(whitelist);
     let notifier = NotifySendNotifier;
     // Decisions from the desktop notification's buttons, tagged with the
