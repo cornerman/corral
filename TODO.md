@@ -226,6 +226,35 @@ One per-session file drives discovery, isolation, and resume.
       flagged UNVERIFIED in-file. Verify against installed types on deploy;
       confirm the message-activity payload extraction and the `session.get`
       title shape end-to-end.
+- [ ] End-to-end verify the opencode plugin actually works: install it in a
+      real opencode, confirm the card appears/updates on the board, `m`
+      delivers, tool/message activity renders, and clean teardown makes the
+      record dormant. Not yet run anywhere.
+
+## Extension (corral-claude)
+
+- [x] Third adapter (Claude Code), branch `feat/corral-claude`: since Claude
+      Code has no in-process plugin runtime, a resident `sidecar.ts` (spawned
+      detached by the SessionStart hook) holds the ACP socket and a
+      per-session control socket; a thin `hook.ts` shim bridges each hook event
+      to it. Live delivery via `Stop` decision:block (turn boundary) +
+      `asyncRewake` exit-2 (idle wake); `state_update` native (incl.
+      `Notification[permission_prompt]` -> requires_action). Packaged as a
+      Claude Code plugin (`.claude-plugin/plugin.json` + `hooks/hooks.json`
+      using `${CLAUDE_PLUGIN_ROOT}`, repo-root `marketplace.json`).
+- [ ] End-to-end verify (needs `bun` on PATH + a real Claude Code): install the
+      plugin, start `claude`, confirm the card appears with correct pid/focus,
+      `state_update` tracks running/idle/requires_action, `m` and inter-agent
+      delivery land in the LIVE session (Stop-block and idle asyncRewake paths
+      both), tool activity renders, and SessionEnd + the liveness probe reap
+      the sidecar and make the record dormant. UNVERIFIED in-repo (no bun, no
+      Claude harness): hook payload field names and the block/asyncRewake
+      injection semantics are coded from the hooks reference only.
+- [ ] Confirm the open unknowns in the adapter README: `claude --resume <id>
+      "msg"` accepting a trailing prompt interactively (dormant delivery);
+      exact `Notification` matcher values and `last_assistant_message` on
+      `Stop`; and that `asyncRewake` exit-2 wakes a fully idle terminal TUI.
+- [ ] Merge `feat/corral-claude` once verified (rebase, no merge commit).
 
 ## Future Features
 
