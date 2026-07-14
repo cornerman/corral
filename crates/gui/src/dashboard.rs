@@ -142,6 +142,10 @@ impl Board {
             dormant_ages: HashMap::new(),
             viewports: [None; 4],
         };
+        // Scan the registry synchronously at boot so cards appear immediately;
+        // otherwise the first tick is ~500ms away and the window opens empty
+        // (felt on every ephemeral launcher summon). Live state seeds after.
+        b.engine.tick();
         b.refresh();
         let boot = if launcher_mode {
             b.filtering = true;
