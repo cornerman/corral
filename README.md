@@ -39,11 +39,14 @@ harness-neutral convention, specified independently of pi and corral in
   registry (launch as many as you like). Scans
   `$HOME/.corral/registry/`, holds a live watch connection per live socket, and columns
   each by Requires Action / Idle / Running / Dormant. Enter goes to the
-  selected agent (focus a live window via sway, or resume a dormant session);
-  Shift+Enter spawns a new agent via kitty in its cwd; `/` focuses a prominent
-  centered filter box that narrows the cards by their whole content (title /
-  cwd / activity / state) — while filtering, Enter goes and Shift+Enter spawns
-  directly. Window focus and agent spawn sit behind traits
+  selected agent (focus a live window, or resume a dormant session by running
+  the record's `resumeCommand`); Shift+Enter spawns a fresh agent of the
+  selected card's kind in its cwd; `/` focuses a prominent centered filter box
+  that narrows the cards by their whole content (title / cwd / activity /
+  state) — while filtering, Enter goes and Shift+Enter spawns directly. Window
+  focus is auto-selected by session (EWMH on X11; sway/Hyprland/niri on
+  Wayland) and agent spawn resolves a terminal from the environment
+  (`xdg-terminal-exec` → `$CORRAL_TERMINAL` → `$TERMINAL`), both behind traits
   (`WindowFocuser`, `Launcher`), so the compositor and terminal are swappable
   and the core never names them. `m` messages the selected agent directly and
   ungated (the operator is trusted).
@@ -62,7 +65,7 @@ harness-neutral convention, specified independently of pi and corral in
   quit) with a `notify-send` mirror. Run it under a systemd user service. The
   board and the daemon share only the registry and never talk to each other.
 - **corral-core** (`crates/core`) — the shared lib (registry discovery, prompt
-  delivery, the kitty launch seam, on-disk paths), so the board and the daemon
+  delivery, the terminal launch seam, window-focus seam, on-disk paths), so the board and the daemon
   reuse one implementation without linking each other's UI dependencies.
 - **corral-announce** (pi extension, `extensions/corral-announce.ts`) —
   announces an interactive pi session via the registry, no wrapper needed. The

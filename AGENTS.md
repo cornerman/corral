@@ -65,8 +65,8 @@ your terminal (pi, interactive TUI)              another terminal
     |  binds <cwd>/.corral/pi-<pid>.sock              |  one watch connection per live socket:
     |    on session_start                            |    initialize + session/list (seed)
     |  serves ACP beside the live TUI:               |    streams state_update -> column
-    |    initialize, session/list, prompt, cancel    |  Enter -> focus (sway) or resume
-    |  broadcasts activity + state_update            |  shift+enter -> spawn agent (kitty)
+    |    initialize, session/list, prompt, cancel    |  Enter -> focus or resume
+    |  broadcasts activity + state_update            |  shift+enter -> spawn agent (terminal)
     |  clears socket + unlinks on session_shutdown   |  m -> send prompt DIRECT (ungated,
     |                                                |       operator is trusted)
     |
@@ -143,8 +143,8 @@ ratatui / egui, the daemon keeps ksni).
   - `src/nav.rs` — pure selection math: move within a column or across columns
     over the per-column counts. Unit-tested.
   - `src/focus.rs` — `WindowFocuser` seam, with `focus::detect()` picking an
-    implementation by session: EWMH on X11, sway on Wayland (until other
-    Wayland focusers land). `X11Focuser` (via `x11rb`, no libX11) finds the
+    implementation by session: EWMH on X11; sway / Hyprland / niri on Wayland.
+    `X11Focuser` (via `x11rb`, no libX11) finds the
     window by matching `_NET_WM_PID` against the agent's pid and its ancestors
     (the terminal owning the window is an ancestor of the socket pid), then
     activates it with `_NET_ACTIVE_WINDOW` (source indication 2 = pager, and a
@@ -254,8 +254,16 @@ ratatui / egui, the daemon keeps ksni).
 - `extensions/corral-announce.ts` — pi extension announcing an interactive pi
   session: on `session_start` it writes the registry record and binds the
   workdir-local socket; on `session_shutdown` it clears the record's `socket`
-  and unlinks. The record's `lastSeen` refreshes on `turn_end` and its `title`
-  on rename. The title broadcasts whenever it changes, on rename and on
+  and unlinks. It writes `spawnCommand` (`["pi"]`) and `resumeCommand`
+  (`["pi","--session",<sessionId>]`) so corral launches/resumes it without
+  naming pi; `resumeCommand` is gated on the session file actually existing, so
+  an empty session pi never persisted is not advertised as resumable (else
+  resume hits `No session found` and the window closes). Registry writes are
+  crash-safe: `stop()` clears the socket by rewriting the known registry file
+  with no ctx, and `writeRegistry` is guarded, because on a resume/replacement
+  the captured ctx goes stale and touching `ctx.sessionManager` would otherwise
+  throw and kill pi. The record's `lastSeen` refreshes on `turn_end` and its
+  `title` on rename. The title broadcasts whenever it changes, on rename and on
   `turn_end` (so the first-user-message fallback title reaches clients that
   connected before it existed, not only explicit renames). Serves `initialize`, `session/list` (id, title,
   cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
@@ -364,7 +372,8 @@ message/tool updates) is ACP v1.
   (override `$CORRAL_CONTROL_SOCKET`); refuses to start if another corrald is
   already live on it. Surfaces the approval gate on a `ksni` tray (Allow once /
   Allow always / Deny, plus open the board and quit) and a `notify-send`
-  mirror. Uses `kitty` to spawn/resume delivery targets. Reads the same registry
+  mirror. Uses the environment-resolved terminal to spawn/resume delivery
+  targets. Reads the same registry
   as the board.
 - pi extension `corral-announce` — see Extensions above.
 - Registry records in `$HOME/.corral/registry/` and unix sockets in each
