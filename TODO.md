@@ -133,6 +133,27 @@ One per-session file drives discovery, isolation, and resume.
       loop and `age_label`/`prune`; converge it onto `core::engine`, or retire
       the TUI once the GUI is the daily driver. Duplication is temporary and
       deliberate (kept the working TUI untouched during the GUI build).
+- [x] Launcher mode (`corral-gui --launcher`): ephemeral rofi-style popup.
+      Boots focused on the filter; go (Enter/focus) and new (Shift+Enter/spawn)
+      exit the process on success (m/d keep it open, q exits); sets window
+      `app_id`/X11 class `corral-launcher`. Placement is a WM float/center rule
+      keyed on that app_id (owns-behavior / WM-owns-visibility split), NOT
+      self-positioned. Chosen deliberately (option D) to test whether a WM rule
+      is good enough before investing in a real overlay.
+- [ ] OPEN — self-floating popup like fuzzel/rofi. iced cannot do it: on
+      Wayland a normal `xdg-toplevel` may not request float/center/popup
+      (placement is the compositor's job by protocol), and fuzzel/wofi are not
+      normal windows — they use `wlr-layer-shell`, which iced/winit does not
+      speak. On X11 a window-type hint (DIALOG) would auto-float, but iced 0.13
+      exposes only `application_id` + `override_redirect`. If the WM-rule path
+      proves insufficient, the real options are: (C) the `iced_layershell`
+      crate (bolt layer-shell onto iced; different app entry point;
+      wlroots-only), or switch toolkit to **gtk4 + gtk4-layer-shell** (proper
+      native overlay, Pango text, system-provided deps instead of the compiled
+      wgpu/vulkan stack, does launcher + dashboard). REJECTED: delegating the
+      launcher to `fuzzel --dmenu` (zero toolkit) — we want our own UI. This
+      also reopens the bigger question of whether iced's GPU stack earns its
+      weight versus a native toolkit.
 
 ## Board Polish
 

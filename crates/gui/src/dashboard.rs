@@ -52,6 +52,9 @@ fn filter_id() -> text_input::Id {
 pub enum Message {
     Tick,
     Key(keyboard::Key, keyboard::Modifiers),
+    /// Escape, delivered by a dedicated listener that sees it even when the
+    /// focused filter field captures it (iced's TextInput eats Escape).
+    Escape,
     Scrolled(usize, scrollable::Viewport),
     FilterInput(String),
     FilterSubmit,
@@ -93,11 +96,11 @@ pub struct Board {
     last_theme_check: Instant,
     filter: String,
     filtering: bool,
+    /// Launcher mode (--launcher): boot focused on the filter and exit the
+    /// process after go / new (ephemeral rofi-style popup; WM respawns it).
+    launcher_mode: bool,
     /// Flat selection index across the (filtered) columns, TUI-style.
     selected: usize,
-    /// Re-select this agent (by session id, socket) once the columns rebuild,
-    /// so clearing the filter keeps the selection despite the index shift.
-    reselect: Option<(Option<String>, PathBuf)>,
     status: String,
     compose: Option<Compose>,
     // Snapshot rebuilt each tick / filter change; view and actions read it.
@@ -110,7 +113,9 @@ pub struct Board {
 }
 
 impl Board {
-    pub fn new() -> Self {
+    /// Build the board and its boot task. In launcher mode the boot task
+    /// focuses the filter so you can type to narrow immediately.
+    pub fn new(launcher_mode: bool) -> (Self, Task<Message>) {
         let dir = paths::registry_dir().expect("registry dir (set $HOME or $CORRAL_REGISTRY_DIR)");
         let mut b = Board {
             engine: Engine::new(dir.clone()),
@@ -121,8 +126,8 @@ impl Board {
             last_theme_check: Instant::now(),
             filter: String::new(),
             filtering: false,
+            launcher_mode,
             selected: 0,
-            reselect: None,
             status: String::new(),
             compose: None,
             columns: vec![Vec::new(); Column::ALL.len()],
@@ -132,7 +137,13 @@ impl Board {
             viewports: [None; 4],
         };
         b.refresh();
-        b
+        let boot = if launcher_mode {
+            b.filtering = true;
+            text_input::focus(filter_id())
+        } else {
+            Task::none()
+        };
+        (b, boot)
     }
 
     pub fn scheme(&self) -> Base16 {
@@ -144,8 +155,8 @@ impl Board {
         }
     }
 
-    /// Rebuild the filtered column snapshot + age maps from the engine, honoring
-    /// any pending re-selection, and clamp the selection.
+    /// Rebuild the filtered column snapshot + age maps from the engine, then
+    /// clamp the selection to the (possibly shrunken) set.
     fn refresh(&mut self) {
         self.in_state = self.engine.in_state_ages();
         self.quiet = self.engine.quiet_ages();
@@ -164,14 +175,6 @@ impl Board {
             })
             .collect();
         let total: usize = self.columns.iter().map(Vec::len).sum();
-        if let Some((sid, sock)) = self.reselect.take() {
-            if let Some(idx) = self.columns.iter().flatten().position(|a| match &sid {
-                Some(_) => a.session_id == sid,
-                None => a.socket_path == sock,
-            }) {
-                self.selected = idx;
-            }
-        }
         if self.selected >= total {
             self.selected = total.saturating_sub(1);
         }
@@ -199,6 +202,7 @@ impl Board {
                 self.filter = s;
                 self.filtering = true;
                 self.refresh();
+                return self.scroll_to_selection();
             }
             Message::FocusFilter => {
                 self.filtering = true;
@@ -216,9 +220,10 @@ impl Board {
                     return self.act_go();
                 }
                 self.selected = idx;
+                return self.scroll_to_selection();
             }
             Message::Go => return self.act_go(),
-            Message::Spawn => self.act_spawn(),
+            Message::Spawn => return self.act_spawn(),
             Message::OpenCompose => {
                 if let Some(a) = self.selected_agent() {
                     self.compose = compose_for(a);
@@ -246,6 +251,7 @@ impl Board {
                 }
             }
             Message::ComposeCancel => self.compose = None,
+            Message::Escape => return self.escape(),
             Message::Key(key, mods) => return self.on_key(key, mods),
             Message::Scrolled(c, vp) => {
                 if let Some(slot) = self.viewports.get_mut(c) {
@@ -256,16 +262,38 @@ impl Board {
         Task::none()
     }
 
+    /// Escape, in stages (never quits — only `q` does). Owns all Escape
+    /// handling so it is reliable even when the focused filter field captures
+    /// the key event:
+    ///   1. compose overlay open -> cancel it;
+    ///   2. filter field focused -> blur it, keeping the filter and selection;
+    ///   3. otherwise -> clear the filter and reset the cursor to the first card.
+    fn escape(&mut self) -> Task<Message> {
+        if self.compose.is_some() {
+            self.compose = None;
+            return Task::none();
+        }
+        if self.filtering {
+            // First Escape: just unfocus, leaving the filter text and cursor.
+            self.filtering = false;
+            // Focus a nonexistent id to blur the filter field.
+            return text_input::focus(text_input::Id::new("corral-blur"));
+        }
+        // Second Escape (field already blurred): clear and reset to the top.
+        self.filter.clear();
+        self.selected = 0;
+        self.refresh();
+        self.scroll_to_selection()
+    }
+
     fn on_key(&mut self, key: keyboard::Key, mods: keyboard::Modifiers) -> Task<Message> {
         use keyboard::key::Named;
         let counts = self.counts();
-        // In the compose overlay, Enter sends and Esc cancels; nothing else.
+        // In the compose overlay, Enter sends; Esc (cancel) is owned by
+        // `escape()` via the dedicated listener; nothing else.
         if self.compose.is_some() {
             if let keyboard::Key::Named(Named::Enter) = key {
                 return self.update(Message::ComposeSend);
-            }
-            if let keyboard::Key::Named(Named::Escape) = key {
-                self.compose = None;
             }
             return Task::none();
         }
@@ -288,29 +316,10 @@ impl Board {
             }
             keyboard::Key::Named(Named::Enter) => {
                 return if mods.shift() {
-                    self.act_spawn();
-                    Task::none()
+                    self.act_spawn()
                 } else {
                     self.act_go()
                 };
-            }
-            keyboard::Key::Named(Named::Escape) => {
-                if !self.filter.is_empty() {
-                    // Clear the filter, remembering the selection so it survives
-                    // the rebuild, then leave filter mode (blur the field).
-                    self.reselect = self
-                        .selected_agent()
-                        .map(|a| (a.session_id.clone(), a.socket_path.clone()));
-                    self.filter.clear();
-                    self.filtering = false;
-                    self.refresh();
-                    return text_input::focus(text_input::Id::new("corral-blur"));
-                } else {
-                    // Empty filter: leave filter mode / blur. Escape never
-                    // quits — only `q` does.
-                    self.filtering = false;
-                    return text_input::focus(text_input::Id::new("corral-blur"));
-                }
             }
             keyboard::Key::Character(c) => match c.as_str() {
                 "j" => self.selected = nav::move_row(self.selected, &counts, true),
@@ -365,17 +374,27 @@ impl Board {
     }
 
     fn act_go(&mut self) -> Task<Message> {
+        let mut ok = false;
         if let Some(a) = self.selected_agent().cloned() {
             self.status = match activate(&a, self.focuser.as_ref(), &self.launcher) {
-                Ok(()) => format!("→ {}", a.title.as_deref().unwrap_or("agent")),
+                Ok(()) => {
+                    ok = true;
+                    format!("→ {}", a.title.as_deref().unwrap_or("agent"))
+                }
                 Err(e) => e,
             };
+        }
+        // Launcher mode: a successful go dismisses the popup (the WM respawns
+        // it on the next summon). An error stays open so its status is seen.
+        if ok && self.launcher_mode {
+            return iced::exit();
         }
         Task::none()
     }
 
-    fn act_spawn(&mut self) {
+    fn act_spawn(&mut self) -> Task<Message> {
         let agent = self.selected_agent().cloned();
+        let mut ok = false;
         self.status = match agent
             .as_ref()
             .and_then(|a| a.spawn_command.as_ref().map(|c| (a, c)))
@@ -383,12 +402,19 @@ impl Board {
             Some((a, command)) => {
                 let cwd = launch::default_cwd(a.cwd.as_deref());
                 match self.launcher.launch(&cwd, command, None) {
-                    Ok(()) => format!("spawned in {}", tilde(&cwd.to_string_lossy())),
+                    Ok(()) => {
+                        ok = true;
+                        format!("spawned in {}", tilde(&cwd.to_string_lossy()))
+                    }
                     Err(e) => format!("spawn: {e}"),
                 }
             }
             None => "spawn: no launchable agent selected".into(),
         };
+        if ok && self.launcher_mode {
+            return iced::exit();
+        }
+        Task::none()
     }
 
     fn dismiss(&self, agent: &Agent) -> String {
@@ -430,6 +456,15 @@ impl Board {
         Subscription::batch([
             iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
             keyboard::on_key_press(|key, mods| Some(Message::Key(key, mods))),
+            // A focused TextInput captures Escape (to blur itself), so
+            // `on_key_press` never sees it; listen at any status for Escape.
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::Escape),
+                _ => None,
+            }),
         ])
     }
 
@@ -516,7 +551,11 @@ impl Board {
                     .color(Color { a: fade, ..dim }),
             ]
             .spacing(8);
-            let mut list = column![].spacing(6);
+            // Right padding reserves the gutter so the scrollbar never
+            // overlays the card's right-aligned kind label.
+            let mut list = column![]
+                .spacing(6)
+                .padding(iced::Padding::ZERO.right(12.0));
             for (j, agent) in self.columns[i].iter().enumerate() {
                 let idx = base + j;
                 let age = card_age(agent, col, &self.in_state, &self.quiet, &self.dormant_ages);
@@ -534,6 +573,19 @@ impl Board {
                     .width(Length::Fill)
                     .height(Length::Fill),
             );
+            // A faint hairline in the gutter separates the columns (the GUI
+            // analogue of the TUI's vertical dividers), reusing the filter's
+            // underline color so the UI has one structural-line tone.
+            if i + 1 < Column::ALL.len() {
+                cols = cols.push(
+                    container(Space::new(Length::Fixed(1.0), Length::Fill)).style(
+                        move |_t| container::Style {
+                            background: Some(Background::Color(underline)),
+                            ..container::Style::default()
+                        },
+                    ),
+                );
+            }
         }
 
         let footer = self.footer(s);
@@ -624,10 +676,13 @@ impl Board {
                 background: Some(Background::Color(accent)),
                 ..container::Style::default()
             });
+        // Every card sits on the elevated surface (base01) so it reads as a
+        // card against the window background (base00); the selected card mixes
+        // in its state accent, so selection is obvious without shifting layout.
         let fill = if selected {
-            Some(Color { a: 0.10, ..accent })
+            mix(s.base[1], accent, 0.22)
         } else {
-            None
+            s.base[1]
         };
         let inner = container(body).padding([8, 10]).width(Length::Fill);
         let card = container(row![bar, inner].spacing(0))
@@ -635,7 +690,7 @@ impl Board {
             .height(Length::Fixed(CARD_H))
             .clip(true)
             .style(move |_t| container::Style {
-                background: fill.map(Background::Color),
+                background: Some(Background::Color(fill)),
                 ..container::Style::default()
             });
         mouse_area(card)
@@ -866,6 +921,16 @@ fn card_age(
 }
 
 /// The accent color for an agent's state, from the active base16 scheme.
+/// Linear blend of two colors (t=0 -> a, t=1 -> b); result is opaque.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: 1.0,
+    }
+}
+
 fn state_color(agent: &Agent, s: &Base16) -> Color {
     match agent.origin {
         Origin::Dormant => s.base[3],
