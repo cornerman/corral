@@ -403,14 +403,28 @@ impl Board {
         let wordmark = container(text("corral").size(15).color(dim))
             .width(Length::Fill)
             .align_y(Alignment::Center);
-        let filter = text_input("type to filter…", &self.filter)
+        // Modern, minimal: no box, just a thin underline (like the TUI and the
+        // old GUI). iced's text_input border is uniform, so the field is drawn
+        // frameless and a 1px line sits beneath it.
+        let underline = s.base[2];
+        let filter_field = text_input("type to filter…", &self.filter)
             .id(filter_id())
             .on_input(Message::FilterInput)
             .on_submit(Message::FilterSubmit)
             .size(18)
-            .width(Length::Fixed(380.0))
-            .padding(6)
-            .style(flat_input(s));
+            .padding(4)
+            .style(bare_input(s));
+        let filter = column![
+            filter_field,
+            container(Space::new(Length::Fill, Length::Fixed(1.0))).style(move |_t| {
+                container::Style {
+                    background: Some(Background::Color(underline)),
+                    ..container::Style::default()
+                }
+            }),
+        ]
+        .width(Length::Fixed(380.0))
+        .spacing(2);
         let status = container(text(&self.status).size(13).color(dim))
             .width(Length::Fill)
             .align_x(Alignment::End);
@@ -423,9 +437,14 @@ impl Board {
         let mut cols = row![].spacing(14).height(Length::Fill);
         for (i, col) in Column::ALL.into_iter().enumerate() {
             let count = self.columns[i].len();
+            // The Dormant column is faded: it holds inactive, resumable records.
+            let fade = if matches!(col, Column::Dormant) { 0.55 } else { 1.0 };
             let header = row![
-                text(col.title()).size(15).color(fg).font(semibold()),
-                text(format!("{count}")).size(15).color(dim),
+                text(col.title())
+                    .size(15)
+                    .color(Color { a: fade, ..fg })
+                    .font(semibold()),
+                text(format!("{count}")).size(15).color(Color { a: fade, ..dim }),
             ]
             .spacing(8);
             let mut list = column![].spacing(6);
@@ -467,9 +486,14 @@ impl Board {
         idx: usize,
     ) -> Element<'a, Message> {
         let selected = idx == self.selected;
-        let dim = s.base[3];
-        let fg = s.base[5];
-        let accent = state_color(agent, s);
+        // Fade the Dormant column's cards (inactive, resumable records).
+        let a = if matches!(col, Column::Dormant) { 0.55 } else { 1.0 };
+        let dim = Color { a, ..s.base[3] };
+        let fg = Color { a, ..s.base[5] };
+        let accent = Color {
+            a,
+            ..state_color(agent, s)
+        };
 
         // Title row: title truncated (clipped) on the left, kind badge right.
         let title = container(
@@ -515,7 +539,9 @@ impl Board {
         // are a fixed height (like the TUI): variable content stays aligned,
         // and a fixed bar height sidesteps `Length::Fill` (illegal inside a
         // scrollable — it makes the content report a fill height and panics).
-        let bar = container(Space::new(Length::Fixed(if selected { 3.0 } else { 2.0 }), 0.0))
+        // Constant width so selecting a card does not shift its content right
+        // (the bar is a layout element here, unlike the egui overlay).
+        let bar = container(Space::new(Length::Fixed(3.0), 0.0))
             .height(Length::Fixed(CARD_H))
             .style(move |_t| container::Style {
                 background: Some(Background::Color(accent)),
@@ -535,7 +561,6 @@ impl Board {
                 background: fill.map(Background::Color),
                 ..container::Style::default()
             });
-        let _ = col;
         mouse_area(card)
             .on_press(Message::CardClicked(idx))
             .interaction(mouse::Interaction::Pointer)
@@ -618,8 +643,30 @@ fn compose_overlay<'a>(compose: &'a Compose, s: &Base16) -> Element<'a, Message>
         .into()
 }
 
-/// Flat text-input style: a faint filled box, thin border, no rounding.
-/// Returns a closure capturing owned colors (no borrow of the scheme).
+/// Frameless text-input style: transparent background, no border (the filter's
+/// underline is drawn separately). Returns a closure capturing owned colors.
+fn bare_input(s: &Base16) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
+    let (dim, fg) = (s.base[3], s.base[5]);
+    let sel = Color {
+        a: 0.35,
+        ..s.accent[Base16::BLUE]
+    };
+    move |_t, _st| text_input::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 0.0.into(),
+        },
+        icon: dim,
+        placeholder: dim,
+        value: fg,
+        selection: sel,
+    }
+}
+
+/// Flat text-input style: a faint filled box, thin border, no rounding (used by
+/// the compose overlay). Returns a closure capturing owned colors.
 fn flat_input(s: &Base16) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
     let (bg, border, dim, fg) = (s.base[1], s.base[2], s.base[3], s.base[5]);
     let sel = Color {
