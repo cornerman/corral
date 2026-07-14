@@ -517,34 +517,48 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		tool: {
 			corral_message_agent: tool({
 				description:
-					"Send a message to another coding-agent session. Address it EITHER by " +
-					"target_dir (reach whoever works in that directory, spawning one if none) " +
-					"OR by target_session (reach that exact agent, resuming it if dormant) — " +
-					"give exactly one. To reply to a message you received, pass its session id " +
-					"(shown as 'session <id>' in the incoming tag) as target_session. Optionally " +
-					"set label (e.g. \"pi\", \"opencode\") to choose which agent kind to start when " +
-					"target_dir has to spawn a fresh one. corral " +
-					"routes it and tags it as coming from you. Fire-and-forget: no reply is awaited.",
+					"Message another coding-agent session and hold a back-and-forth with it. Use it to " +
+					"ask a peer agent a question, hand off a subtask, or answer a message you received.\n\n" +
+					"Addressing — give EXACTLY ONE of:\n" +
+					"• target_session: reach one specific session by its id. This is how you REPLY: an " +
+					"incoming message is tagged '[from agent in <dir> (session <id>)]', so pass that <id> " +
+					"as target_session and your answer lands on the exact agent that wrote to you (never a " +
+					"sibling in the same directory). A dormant session is resumed to receive it.\n" +
+					"• target_dir: reach whoever works in that directory (absolute path), starting a new " +
+					"agent there if none is running.\n\n" +
+					"Replying is expected: delivery is one-way and fire-and-forget — corral does NOT route " +
+					"a response back automatically. If you asked something, wait for the other agent to " +
+					"message you back; if you received a message and a reply would help, send one to its " +
+					"session id. Every message is tagged with your identity so the recipient can reply to you.",
 				args: {
-					target_dir: tool.schema
-						.string()
-						.optional()
-						.describe("Absolute path of the target agent's working directory."),
 					target_session: tool.schema
 						.string()
 						.optional()
-						.describe("Exact session id of the target agent (e.g. to reply to a sender)."),
-					message: tool.schema.string().describe("The message to deliver."),
+						.describe(
+							"Reach this exact session id (resuming it if dormant). Use it to REPLY: it is the " +
+							"<id> from the '[from agent in <dir> (session <id>)]' tag on a message you received.",
+						),
+					target_dir: tool.schema
+						.string()
+						.optional()
+						.describe(
+							"Absolute path: reach whoever works in this directory, starting a new agent there " +
+							"if none is live. Use it to start a conversation when you have no session id yet.",
+						),
+					message: tool.schema.string().describe("The message text to deliver to the other agent."),
 					force_new: tool.schema
 						.boolean()
 						.optional()
-						.describe("With target_dir: spawn a dedicated fresh agent instead of reusing one."),
+						.describe(
+							"With target_dir only: always start a dedicated fresh agent instead of reusing the " +
+							"one already working there.",
+						),
 					label: tool.schema
 						.string()
 						.optional()
 						.describe(
-							'Agent kind (e.g. "pi", "opencode") to start if target_dir spawns a fresh ' +
-							"agent; defaults to that directory's existing kind.",
+							'With target_dir only: which agent kind to start if a fresh agent is spawned ' +
+							'(e.g. "pi", "opencode"). Defaults to the kind already used in that directory.',
 						),
 				},
 				async execute(args: {
