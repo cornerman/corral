@@ -137,7 +137,8 @@ One per-session file drives discovery, isolation, and resume.
       Boots focused on the filter; go (Enter/focus) and new (Shift+Enter/spawn)
       exit the process on success (m/d keep it open, q exits); dismisses on focus
       loss (window Unfocused, guarded on a prior Focus so boot cannot self-close);
-      sets window
+      Escape exits at the final peel stage (compose -> blur -> clear -> quit),
+      in both launcher and normal GUI mode; the TUI board stays q-only; sets window
       `app_id`/X11 class `corral-launcher`. Placement is a WM float/center rule
       keyed on that app_id (owns-behavior / WM-owns-visibility split), NOT
       self-positioned. Chosen deliberately (option D) to test whether a WM rule
