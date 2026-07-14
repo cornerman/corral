@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * corral-claude hook shim: the thin bridge Claude Code runs for each configured
  * hook event (see settings.json). It reads the event JSON on stdin, talks to the
@@ -78,7 +78,7 @@ function spawnSidecar(cwd: string, sessionId: string) {
 		// window (corral's focus walk must not climb into it). PPID here is the
 		// interactive Claude process; pass it so the ACP socket filename carries the
 		// pid corral correlates the window by.
-		const child = spawn("bun", [path.join(HERE, "sidecar.ts")], {
+		const child = spawn("node", [path.join(HERE, "sidecar.ts")], {
 			cwd,
 			detached: true,
 			stdio: "ignore",

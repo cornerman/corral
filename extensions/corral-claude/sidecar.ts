@@ -43,11 +43,12 @@
  * are coded from the Claude Code hooks reference, not exercised. Every field
  * access is guarded and all work is wrapped so the sidecar never crashes.
  *
- * Run: spawned by hook.ts as `bun sidecar.ts` with cwd/sessionId/claudePid in
+ * Run: spawned by hook.ts as `node sidecar.ts` with cwd/sessionId/claudePid in
  * env (CORRAL_CLAUDE_*). Not launched by hand.
  */
 
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 
 // Longest title corral should receive.
@@ -80,7 +81,7 @@ let lastTitle: string | null | undefined;
 let currentState: "running" | "idle" | "requires_action" = "idle";
 let registryFile: string | undefined;
 
-// Bun unix-socket servers.
+// Unix-socket servers (Node net). A connection is our Sock surface.
 type Sock = { write: (s: string) => void; end?: () => void };
 const acpClients = new Set<Sock>();
 // Per-connection read buffer, shared by both socket servers (keyed by the
@@ -94,42 +95,33 @@ const outbox: Pending[] = [];
 // A held asyncRewake connection waiting for a message to wake an idle session.
 let heldAwait: { respond: (text: string | null) => void; timer: ReturnType<typeof setTimeout> } | undefined;
 
-const Bun = (globalThis as { Bun?: { listen: (o: unknown) => { stop: () => void } } }).Bun;
-if (!Bun) {
-	console.error("corral-claude sidecar: requires the bun runtime");
-	process.exit(1);
-}
-
 // --- socket line framing shared by both servers ---
+// Node net (not Bun): bun's JavaScriptCore SIGTRAP-crashes under a Landlock
+// sandbox (as Claude runs in), so the whole adapter runs on node.
 function lineServer(unixPath: string, onLine: (line: string, sock: Sock) => void, onOpen?: (sock: Sock) => void) {
 	fs.rmSync(unixPath, { force: true }); // stale leftover from a crashed pid reuse
-	return Bun!.listen({
-		unix: unixPath,
-		socket: {
-			open(sock: Sock) {
-				readBuffers.set(sock, "");
-				onOpen?.(sock);
-			},
-			data(sock: Sock, chunk: Uint8Array) {
-				let buf = (readBuffers.get(sock) ?? "") + Buffer.from(chunk).toString("utf8");
-				let nl: number;
-				while ((nl = buf.indexOf("\n")) >= 0) {
-					const line = buf.slice(0, nl).trim();
-					buf = buf.slice(nl + 1);
-					if (line) onLine(line, sock);
-				}
-				readBuffers.set(sock, buf);
-			},
-			close(sock: Sock) {
-				acpClients.delete(sock);
-				readBuffers.delete(sock);
-			},
-			error(sock: Sock) {
-				acpClients.delete(sock);
-				readBuffers.delete(sock);
-			},
-		},
+	const server = net.createServer((conn: net.Socket) => {
+		readBuffers.set(conn, "");
+		onOpen?.(conn);
+		conn.on("data", (chunk: Buffer) => {
+			let buf = (readBuffers.get(conn) ?? "") + Buffer.from(chunk).toString("utf8");
+			let nl: number;
+			while ((nl = buf.indexOf("\n")) >= 0) {
+				const line = buf.slice(0, nl).trim();
+				buf = buf.slice(nl + 1);
+				if (line) onLine(line, conn);
+			}
+			readBuffers.set(conn, buf);
+		});
+		const drop = () => {
+			acpClients.delete(conn);
+			readBuffers.delete(conn);
+		};
+		conn.on("close", drop);
+		conn.on("error", drop);
 	});
+	server.listen(unixPath);
+	return { stop: () => server.close() };
 }
 
 // --- ACP surface (corral connects here) ---

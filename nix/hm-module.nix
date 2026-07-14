@@ -48,25 +48,27 @@ in
         description = "Symlink the opencode adapter into ~/.config/opencode/plugin.";
       };
       # The Claude adapter is a plugin directory loaded as a skills-dir plugin
-      # (~/.claude/skills/corral-claude); its hooks run on bun, pulled in below.
+      # (~/.claude/skills/corral-claude); its hooks run on node, pulled in below.
       claude.enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = ''
           Symlink the Claude Code adapter into ~/.claude/skills (loads as
-          corral-claude@skills-dir) and put bun on PATH for its hooks.
+          corral-claude@skills-dir) and put node on PATH for its hooks.
         '';
       };
     };
   };
 
   config = lib.mkIf cfg.enable {
-    # The Claude adapter's hooks run as external `bun hook.ts` subprocesses
+    # The Claude adapter's hooks run as external `node hook.ts` subprocesses
     # (Claude ships no runtime for hook commands), unlike the pi/opencode
-    # adapters that the harness itself loads. So bun is a hard dependency
-    # whenever the adapter is linked.
+    # adapters that the harness itself loads. node (not bun: bun's JSC
+    # SIGTRAP-crashes under Landlock sandboxes) runs the .ts directly via its
+    # native type-stripping (nodejs >= 22.18 / 24). So node is a hard
+    # dependency whenever the adapter is linked.
     home.packages = [ cfg.package ]
-      ++ lib.optional cfg.extensions.claude.enable pkgs.bun;
+      ++ lib.optional cfg.extensions.claude.enable pkgs.nodejs;
 
     # corrald is a singleton; the user service is its keep-alive. It reads the
     # filesystem registry and owns the control socket, so it needs no ordering

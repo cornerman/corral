@@ -367,8 +367,13 @@ ratatui / iced, the daemon keeps ksni).
   session immediately. `state_update` is native and richer than pi's
   (`UserPromptSubmit`->running, `Stop`->idle,
   `Notification[permission_prompt]`->requires_action, a real approval gate);
-  `session/cancel` is a no-op (no external turn-abort). Runs on `bun`, external
-  to Claude. UNVERIFIED in this repo (no Claude harness here): hook payload
+  `session/cancel` is a no-op (no external turn-abort). Runs on `node` (not
+  bun: bun's JavaScriptCore SIGTRAP-crashes under a Landlock sandbox, which is
+  how Claude runs on hardened setups; node runs the `.ts` directly via native
+  type-stripping, >= 22.18 / 24, no build step), external to Claude. So a
+  sandboxed harness must also grant its jail read/write to `~/.corral` (the
+  registry + `corrald.sock`), or the sidecar cannot register. UNVERIFIED in
+  this repo (no Claude harness here): hook payload
   fields and the block/asyncRewake injection semantics are coded from the hooks
   reference and probed defensively. Ships as a Claude Code **plugin**
   (`.claude-plugin/plugin.json` + `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}`,

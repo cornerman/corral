@@ -48,8 +48,10 @@ exposes no external turn-abort.
 
 ## Install
 
-First install `bun` (the sidecar and shim run on it) and put it on PATH. Then
-pick one path:
+First put `node` on PATH: the sidecar and shim run on it (>= 22.18 or 24, for
+native TypeScript type-stripping — the `.ts` files run directly, no build step).
+Not bun: bun's JavaScriptCore SIGTRAP-crashes under a Landlock sandbox, which is
+exactly how Claude Code runs on hardened setups. Then pick one path:
 
 **Marketplace (updatable).** From a clone of the corral repo, or by URL:
 
