@@ -30,6 +30,9 @@ use iced::{
 
 use crate::theme::{self, Base16};
 
+/// Fixed card height (points): fits title + cwd + activity·age with padding.
+const CARD_H: f32 = 62.0;
+
 /// The filter field's focus id (for programmatic focus/blur).
 fn filter_id() -> text_input::Id {
     text_input::Id::new("corral-filter")
@@ -508,9 +511,12 @@ impl Board {
             );
         }
 
-        // Thin state-colored left bar + faint accent tint when selected.
+        // Thin state-colored left bar + faint accent tint when selected. Cards
+        // are a fixed height (like the TUI): variable content stays aligned,
+        // and a fixed bar height sidesteps `Length::Fill` (illegal inside a
+        // scrollable — it makes the content report a fill height and panics).
         let bar = container(Space::new(Length::Fixed(if selected { 3.0 } else { 2.0 }), 0.0))
-            .height(Length::Fill)
+            .height(Length::Fixed(CARD_H))
             .style(move |_t| container::Style {
                 background: Some(Background::Color(accent)),
                 ..container::Style::default()
@@ -523,6 +529,7 @@ impl Board {
         let inner = container(body).padding([8, 10]).width(Length::Fill);
         let card = container(row![bar, inner].spacing(0))
             .width(Length::Fill)
+            .height(Length::Fixed(CARD_H))
             .clip(true)
             .style(move |_t| container::Style {
                 background: fill.map(Background::Color),
