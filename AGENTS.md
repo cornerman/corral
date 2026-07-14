@@ -534,9 +534,17 @@ message/tool updates) is ACP v1.
   `gui`, `daemon`, `watch` (cargo-watch tests), and `watch-board` / `watch-gui`
   / `watch-daemon` (rebuild + rerun on change), `nix-build`. GUI builds need the
   devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`.
-- Lifecycle is deployment glue in `~/nixos`, not corral code: a systemd user
-  service runs `corrald` (restart-on-failure) so messaging survives a crash;
+- Home Manager module (`nix/hm-module.nix`, flake output
+  `homeManagerModules.default`): `programs.corral.enable = true;` installs the
+  package, runs `corrald` as a user service bound to `graphical-session.target`
+  (`programs.corral.daemon.enable`, default on), and symlinks the pi and
+  opencode adapters into their plugin dirs
+  (`programs.corral.extensions.{pi,opencode}.enable`, default on). The adapters
+  ship inside the package at `share/corral/extensions/`, so the module links one
+  artifact rather than the source tree. `extensions.claude` is a reserved stub
+  that asserts off until the Claude adapter lands on `main`.
+- Lifecycle beyond the module is deployment glue in `~/nixos`, not corral code:
   a WM keybind summons a board window — either a floating/borderless `kitty -e
   corral` scratchpad (the TUI as a launcher popup) or `corral-gui`. corrald owns
-  behavior; nixos/WM own keep-alive and visibility.
+  behavior; the module owns keep-alive, nixos/WM own visibility.
 - CI: GitHub Action runs `nix flake check` (build + tests via nix).

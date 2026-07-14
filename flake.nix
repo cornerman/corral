@@ -53,9 +53,21 @@
           postInstall = ''
             wrapProgram "$out/bin/corral-gui" \
               --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (guiLibsFor pkgs)}"
+            # Ship the harness adapters beside the binaries so the home-manager
+            # module symlinks from one artifact, not the flake source tree.
+            mkdir -p "$out/share/corral/extensions"
+            cp extensions/corral-announce.ts extensions/corral-opencode.ts \
+              "$out/share/corral/extensions/"
           '';
         };
       });
+
+      # Home Manager module: `programs.corral.enable = true;` installs the
+      # binaries, runs corrald as a user service, and links the adapters.
+      homeManagerModules = rec {
+        corral = import ./nix/hm-module.nix self;
+        default = corral;
+      };
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
