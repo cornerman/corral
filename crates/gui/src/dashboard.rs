@@ -197,6 +197,8 @@ impl Board {
                 return self.act_go();
             }
             Message::CardClicked(idx) => {
+                // A click blurs the filter field, so leave filter mode too.
+                self.filtering = false;
                 // Two-stage: first click selects, click on the selected goes.
                 if idx == self.selected {
                     return self.act_go();
@@ -257,10 +259,14 @@ impl Board {
             keyboard::Key::Named(Named::ArrowUp) => {
                 self.selected = nav::move_row(self.selected, &counts, false);
             }
-            keyboard::Key::Named(Named::ArrowRight) if !self.filtering => {
+            // No `filtering` guard on these: a focused filter field captures
+            // Left/Right (caret) and letters (typing), so `on_key_press` never
+            // delivers them here while focused; when the field is unfocused,
+            // they are commands regardless of any applied filter.
+            keyboard::Key::Named(Named::ArrowRight) => {
                 self.selected = nav::move_col(self.selected, &counts, true);
             }
-            keyboard::Key::Named(Named::ArrowLeft) if !self.filtering => {
+            keyboard::Key::Named(Named::ArrowLeft) => {
                 self.selected = nav::move_col(self.selected, &counts, false);
             }
             keyboard::Key::Named(Named::Enter) => {
@@ -272,7 +278,7 @@ impl Board {
                 };
             }
             keyboard::Key::Named(Named::Escape) => {
-                if self.filtering {
+                if !self.filter.is_empty() {
                     // Clear the filter, remembering the selection so it survives
                     // the rebuild, then leave filter mode (blur the field).
                     self.reselect = self
@@ -282,10 +288,14 @@ impl Board {
                     self.filtering = false;
                     self.refresh();
                     return text_input::focus(text_input::Id::new("corral-blur"));
+                } else if self.filtering {
+                    // Focused but empty: leave filter mode without quitting.
+                    self.filtering = false;
+                    return text_input::focus(text_input::Id::new("corral-blur"));
                 }
                 std::process::exit(0);
             }
-            keyboard::Key::Character(c) if !self.filtering => match c.as_str() {
+            keyboard::Key::Character(c) => match c.as_str() {
                 "j" => self.selected = nav::move_row(self.selected, &counts, true),
                 "k" => self.selected = nav::move_row(self.selected, &counts, false),
                 "l" => self.selected = nav::move_col(self.selected, &counts, true),
@@ -587,7 +597,7 @@ impl Board {
                 .width(Length::Fixed(14.0))
                 .height(Length::Fixed(14.0)),
         ]
-        .spacing(12)
+        .spacing(22)
         .align_y(Alignment::Center)
         .into()
     }
