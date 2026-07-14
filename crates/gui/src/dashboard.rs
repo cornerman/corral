@@ -763,27 +763,48 @@ impl Board {
 
     fn footer(&self, s: &Base16) -> Element<'_, Message> {
         let dim = s.base[3];
-        let hint = |label: &'static str, msg: Message| -> Element<'_, Message> {
-            mouse_area(text(label).size(13).color(dim))
-                .on_press(msg)
-                .interaction(mouse::Interaction::Pointer)
-                .into()
+        let fg = s.base[5];
+        let cap_bg = s.base[2];
+        // A keycap pill (` key ` on a subtle fill) beside a dim label, matching
+        // the TUI footer. Keys are plain ASCII so they render everywhere.
+        let hint = |key: &'static str, desc: &'static str, msg: Option<Message>| -> Element<'_, Message> {
+            let cap = container(text(key).size(13).color(fg))
+                .padding([1, 6])
+                .style(move |_t| container::Style {
+                    background: Some(cap_bg.into()),
+                    border: iced::Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            let item = row![cap, text(desc).size(13).color(dim)]
+                .spacing(5)
+                .align_y(Alignment::Center);
+            match msg {
+                Some(msg) => mouse_area(item)
+                    .on_press(msg)
+                    .interaction(mouse::Interaction::Pointer)
+                    .into(),
+                None => item.into(),
+            }
         };
-        // Same labels, symbols and order as the TUI footer (ui.rs footer_items).
+        // Same keys, order and keycap styling as the TUI footer (ui.rs
+        // footer_items / footer_layout).
         row![
-            text("↑↓←→ move").size(13).color(dim),
-            hint("⏎ go", Message::Go),
-            hint("⇧⏎ new", Message::Spawn),
-            hint("/ filter", Message::FocusFilter),
-            hint("m msg", Message::OpenCompose),
-            hint("d delete", Message::Dismiss),
-            hint("q quit", Message::Quit),
+            hint("hjkl", "move", None),
+            hint("enter", "go", Some(Message::Go)),
+            hint("shift+enter", "new", Some(Message::Spawn)),
+            hint("/", "filter", Some(Message::FocusFilter)),
+            hint("m", "msg", Some(Message::OpenCompose)),
+            hint("d", "delete", Some(Message::Dismiss)),
+            hint("q", "quit", Some(Message::Quit)),
             Space::new(Length::Fill, 0.0),
             canvas(Mark { color: dim })
                 .width(Length::Fixed(14.0))
                 .height(Length::Fixed(14.0)),
         ]
-        .spacing(22)
+        .spacing(14)
         .align_y(Alignment::Center)
         .into()
     }

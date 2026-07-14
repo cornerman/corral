@@ -177,7 +177,7 @@ pub fn render_compose(frame: &mut Frame, target: &str, buf: &str) {
     let area = centered(frame.area(), 70, 20);
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .title(format!(" message {target} — ⏎ send, esc cancel "))
+        .title(format!(" message {target} — enter send, esc cancel "))
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -196,20 +196,50 @@ pub enum FooterAction {
 }
 
 /// Blank cells between footer entries.
-const FOOTER_GAP: u16 = 3;
+const FOOTER_GAP: u16 = 2;
 
-/// Footer entries left to right: label, and the action a click triggers
-/// (`None` for the non-clickable movement hint).
-fn footer_items() -> [(Option<FooterAction>, &'static str); 7] {
+/// Footer entries left to right: the key(s), the label, and the action a click
+/// triggers (`None` for the non-clickable movement hint). Keys are spelled in
+/// plain ASCII (no `⏎`/`⇧`/arrow glyphs) so they render in every terminal
+/// font; the keycap styling in `footer_layout` supplies the visual polish.
+fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 7] {
     [
-        (None, "↑↓←→ move"),
-        (Some(FooterAction::Go), "⏎ go"),
-        (Some(FooterAction::New), "⇧⏎ new"),
-        (Some(FooterAction::Jump), "/ filter"),
-        (Some(FooterAction::Msg), "m msg"),
-        (Some(FooterAction::Delete), "d delete"),
-        (Some(FooterAction::Quit), "q quit"),
+        (None, "hjkl", "move"),
+        (Some(FooterAction::Go), "enter", "go"),
+        (Some(FooterAction::New), "shift+enter", "new"),
+        (Some(FooterAction::Jump), "/", "filter"),
+        (Some(FooterAction::Msg), "m", "msg"),
+        (Some(FooterAction::Delete), "d", "delete"),
+        (Some(FooterAction::Quit), "q", "quit"),
     ]
+}
+
+/// Build the footer's styled spans and, alongside, each clickable item's
+/// (action, start column relative to the footer left edge, width). Render and
+/// hit-testing both consume this, so their geometry cannot drift. Each item is
+/// a keycap (` key ` reversed like a physical key) followed by a dim label.
+fn footer_layout() -> (Vec<Span<'static>>, Vec<(FooterAction, u16, u16)>) {
+    let keycap = Style::default().fg(Color::Black).bg(Color::Gray);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut spans = Vec::new();
+    let mut hits = Vec::new();
+    let mut x = 0u16;
+    for (i, (action, key, desc)) in footer_items().into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".repeat(FOOTER_GAP as usize)));
+            x += FOOTER_GAP;
+        }
+        let cap = format!(" {key} ");
+        let label = format!(" {desc}");
+        let w = (cap.chars().count() + label.chars().count()) as u16;
+        if let Some(action) = action {
+            hits.push((action, x, w));
+        }
+        spans.push(Span::styled(cap, keycap));
+        spans.push(Span::styled(label, dim));
+        x += w;
+    }
+    (spans, hits)
 }
 
 /// The footer row: the bottom-most row, inset by PAD to align with the columns
@@ -231,13 +261,11 @@ pub fn footer_hit_test(area: Rect, col: u16, row: u16) -> Option<FooterAction> {
     if row != f.y {
         return None;
     }
-    let mut x = f.x;
-    for (action, label) in footer_items() {
-        let w = label.chars().count() as u16;
-        if col >= x && col < x + w {
-            return action;
+    let (_, hits) = footer_layout();
+    for (action, x, w) in hits {
+        if col >= f.x + x && col < f.x + x + w {
+            return Some(action);
         }
-        x += w + FOOTER_GAP;
     }
     None
 }
@@ -530,14 +558,7 @@ pub fn render(
         };
         frame.render_widget(Paragraph::new(Line::from(status.dim())), spacer);
     }
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut spans = Vec::new();
-    for (i, (_, label)) in footer_items().iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" ".repeat(FOOTER_GAP as usize)));
-        }
-        spans.push(Span::styled(*label, dim));
-    }
+    let (spans, _) = footer_layout();
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_area);
 
     // The corral mark, bottom-right and faint: "the pen" — a bracketed
