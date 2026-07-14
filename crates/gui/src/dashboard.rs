@@ -84,20 +84,46 @@ impl Dashboard {
             return;
         }
 
+        // Deferred action and filter-focus request. Declared before the footer
+        // so its clickable hints can set them, alongside the keyboard block.
+        let mut act = Act::None;
+        let mut want_focus_filter = false;
+
         // Key hints along the bottom, like the TUI footer. Reserved first so
-        // the columns fill the space above it.
+        // the columns fill the space above it. Each action word is a clickable
+        // label (mouse parity with the keys), sized a touch larger than body.
+        let hint = |ui: &mut egui::Ui, text: &str| -> bool {
+            ui.add(egui::Label::new(RichText::new(text).size(13.0)).sense(Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+        };
         let _hints = egui::Panel::bottom(egui::Id::new("hints"))
             .show_separator_line(false)
             .show(ui, |ui| {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "arrows move  ·  Enter go  ·  Shift+Enter new  ·  \
-                         m message  ·  d dismiss  ·  / filter  ·  q quit",
-                    )
-                    .weak()
-                    .small(),
-                );
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.label(RichText::new("arrows move").weak().size(13.0));
+                    if hint(ui, "Enter go") {
+                        act = Act::Go;
+                    }
+                    if hint(ui, "Shift+Enter new") {
+                        act = Act::Spawn;
+                    }
+                    if hint(ui, "m message") {
+                        act = Act::Message;
+                    }
+                    if hint(ui, "d dismiss") {
+                        act = Act::Dismiss;
+                    }
+                    if hint(ui, "/ filter") {
+                        want_focus_filter = true;
+                    }
+                    if hint(ui, "q quit") {
+                        act = Act::Quit;
+                    }
+                });
+                ui.add_space(8.0);
             });
 
         let scheme = theme::scheme(dark);
@@ -129,7 +155,6 @@ impl Dashboard {
         let dormant_ages = self.engine.dormant_ages().clone();
 
         // --- top: mark + status, then the centered filter bar ---
-        let mut want_focus_filter = false;
         ui.horizontal(|ui| {
             ui.label(RichText::new("corral").weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -164,7 +189,6 @@ impl Dashboard {
         ui.add_space(14.0);
 
         // --- keyboard ---
-        let mut act = Act::None;
         ui.input_mut(|i| {
             // Navigation (Up/Down in both modes; Left/Right only in command
             // mode, so the text cursor still works while filtering).
@@ -244,8 +268,14 @@ impl Dashboard {
                             let age = card_age(agent, column, &in_state, &quiet, &dormant_ages);
                             let resp = card(ui, agent, &scheme, age, idx == self.selected);
                             if resp.clicked() {
-                                self.selected = idx;
-                                act = Act::Go;
+                                // Two-stage, like the TUI: the first click only
+                                // selects the row (so the keys act on it); a
+                                // click on the already-selected card goes.
+                                if idx == self.selected {
+                                    act = Act::Go;
+                                } else {
+                                    self.selected = idx;
+                                }
                             }
                         }
                     });
