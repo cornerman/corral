@@ -458,11 +458,17 @@ export default function (pi: ExtensionAPI) {
 		// kind ships its own adapter writing its own argv.
 		//
 		// resumeCommand uses the sessionId, not the session-file path: corral
-		// always resumes in the session's own cwd (`kitty --directory <cwd>`), so
-		// pi's per-project `--session <id>` lookup resolves it. The id is already
-		// the record key, so this avoids duplicating the file path. null for an
-		// ephemeral (--no-session) session, which pi cannot resume.
-		const resumable = ctx.sessionManager.getSessionFile() != null;
+		// always resumes in the session's own cwd, so pi's per-project
+		// `--session <id>` lookup resolves it. The id is already the record key,
+		// so this avoids duplicating the file path.
+		//
+		// Gate on the session file EXISTING, not just on getSessionFile()
+		// returning a path: pi hands back a path for an empty session it never
+		// persists, so trusting the path alone advertises a dormant card that
+		// resumes to `No session found` and a window that closes before the
+		// error can be read. An unpersisted (empty) session is not resumable.
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		const resumable = sessionFile != null && fs.existsSync(sessionFile);
 		const record = {
 			sessionId,
 			cwd: ctx.cwd,
