@@ -288,6 +288,30 @@ ratatui / iced, the daemon keeps ksni).
   symlink into
   `~/.pi/agent/extensions/`.
 
+- `extensions/corral-opencode.ts` — the second worked adapter (an opencode
+  plugin), proving the convention is harness-neutral: corral itself needs zero
+  changes, since it runs the record's launch commands and reads its `label`
+  verbatim. It mirrors `corral-announce` closely and deviates only where
+  opencode's API forces it. It binds the same workdir-local socket
+  (`<cwd>/.corral/opencode-<pid>.sock`), writes the same registry record with
+  `label: "opencode"`, `spawnCommand` (`["opencode"]`) and `resumeCommand`
+  (`["opencode","--session",<sessionId>]`), and serves the same ACP surface
+  (`initialize`, `session/list`, `session/prompt` injecting via the opencode SDK
+  client fire-and-forget and resolving on the next `session.idle`,
+  `session/cancel` -> abort). It broadcasts the same `session/update` set:
+  message and tool activity, `session_info_update` on rename, and the standard
+  `state_update` (running on the first turn signal, idle on `session.idle`,
+  `requires_action` while a permission prompt is open via `permission.updated`,
+  cleared on `permission.replied`). It tracks a single active session per window
+  (multi-session multiplexing is deferred) and, lacking a plugin-unload hook,
+  clears the record's socket and unlinks on process exit/SIGINT/SIGTERM;
+  best-effort, since corral's dead-socket sweep makes a missed teardown dormant
+  anyway. It registers the same `corral_message_agent` tool via opencode's
+  `tool` hook. Untypechecked in this repo (no opencode toolchain here), so the
+  plugin API shapes are probed defensively at runtime and flagged UNVERIFIED
+  in-file. Install: symlink into `~/.config/opencode/plugin/` (global) or
+  `.opencode/plugin/` (project).
+
 ## Inter-Agent Messaging
 
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so

@@ -80,12 +80,21 @@ harness-neutral convention, specified independently of pi and corral in
   a reply reach the precise agent that asked); corrald routes it, spawning or
   resuming a target if none is running and asking you to approve unfamiliar
   sender/target pairs.
+- **corral-opencode** (opencode plugin, `extensions/corral-opencode.ts`) — the
+  second adapter, proving the convention is harness-neutral. It announces an
+  interactive opencode session exactly as `corral-announce` does for pi (same
+  registry record with `label: "opencode"`, same workdir-local ACP socket, same
+  `state_update` broadcast, the same `corral_message_agent` tool), so a mixed
+  pi/opencode board reads at a glance. corral itself needed no change.
 
 ## Usage
 
 ```bash
 # Announce interactive pi sessions (one-time setup):
 ln -s ~/projects/corral/extensions/corral-announce.ts ~/.pi/agent/extensions/
+
+# Announce interactive opencode sessions (one-time setup):
+ln -s ~/projects/corral/extensions/corral-opencode.ts ~/.config/opencode/plugin/
 
 # Run the board (any number of instances):
 corral

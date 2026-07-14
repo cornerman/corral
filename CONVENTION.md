@@ -316,8 +316,13 @@ after approval without a further ack.
 
 ## Appendix B — Reference Implementation (non-normative)
 
-- Agent side: `extensions/corral-announce.ts` (a pi extension implementing all
-  of §2–§6 and Appendix A).
+- Agent side, first example: `extensions/corral-announce.ts` (a pi extension
+  implementing all of §2–§6 and Appendix A).
+- Agent side, second example: `extensions/corral-opencode.ts` (an opencode
+  plugin implementing the same §2–§6 surface and Appendix A). It is the
+  cross-harness proof: a different harness joins the board with no change to a
+  consumer, since a consumer runs the record's launch commands verbatim and
+  reads its `label` generically.
 - Consumer side: `crates/board/src/discovery.rs` (registry scan and record
   parsing) and `crates/board/src/watch.rs` (socket connect, seed, and broadcast
   handling).

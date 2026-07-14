@@ -208,9 +208,13 @@ daily-use ergonomics.
    socket, the ACP surface, and the `state_update` broadcast, independently of
    pi *and* of corral, with a MUST/SHOULD/MAY conformance checklist so any
    harness or tool can implement it without reading corral's source.
-2. **Prove cross-harness with a second adapter.** A Claude Code (or Codex)
-   announce shim beside `corral-announce`. Two harnesses on one board is the
-   demonstration that makes the claim real; one harness is just a tool.
+2. **Prove cross-harness with a second adapter.** (done) An opencode plugin,
+   `extensions/corral-opencode.ts`, beside the pi `corral-announce`. Two
+   harnesses on one board is the demonstration that makes the claim real; one
+   harness is just a tool. corral itself needed zero changes: it runs the
+   record's launch commands verbatim and reads its `label` generically, so the
+   opencode adapter drops in alongside pi. A Claude Code or Codex shim is a
+   possible third.
 3. **launch-with-message** (done): the launcher takes an optional initial
    message submitted as the new session's first prompt, so delivery to a
    not-yet-live target is atomic. Deleted `RouteState`, the pre-existing-socket

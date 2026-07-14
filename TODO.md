@@ -179,10 +179,28 @@ One per-session file drives discovery, isolation, and resume.
       injected message has had its turn) and fine for fire-and-forget
       messaging.
 
+## Extension (corral-opencode)
+
+- [x] Second adapter: an opencode plugin mirroring `corral-announce` (registry
+      record, workdir-local ACP socket, `state_update` broadcast,
+      `corral_message_agent` tool). Single active session per window;
+      multi-session multiplexing deferred. Teardown clears the socket and
+      unlinks on process exit/SIGINT/SIGTERM (no plugin-unload hook).
+- [ ] Untypechecked in-repo: no opencode toolchain or `@opencode-ai/plugin`
+      types here, so the plugin API shapes (client methods, event payload
+      fields, the `tool` registration helper) are probed defensively and
+      flagged UNVERIFIED in-file. Verify against installed types on deploy;
+      confirm the message-activity payload extraction and the `session.get`
+      title shape end-to-end.
+
 ## Future Features
 
-- [ ] Multi-agent: let non-pi ACP agents announce (their own extension or a
-      stdio-to-socket wrapper binding `<label>-<pid>.sock`). The board already
-      discovers any socket and reads agentInfo generically.
+- [x] Multi-agent: a second harness announces. `extensions/corral-opencode.ts`
+      (an opencode plugin) mirrors `corral-announce`, binding
+      `<cwd>/.corral/opencode-<pid>.sock` and writing a record with
+      `label: "opencode"`; corral needed zero changes (it runs the record's
+      launch commands verbatim and reads `label` generically). Further non-pi
+      agents drop in the same way (their own extension or a stdio-to-socket
+      wrapper binding `<label>-<pid>.sock`).
 - [ ] More compositors/terminals: new `WindowFocuser` / `Launcher`
       implementations behind the existing seams (sway/kitty are PoC).
