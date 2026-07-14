@@ -10,6 +10,11 @@
 //! board itself. Board-spawned windows are detached from corral (see
 //! `launch.rs`, `setsid --fork`), so the chain terminates at `pi -> kitty ->
 //! init`; manually launched agents were never corral's descendants.
+//!
+//! A GUI agent (record `gui: true`, e.g. quine) draws its own window carrying
+//! its own pid, so `match_pids` matches strictly on the socket pid and skips
+//! the parent-walk entirely: climbing would otherwise pick up the launching
+//! terminal's window and target the wrong one.
 
 use std::collections::HashSet;
 use std::process::Command;
@@ -98,9 +103,9 @@ impl SwayFocuser {
     /// pid sway reports for it (the terminal process, for close). Found by the
     /// `/proc` parent-walk from the socket pid up to the window's pid.
     fn window(&self, agent: &Agent) -> Result<(i64, u32), String> {
-        let ancestors = ancestor_pids(agent.pid);
+        let pids = match_pids(agent);
         let tree = sway_get_tree()?;
-        find_window(&tree, &ancestors)
+        find_window(&tree, &pids)
             .ok_or_else(|| format!("no sway window found for pid {}", agent.pid))
     }
 }
@@ -137,6 +142,20 @@ impl WindowFocuser for SwayFocuser {
         } else {
             Err("kill returned non-zero".into())
         }
+    }
+}
+
+/// The pids whose window identifies this agent. A GUI agent (e.g. quine)
+/// draws its own window carrying its own pid (= the socket pid), so match
+/// strictly on it: climbing the parent chain would, for a terminal-launched
+/// GUI app, also pick up the launching terminal's window and focus (or on
+/// close, kill) the wrong one. A terminal agent (pi) owns no window itself,
+/// so its window is the terminal up the ancestor chain.
+fn match_pids(agent: &Agent) -> HashSet<u32> {
+    if agent.gui {
+        std::iter::once(agent.pid).collect()
+    } else {
+        ancestor_pids(agent.pid)
     }
 }
 
@@ -243,8 +262,8 @@ pub struct HyprlandFocuser;
 impl WindowFocuser for HyprlandFocuser {
     fn focus(&self, agent: &Agent) -> Result<(), String> {
         let clients = json_array("hyprctl", &["clients", "-j"])?;
-        let ancestors = ancestor_pids(agent.pid);
-        let addr = entry_for_pid(&clients, &ancestors)
+        let pids = match_pids(agent);
+        let addr = entry_for_pid(&clients, &pids)
             .and_then(|e| e.get("address").and_then(|a| a.as_str()))
             .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid))?;
         let ok = Command::new("hyprctl")
@@ -261,8 +280,8 @@ impl WindowFocuser for HyprlandFocuser {
 
     fn close(&self, agent: &Agent) -> Result<(), String> {
         let clients = json_array("hyprctl", &["clients", "-j"])?;
-        let ancestors = ancestor_pids(agent.pid);
-        let pid = entry_for_pid(&clients, &ancestors)
+        let pids = match_pids(agent);
+        let pid = entry_for_pid(&clients, &pids)
             .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
             .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid))?;
         kill_pid(pid as u32)
@@ -276,8 +295,8 @@ pub struct NiriFocuser;
 impl WindowFocuser for NiriFocuser {
     fn focus(&self, agent: &Agent) -> Result<(), String> {
         let windows = json_array("niri", &["msg", "--json", "windows"])?;
-        let ancestors = ancestor_pids(agent.pid);
-        let id = entry_for_pid(&windows, &ancestors)
+        let pids = match_pids(agent);
+        let id = entry_for_pid(&windows, &pids)
             .and_then(|e| e.get("id").and_then(|i| i.as_u64()))
             .ok_or_else(|| format!("no niri window for pid {}", agent.pid))?;
         let ok = Command::new("niri")
@@ -294,8 +313,8 @@ impl WindowFocuser for NiriFocuser {
 
     fn close(&self, agent: &Agent) -> Result<(), String> {
         let windows = json_array("niri", &["msg", "--json", "windows"])?;
-        let ancestors = ancestor_pids(agent.pid);
-        let pid = entry_for_pid(&windows, &ancestors)
+        let pids = match_pids(agent);
+        let pid = entry_for_pid(&windows, &pids)
             .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
             .ok_or_else(|| format!("no niri window for pid {}", agent.pid))?;
         kill_pid(pid as u32)
@@ -368,7 +387,7 @@ impl X11Focuser {
     ) -> Result<(x11rb::rust_connection::RustConnection, Window, Window), String> {
         let (conn, screen) = x11rb::connect(None).map_err(|e| format!("x11 connect: {e}"))?;
         let root = conn.setup().roots[screen].root;
-        let ancestors = ancestor_pids(agent.pid);
+        let pids = match_pids(agent);
         let list = intern(&conn, b"_NET_CLIENT_LIST")?;
         let windows = conn
             .get_property(false, root, list, AtomEnum::WINDOW, 0, u32::MAX)
@@ -380,7 +399,7 @@ impl X11Focuser {
             .ok_or("x11: _NET_CLIENT_LIST not 32-bit")?;
         for win in windows {
             if let Some(pid) = window_pid(&conn, win) {
-                if ancestors.contains(&pid) {
+                if pids.contains(&pid) {
                     return Ok((conn, root, win));
                 }
             }
@@ -487,6 +506,35 @@ mod tests {
         pids.clear();
         pids.insert(999);
         assert_eq!(entry_for_pid(niri.as_array().unwrap(), &pids), None);
+    }
+
+    #[test]
+    fn gui_agent_matches_only_its_own_pid() {
+        use crate::model::{Origin, State};
+        let mk = |gui: bool, pid: u32| Agent {
+            socket_path: std::path::PathBuf::from("/s.sock"),
+            pid,
+            label: "quine".into(),
+            session_id: None,
+            title: None,
+            cwd: None,
+            state: State::Idle,
+            origin: Origin::Live,
+            spawn_command: None,
+            resume_command: None,
+            activity: None,
+            gui,
+        };
+        let me = std::process::id();
+        // GUI: strictly its own pid, never climbing to a parent window.
+        assert_eq!(
+            match_pids(&mk(true, me)),
+            std::iter::once(me).collect::<HashSet<u32>>()
+        );
+        // Terminal agent: the ancestor set, which at least contains itself
+        // (and, for a real process under a parent, more).
+        let term = match_pids(&mk(false, me));
+        assert!(term.contains(&me));
     }
 
     #[test]
