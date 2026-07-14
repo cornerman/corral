@@ -297,7 +297,8 @@ impl Board {
     /// the key event:
     ///   1. compose overlay open -> cancel it;
     ///   2. filter field focused -> blur it, keeping the filter and selection;
-    ///   3. otherwise -> clear the filter and reset the cursor to the first card.
+    ///   3. otherwise -> clear the filter, keeping the current selection (its
+    ///      index stays in range once the full board returns).
     fn escape(&mut self) -> Task<Message> {
         if self.compose.is_some() {
             self.compose = None;
@@ -310,9 +311,8 @@ impl Board {
             return text_input::focus(text_input::Id::new("corral-blur"));
         }
         if !self.filter.is_empty() {
-            // Field already blurred: clear the filter and reset to the top.
+            // Field already blurred: clear the filter, keeping the selection.
             self.filter.clear();
-            self.selected = 0;
             self.refresh();
             return self.scroll_to_selection();
         }

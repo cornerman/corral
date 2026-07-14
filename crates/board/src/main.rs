@@ -359,14 +359,15 @@ fn run(
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') => break,
                     // Esc peels layers, quitting at the last: clear a non-empty
-                    // filter (reset the cursor), else exit. Matches the GUI so
-                    // both shells behave alike.
+                    // filter, else exit. The selection stays put (a smaller
+                    // filtered set means its index is still in range once the
+                    // full board returns). Matches the GUI so both shells
+                    // behave alike.
                     KeyCode::Esc => {
                         if filter.is_empty() {
                             break;
                         }
                         filter.clear();
-                        selected = 0;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         selected = nav::move_row(selected, &counts, true);
