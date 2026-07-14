@@ -77,10 +77,14 @@ impl ksni::Tray for CorralTray {
         crate::icon::pen_pixmaps(true)
     }
 
+    // Always `Active` when idle (never `Passive`): the tray is the daemon's
+    // always-present control surface, and hosts (Waybar, some KDE/GNOME
+    // implementations) hide `Passive` items, which would make corrald
+    // invisible until a message happened to arrive.
     fn status(&self) -> ksni::Status {
         match &self.pending {
             Some(_) => ksni::Status::NeedsAttention,
-            None => ksni::Status::Passive,
+            None => ksni::Status::Active,
         }
     }
 
