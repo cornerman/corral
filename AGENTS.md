@@ -3,6 +3,14 @@
 This file and README.md MUST always be kept up to date when the setup,
 architecture, or interfaces change.
 
+## TUI/GUI Parity (Hard Rule)
+
+The TUI (`corral`) and GUI (`corral-gui`) are two parallel viewers of the same
+registry and MUST stay in sync. Every user-facing feature, key, and card/board
+behavior is implemented in BOTH shells, always — never land a feature in one
+alone. Shared logic belongs in `corral-core` so both consume it; only the
+rendering (ratatui vs iced) differs.
+
 ## What This Is
 
 An attention board for locally running ACP agent sessions, plus the discovery
