@@ -8,7 +8,10 @@ state vocabulary), or Dormant (cleanly shut-down, resumable sessions), so you
 can see at a glance which agent is blocked waiting on you. Press Enter to go to
 the selected agent (focus a live window, resume a dormant session), Shift+Enter
 to spawn a new agent in its dir, `/` to fuzzy-jump to any agent, `m` to send a
-message, `d` to close a live agent or forget a dormant record, `q` to quit.
+message, `d` to close a live agent or forget a dormant record, `q` to quit
+(Esc peels one layer per press — filter, then window). Run either shell with
+`--launcher` for an ephemeral popup that opens on the filter and exits after you
+go to or spawn an agent.
 Corral
 never drives an agent on its own; it routes your attention and jumps you to the
 real window, and delivers a message only when you send one.

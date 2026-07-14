@@ -5,11 +5,12 @@
 //! workdir-local ACP socket. Corral watches each live socket for its
 //! running/idle/requires_action state,
 //! and shows them in four columns. Enter or a mouse click focuses an agent's
-//! window (sway), `n` spawns a new agent (kitty) in the selected agent's dir,
-//! `c` opens a fuzzy picker to create one in another directory, `q` quits.
-//! Up/Down (or scroll) move within a
-//! column; Left/Right switch columns. Corral never drives an agent; it
-//! routes the operator's attention.
+//! window, Shift+Enter spawns a new agent in the selected agent's dir, `/`
+//! focuses the inline filter, `m` composes a message, `d` dismisses, `q`
+//! quits (Esc peels one layer per press, then exits). `--launcher` opens an
+//! ephemeral popup that exits after a go/spawn. Up/Down (or scroll) move
+//! within a column; Left/Right switch columns. Corral never drives an agent;
+//! it routes the operator's attention.
 //!
 //! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
 
@@ -61,7 +62,10 @@ fn main() {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    let result = run(&mut terminal, &dir);
+    // `--launcher`: open as an ephemeral popup (filter focused, a successful
+    // go/spawn exits) to match the GUI launcher.
+    let launcher_mode = std::env::args().any(|a| a == "--launcher");
+    let result = run(&mut terminal, &dir, launcher_mode);
     if enhanced {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
@@ -155,7 +159,11 @@ fn handle_overlay(
     }
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::io::Result<()> {
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    dir: &std::path::Path,
+    launcher_mode: bool,
+) -> std::io::Result<()> {
     let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
     // EWMH on X11, sway on Wayland (until other Wayland focusers land).
     let focuser = focus::detect();
@@ -172,7 +180,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
     // Inline content filter (`/` focuses it). When non-empty the board shows
     // only matching cards; `filtering` is the text-edit mode.
     let mut filter = String::new();
-    let mut filtering = false;
+    // The launcher popup opens straight into filter-edit mode (type to narrow,
+    // Enter to go), matching the GUI launcher.
+    let mut filtering = launcher_mode;
     // The active input overlay, if any (`m` compose a message).
     let mut overlay: Option<Overlay> = None;
     // Inter-agent messaging lives entirely in the corrald daemon now; the board
@@ -301,21 +311,27 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                 if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
-                            KeyCode::Esc => {
-                                filtering = false;
-                                filter.clear();
-                            }
+                            // Esc peels one layer: leave edit mode but keep
+                            // the query (a second Esc then clears it).
+                            KeyCode::Esc => filtering = false,
                             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                                spawn_new(&launcher, &board, selected, &mut status);
+                                if spawn_new(&launcher, &board, selected, &mut status)
+                                    && launcher_mode
+                                {
+                                    break;
+                                }
                             }
                             KeyCode::Enter => {
-                                activate_selected(
+                                if activate_selected(
                                     focuser.as_ref(),
                                     &launcher,
                                     &board,
                                     selected,
                                     &mut status,
-                                );
+                                ) && launcher_mode
+                                {
+                                    break;
+                                }
                             }
                             KeyCode::Backspace => {
                                 filter.pop();
@@ -339,8 +355,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') => break,
-                    // Esc clears the filter but never quits — only `q` does.
-                    KeyCode::Esc => filter.clear(),
+                    // Esc peels layers, quitting at the last: clear a non-empty
+                    // filter (reset the cursor), else exit. Matches the GUI so
+                    // both shells behave alike.
+                    KeyCode::Esc => {
+                        if filter.is_empty() {
+                            break;
+                        }
+                        filter.clear();
+                        selected = 0;
+                    }
                     KeyCode::Down | KeyCode::Char('j') => {
                         selected = nav::move_row(selected, &counts, true);
                     }
@@ -354,15 +378,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         selected = nav::move_col(selected, &counts, true);
                     }
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                        spawn_new(&launcher, &board, selected, &mut status);
+                        if spawn_new(&launcher, &board, selected, &mut status) && launcher_mode {
+                            break;
+                        }
                     }
-                    KeyCode::Enter => activate_selected(
-                        focuser.as_ref(),
-                        &launcher,
-                        &board,
-                        selected,
-                        &mut status,
-                    ),
+                    KeyCode::Enter => {
+                        if activate_selected(
+                            focuser.as_ref(),
+                            &launcher,
+                            &board,
+                            selected,
+                            &mut status,
+                        ) && launcher_mode
+                        {
+                            break;
+                        }
+                    }
                     KeyCode::Char('d') => {
                         dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
                     }
@@ -388,15 +419,24 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         // Footer buttons first (their own row), else a card.
                         if let Some(fa) = ui::footer_hit_test(area, m.column, m.row) {
                             match fa {
-                                ui::FooterAction::Go => activate_selected(
-                                    focuser.as_ref(),
-                                    &launcher,
-                                    &board,
-                                    selected,
-                                    &mut status,
-                                ),
+                                ui::FooterAction::Go => {
+                                    if activate_selected(
+                                        focuser.as_ref(),
+                                        &launcher,
+                                        &board,
+                                        selected,
+                                        &mut status,
+                                    ) && launcher_mode
+                                    {
+                                        break;
+                                    }
+                                }
                                 ui::FooterAction::New => {
-                                    spawn_new(&launcher, &board, selected, &mut status)
+                                    if spawn_new(&launcher, &board, selected, &mut status)
+                                        && launcher_mode
+                                    {
+                                        break;
+                                    }
                                 }
                                 ui::FooterAction::Jump => {
                                     status.clear();
@@ -422,13 +462,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                     Click::Select => selected = idx,
                                     Click::Go => {
                                         selected = idx;
-                                        activate_selected(
+                                        if activate_selected(
                                             focuser.as_ref(),
                                             &launcher,
                                             &board,
                                             selected,
                                             &mut status,
-                                        );
+                                        ) && launcher_mode
+                                        {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -460,18 +503,24 @@ fn click_action(clicked: usize, selected: usize) -> Click {
 }
 
 /// Enter/click on the selected agent: focus a live window, or resume a dormant
-/// session. Errors land in the status line.
+/// session. Errors land in the status line. Returns whether an agent was
+/// activated (so the launcher can exit on success).
 fn activate_selected(
     focuser: &dyn WindowFocuser,
     launcher: &dyn Launcher,
     board: &Board,
     selected: usize,
     status: &mut String,
-) {
+) -> bool {
     status.clear();
-    if let Some(agent) = board.selectable().get(selected).copied() {
-        if let Err(e) = activate(agent, focuser, launcher) {
+    let Some(agent) = board.selectable().get(selected).copied() else {
+        return false;
+    };
+    match activate(agent, focuser, launcher) {
+        Ok(()) => true,
+        Err(e) => {
             *status = e;
+            false
         }
     }
 }
@@ -518,19 +567,23 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
 /// command rides in the record (`spawn_command`), so the board spawns whatever
 /// kind the selection is without naming any agent. An empty board has no
 /// selection and so cannot spawn (agent #1 is started from a terminal).
-fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &mut String) {
+fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &mut String) -> bool {
     status.clear();
     let Some(agent) = board.selectable().get(selected).copied() else {
         *status = "spawn: no agent selected (start the first agent from a terminal)".into();
-        return;
+        return false;
     };
     let Some(command) = &agent.spawn_command else {
         *status = format!("spawn: {} announced no spawn command", agent.label);
-        return;
+        return false;
     };
     let cwd = launch::default_cwd(agent.cwd.as_deref());
-    if let Err(e) = launcher.launch(&cwd, command, None) {
-        *status = format!("spawn: {e}");
+    match launcher.launch(&cwd, command, None) {
+        Ok(()) => true,
+        Err(e) => {
+            *status = format!("spawn: {e}");
+            false
+        }
     }
 }
 

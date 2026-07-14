@@ -133,13 +133,14 @@ One per-session file drives discovery, isolation, and resume.
       loop and `age_label`/`prune`; converge it onto `core::engine`, or retire
       the TUI once the GUI is the daily driver. Duplication is temporary and
       deliberate (kept the working TUI untouched during the GUI build).
-- [x] Launcher mode (`corral-gui --launcher`): ephemeral rofi-style popup.
-      Boots focused on the filter; go (Enter/focus) and new (Shift+Enter/spawn)
-      exit the process on success (m/d keep it open, q exits); dismisses on focus
-      loss (window Unfocused, guarded on a prior Focus so boot cannot self-close);
-      Escape exits at the final peel stage (compose -> blur -> clear -> quit),
-      in both launcher and normal GUI mode; the TUI board stays q-only; sets window
-      `app_id`/X11 class `corral-launcher`. Placement is a WM float/center rule
+- [x] Launcher mode (`corral-gui --launcher` and `corral --launcher`): ephemeral
+      rofi-style popup, both shells at parity. Boots focused on the filter; go
+      (Enter/focus) and new (Shift+Enter/spawn) exit the process on success (m/d
+      keep it open, q exits); the GUI also dismisses on focus loss (window
+      Unfocused, guarded on a prior Focus so boot cannot self-close). Escape
+      peels one layer per press and quits at the last (compose -> blur -> clear
+      -> exit), in both launcher and normal mode, in the TUI and GUI alike. The
+      GUI sets window `app_id`/X11 class `corral-launcher`. Placement is a WM float/center rule
       keyed on that app_id (owns-behavior / WM-owns-visibility split), NOT
       self-positioned. Chosen deliberately (option D) to test whether a WM rule
       is good enough before investing in a real overlay.

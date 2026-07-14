@@ -179,11 +179,15 @@ ratatui / iced, the daemon keeps ksni).
     and `hit_test` share one geometry (top rows reserved for the filter).
   - `src/main.rs` — the imperative shell: scan/prune/watch/draw/dispatch. `/`
     focuses the inline filter (narrows cards by whole content); while filtering
-    Enter goes / Shift+Enter spawns directly, arrows navigate, Esc clears then
-    exits. Command keys: Up/Down or j/k, Left/Right or h/l, Enter go,
-    Shift+Enter spawn, `m` message (compose overlay), `d` dismiss, `q` quit; a
-    two-stage left click and a clickable footer. Operator `m` delivers ungated
-    via `core::prompt` / `core::launch`; no router.
+    Enter goes / Shift+Enter spawns directly, arrows navigate. Command keys:
+    Up/Down or j/k, Left/Right or h/l, Enter go, Shift+Enter spawn, `m` message
+    (compose overlay), `d` dismiss, `q` quit; a two-stage left click and a
+    clickable footer. Esc peels one layer per press and quits at the last
+    (edit-mode blur -> clear filter -> exit), matching the GUI. `--launcher`
+    opens the TUI as an ephemeral popup: filter focused at boot, a successful
+    go/spawn exits the process (m/d keep it open), mirroring the GUI launcher.
+    Operator `m` delivers ungated via `core::prompt` / `core::launch`; no
+    router.
 
 - `crates/gui` — the desktop attention board (binary name `corral-gui`,
   iced), a second parallel viewer over the same registry via
@@ -381,8 +385,11 @@ message/tool updates) is ACP v1.
   message to any agent — delivered to a live one over its socket, or a dormant
   one by resuming it with the message as its first prompt; `d` close the
   selected live agent (kill its terminal process, closing the window; pi then
-  goes dormant and resumable) or forget the selected dormant record; `q`/Esc
-  quit. A left click is two-stage: first click selects, a click on the
+  goes dormant and resumable) or forget the selected dormant record; `q` quits,
+  and Esc peels one layer per press (edit-mode blur, then clear filter, then
+  exit). `--launcher` opens the TUI as an ephemeral popup (filter focused, a
+  successful go/spawn exits), the same as `corral-gui --launcher`. A left click
+  is two-stage: first click selects, a click on the
   already-selected card goes. Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
   visible; live cards show time-in-state. Reads `$HOME` (or
