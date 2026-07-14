@@ -14,7 +14,37 @@ pub trait Launcher {
     /// is appended as the final positional argument, so a launch can deliver a
     /// message atomically without waiting for the new session to announce.
     /// An empty `command`, or no resolvable terminal, is an error.
-    fn launch(&self, cwd: &Path, command: &[String], message: Option<&str>) -> Result<(), String>;
+    ///
+    /// `gui` selects the launch mode: `true` runs the command directly (a
+    /// self-windowing GUI agent, e.g. quine), `false` wraps it in a terminal
+    /// resolved from the environment.
+    fn launch(
+        &self,
+        cwd: &Path,
+        command: &[String],
+        message: Option<&str>,
+        gui: bool,
+    ) -> Result<(), String>;
+}
+
+/// Build the argv that follows `setsid --fork`. A GUI agent is run directly
+/// (its command only); a terminal agent gets the resolved terminal prefix in
+/// front. The initial message, if any, is appended in both modes via
+/// `with_message` (so its leading -/@ space-guard still applies).
+fn setsid_args(
+    gui: bool,
+    terminal: &[String],
+    command: &[String],
+    message: Option<&str>,
+) -> Vec<String> {
+    let tail = with_message(command, message);
+    if gui {
+        tail
+    } else {
+        let mut args = terminal.to_vec();
+        args.extend(tail);
+        args
+    }
 }
 
 /// Append an initial message to a launch argv as a trailing positional
@@ -108,18 +138,30 @@ impl Launcher for TerminalLauncher {
     /// the spawned terminal were a child of corral, that walk would continue
     /// past it into corral's own terminal and could focus or close the board
     /// itself. Detaching stops the walk at `agent -> terminal -> init`.
-    fn launch(&self, cwd: &Path, command: &[String], message: Option<&str>) -> Result<(), String> {
+    fn launch(
+        &self,
+        cwd: &Path,
+        command: &[String],
+        message: Option<&str>,
+        gui: bool,
+    ) -> Result<(), String> {
         if command.is_empty() {
             return Err("launch: empty command".into());
         }
-        let terminal = resolve_terminal().ok_or(
-            "no terminal found: install xdg-terminal-exec, or set $CORRAL_TERMINAL \
-             (e.g. \"alacritty -e\") or $TERMINAL",
-        )?;
-        let args = with_message(command, message);
+        // A GUI agent draws its own window, so it needs no terminal (and must
+        // not resolve one). setsid --fork still detaches it from corral so the
+        // focus parent-walk cannot climb into corral's own window.
+        let terminal = if gui {
+            Vec::new()
+        } else {
+            resolve_terminal().ok_or(
+                "no terminal found: install xdg-terminal-exec, or set $CORRAL_TERMINAL \
+                 (e.g. \"alacritty -e\") or $TERMINAL",
+            )?
+        };
+        let args = setsid_args(gui, &terminal, command, message);
         let ok = Command::new("setsid")
             .arg("--fork")
-            .args(&terminal)
             .args(&args)
             .current_dir(cwd)
             .status()
@@ -146,7 +188,7 @@ pub fn default_cwd(cwd: Option<&str>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{on_path, resolve_terminal_from, with_message};
+    use super::{on_path, resolve_terminal_from, setsid_args, with_message};
 
     // A fake path-checker: only these programs "exist".
     fn only(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
@@ -223,6 +265,31 @@ mod tests {
         assert_eq!(
             with_message(&["pi".to_string()], Some("[from agent] hi")),
             ["pi", "[from agent] hi"]
+        );
+    }
+
+    #[test]
+    fn gui_launch_omits_the_terminal_prefix() {
+        let term = vec!["xdg-terminal-exec".to_string()];
+        let cmd = vec!["quine".to_string(), "--corral".to_string()];
+        // GUI: run the command directly, no terminal prefix.
+        assert_eq!(
+            setsid_args(true, &term, &cmd, None),
+            vec!["quine".to_string(), "--corral".to_string()]
+        );
+        // Non-GUI: terminal prefix in front, exactly as before.
+        assert_eq!(
+            setsid_args(false, &term, &cmd, None),
+            vec![
+                "xdg-terminal-exec".to_string(),
+                "quine".to_string(),
+                "--corral".to_string()
+            ]
+        );
+        // The message is appended in both modes.
+        assert_eq!(
+            setsid_args(true, &term, &cmd, Some("hi")),
+            vec!["quine".to_string(), "--corral".to_string(), "hi".to_string()]
         );
     }
 

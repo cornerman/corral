@@ -137,7 +137,7 @@ fn handle_overlay(
                             resume_command,
                         } => {
                             *status =
-                                match launcher.launch(Path::new(cwd), resume_command, Some(text)) {
+                                match launcher.launch(Path::new(cwd), resume_command, Some(text), false) {
                                     Ok(()) => format!("resuming {} to deliver", c.label),
                                     Err(e) => format!("resume: {e}"),
                                 };
@@ -536,7 +536,7 @@ fn activate(
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
             (Some(cwd), Some(command)) => launcher
-                .launch(Path::new(cwd), command, None)
+                .launch(Path::new(cwd), command, None, false)
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume command".into()),
         },
@@ -578,7 +578,7 @@ fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &m
         return false;
     };
     let cwd = launch::default_cwd(agent.cwd.as_deref());
-    match launcher.launch(&cwd, command, None) {
+    match launcher.launch(&cwd, command, None, false) {
         Ok(()) => true,
         Err(e) => {
             *status = format!("spawn: {e}");

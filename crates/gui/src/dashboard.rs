@@ -427,7 +427,7 @@ impl Board {
         {
             Some((a, command)) => {
                 let cwd = launch::default_cwd(a.cwd.as_deref());
-                match self.launcher.launch(&cwd, command, None) {
+                match self.launcher.launch(&cwd, command, None, false) {
                     Ok(()) => {
                         ok = true;
                         format!("spawned in {}", tilde(&cwd.to_string_lossy()))
@@ -470,7 +470,7 @@ impl Board {
                 resume_command,
             } => match self
                 .launcher
-                .launch(Path::new(cwd), resume_command, Some(text))
+                .launch(Path::new(cwd), resume_command, Some(text), false)
             {
                 Ok(()) => format!("resuming {label} to deliver"),
                 Err(e) => format!("resume: {e}"),
@@ -922,7 +922,7 @@ fn activate(
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
             (Some(cwd), Some(command)) => launcher
-                .launch(Path::new(cwd), command, None)
+                .launch(Path::new(cwd), command, None, false)
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume command".into()),
         },

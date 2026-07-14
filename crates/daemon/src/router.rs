@@ -184,7 +184,7 @@ fn deliver_dir(
             None => return format!("route: no known agent kind for {dir} (never announced there)"),
         },
     };
-    match launcher.launch(Path::new(dir), command, Some(&msg.tagged())) {
+    match launcher.launch(Path::new(dir), command, Some(&msg.tagged()), false) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
     }
@@ -227,7 +227,7 @@ fn deliver_session(
     }
     match (&entry.cwd, &entry.resume_command) {
         (Some(cwd), Some(command)) => {
-            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged())) {
+            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), false) {
                 Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
                 Err(e) => format!("route resume: {e}"),
             }
@@ -280,6 +280,7 @@ mod tests {
             _cwd: &Path,
             command: &[String],
             message: Option<&str>,
+            _gui: bool,
         ) -> Result<(), String> {
             if command.iter().any(|a| a == "--session") {
                 self.resumes.set(self.resumes.get() + 1);
