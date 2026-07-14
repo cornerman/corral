@@ -136,10 +136,19 @@ ratatui / egui, the daemon keeps ksni).
     loop inline; converging it onto the engine, or retiring it, is a TODO.)
   - `src/nav.rs` — pure selection math: move within a column or across columns
     over the per-column counts. Unit-tested.
-  - `src/focus.rs` — `WindowFocuser` seam. `SwayFocuser` correlates an agent to
-    its window by a `/proc` parent-walk (socket pid up the PPid chain to the
-    terminal pid sway reports), then `swaymsg [con_id=..] focus`; `close` kills
-    that terminal pid. The tree walk is unit-tested.
+  - `src/focus.rs` — `WindowFocuser` seam, with `focus::detect()` picking an
+    implementation by session: EWMH on X11, sway on Wayland (until other
+    Wayland focusers land). `X11Focuser` (via `x11rb`, no libX11) finds the
+    window by matching `_NET_WM_PID` against the agent's pid and its ancestors
+    (the terminal owning the window is an ancestor of the socket pid), then
+    activates it with `_NET_ACTIVE_WINDOW` (source indication 2 = pager, and a
+    real server timestamp fetched via a property round-trip, so focus-stealing
+    prevention does not defer it — this also switches workspaces); `close`
+    kills the window's `_NET_WM_PID`. Works on any EWMH WM (i3, bspwm, openbox,
+    X11 KWin/Mutter). `SwayFocuser` correlates by a `/proc` parent-walk (socket
+    pid up the PPid chain to the terminal pid sway reports), then `swaymsg
+    [con_id=..] focus`; `close` kills that terminal pid. The sway tree walk is
+    unit-tested.
   - `src/picker.rs` — a directory-grouped fuzzy picker (library module,
     unit-tested). No longer wired to a shell now that both filter inline; kept
     for reuse.

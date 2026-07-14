@@ -30,7 +30,7 @@ use ratatui::widgets::ListState;
 mod ui;
 
 use corral_core::discovery::{self, RegistryEntry};
-use corral_core::focus::{SwayFocuser, WindowFocuser};
+use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, KittyLauncher, Launcher};
 use corral_core::model::{Board, Origin, Update};
 use corral_core::prompt;
@@ -150,7 +150,8 @@ fn handle_overlay(
 
 fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::io::Result<()> {
     let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
-    let focuser = SwayFocuser;
+    // EWMH on X11, sway on Wayland (until other Wayland focusers land).
+    let focuser = focus::detect();
     let launcher = KittyLauncher;
 
     let mut board = Board::default();
@@ -302,7 +303,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                             }
                             KeyCode::Enter => {
                                 activate_selected(
-                                    &focuser,
+                                    focuser.as_ref(),
                                     &launcher,
                                     &board,
                                     selected,
@@ -353,10 +354,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         spawn_new(&launcher, &board, selected, &mut status);
                     }
                     KeyCode::Enter => {
-                        activate_selected(&focuser, &launcher, &board, selected, &mut status)
+                        activate_selected(focuser.as_ref(), &launcher, &board, selected, &mut status)
                     }
                     KeyCode::Char('d') => {
-                        dismiss_selected(dir, &focuser, &board, selected, &mut status);
+                        dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
                     }
                     KeyCode::Char('/') => {
                         // Focus the inline filter; typing narrows the cards.
@@ -381,7 +382,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                         if let Some(fa) = ui::footer_hit_test(area, m.column, m.row) {
                             match fa {
                                 ui::FooterAction::Go => activate_selected(
-                                    &focuser,
+                                    focuser.as_ref(),
                                     &launcher,
                                     &board,
                                     selected,
@@ -399,7 +400,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                     overlay = open_compose(&board, selected);
                                 }
                                 ui::FooterAction::Delete => {
-                                    dismiss_selected(dir, &focuser, &board, selected, &mut status)
+                                    dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status)
                                 }
                                 ui::FooterAction::Quit => break,
                             }
@@ -411,7 +412,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, dir: &std::path::Path) -> std::i
                                     Click::Go => {
                                         selected = idx;
                                         activate_selected(
-                                            &focuser,
+                                            focuser.as_ref(),
                                             &launcher,
                                             &board,
                                             selected,

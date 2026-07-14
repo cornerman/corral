@@ -24,6 +24,19 @@ pub trait WindowFocuser {
     fn close(&self, agent: &Agent) -> Result<(), String>;
 }
 
+/// Pick a focuser for the running session: EWMH on X11 (any compliant WM,
+/// keyed on pid), else sway on Wayland (its IPC also reports pid). A Wayland
+/// session that is not sway currently has no focuser; other compositors drop
+/// in behind this seam. Selection is by environment: `$WAYLAND_DISPLAY` marks
+/// a Wayland session, `$DISPLAY` an X11 one.
+pub fn detect() -> Box<dyn WindowFocuser> {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if !wayland && std::env::var_os("DISPLAY").is_some() {
+        return Box::new(X11Focuser);
+    }
+    Box::new(SwayFocuser)
+}
+
 pub struct SwayFocuser;
 
 impl SwayFocuser {
@@ -124,6 +137,144 @@ fn sway_get_tree() -> Result<serde_json::Value, String> {
         .output()
         .map_err(|e| format!("swaymsg get_tree failed: {e}"))?;
     serde_json::from_slice(&out.stdout).map_err(|e| format!("bad sway tree json: {e}"))
+}
+
+// --- X11 (EWMH) ---
+
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{
+    AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window, CLIENT_MESSAGE_EVENT,
+};
+use x11rb::wrapper::ConnectionExt as _; // change_property8
+
+/// Focus X11 windows through EWMH, so one implementation drives every
+/// compliant window manager (i3, bspwm, openbox, X11 KWin/Mutter, …),
+/// workspace-switching included: activating a window makes a compliant WM
+/// switch to its workspace, raise it, and focus it. Correlation is by pid via
+/// `_NET_WM_PID`, the same reliable signal as the sway path (the window's pid
+/// is an ancestor of the agent's socket pid).
+pub struct X11Focuser;
+
+impl WindowFocuser for X11Focuser {
+    fn focus(&self, agent: &Agent) -> Result<(), String> {
+        let (conn, root, win) = self.find(agent)?;
+        let active = intern(&conn, b"_NET_ACTIVE_WINDOW")?;
+        // Source indication 2 = pager: corral is a taskbar-like tool, so this
+        // bypasses focus-stealing prevention that would otherwise only flash
+        // urgency. A real server timestamp (not CurrentTime) is required for
+        // the same reason; `server_time` fetches one via a property round-trip.
+        let time = server_time(&conn, root)?;
+        let data = [2u32, time, 0, 0, 0];
+        let event = ClientMessageEvent {
+            response_type: CLIENT_MESSAGE_EVENT,
+            format: 32,
+            sequence: 0,
+            window: win,
+            type_: active,
+            data: data.into(),
+        };
+        conn.send_event(
+            false,
+            root,
+            EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT,
+            event,
+        )
+        .map_err(|e| format!("x11 send_event: {e}"))?;
+        conn.flush().map_err(|e| format!("x11 flush: {e}"))?;
+        Ok(())
+    }
+
+    // Kill the window's process (its `_NET_WM_PID`), matching the sway path:
+    // a close request would be refused by kitty's confirm-on-close, but
+    // killing the process takes the window and the agent with it, leaving a
+    // dormant resumable record.
+    fn close(&self, agent: &Agent) -> Result<(), String> {
+        let (conn, _root, win) = self.find(agent)?;
+        let pid = window_pid(&conn, win).ok_or("x11: window has no _NET_WM_PID")?;
+        let ok = Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .map_err(|e| format!("kill failed: {e}"))?
+            .success();
+        if ok {
+            Ok(())
+        } else {
+            Err("kill returned non-zero".into())
+        }
+    }
+}
+
+impl X11Focuser {
+    /// Connect and find the agent's window: the first client whose
+    /// `_NET_WM_PID` is the agent's pid or one of its ancestors (the terminal
+    /// that owns the window is an ancestor of the agent's socket pid).
+    fn find(&self, agent: &Agent) -> Result<(x11rb::rust_connection::RustConnection, Window, Window), String> {
+        let (conn, screen) =
+            x11rb::connect(None).map_err(|e| format!("x11 connect: {e}"))?;
+        let root = conn.setup().roots[screen].root;
+        let ancestors = ancestor_pids(agent.pid);
+        let list = intern(&conn, b"_NET_CLIENT_LIST")?;
+        let windows = conn
+            .get_property(false, root, list, AtomEnum::WINDOW, 0, u32::MAX)
+            .map_err(|e| format!("x11 client list: {e}"))?
+            .reply()
+            .map_err(|e| format!("x11 client list reply: {e}"))?;
+        let windows = windows
+            .value32()
+            .ok_or("x11: _NET_CLIENT_LIST not 32-bit")?;
+        for win in windows {
+            if let Some(pid) = window_pid(&conn, win) {
+                if ancestors.contains(&pid) {
+                    return Ok((conn, root, win));
+                }
+            }
+        }
+        Err(format!("no x11 window found for pid {}", agent.pid))
+    }
+}
+
+fn intern(conn: &impl Connection, name: &[u8]) -> Result<u32, String> {
+    conn.intern_atom(false, name)
+        .map_err(|e| format!("x11 intern: {e}"))?
+        .reply()
+        .map_err(|e| format!("x11 intern reply: {e}"))
+        .map(|r| r.atom)
+}
+
+/// The `_NET_WM_PID` of a window, if set.
+fn window_pid(conn: &impl Connection, win: Window) -> Option<u32> {
+    let atom = intern(conn, b"_NET_WM_PID").ok()?;
+    let reply = conn
+        .get_property(false, win, atom, AtomEnum::CARDINAL, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    reply.value32().and_then(|mut v| v.next())
+}
+
+/// A current X server timestamp, obtained the canonical way: a zero-length
+/// append to a property on the root window generates a `PropertyNotify` whose
+/// `time` is the server's current time. Needed so `_NET_ACTIVE_WINDOW` is not
+/// deferred by focus-stealing prevention.
+fn server_time(conn: &impl Connection, root: Window) -> Result<u32, String> {
+    use x11rb::protocol::Event;
+    // Select property changes on the root, then trigger one on a private atom.
+    let marker = intern(conn, b"_CORRAL_TIMESTAMP")?;
+    conn.change_window_attributes(
+        root,
+        &x11rb::protocol::xproto::ChangeWindowAttributesAux::new()
+            .event_mask(EventMask::PROPERTY_CHANGE),
+    )
+    .map_err(|e| format!("x11 select prop: {e}"))?;
+    conn.change_property8(PropMode::APPEND, root, marker, AtomEnum::STRING, &[])
+        .map_err(|e| format!("x11 mark: {e}"))?;
+    conn.flush().map_err(|e| format!("x11 flush: {e}"))?;
+    loop {
+        match conn.wait_for_event().map_err(|e| format!("x11 event: {e}"))? {
+            Event::PropertyNotify(ev) if ev.atom == marker => return Ok(ev.time),
+            _ => continue,
+        }
+    }
 }
 
 #[cfg(test)]

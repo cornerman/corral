@@ -10,6 +10,9 @@ description = "Shared registry/discovery/launch/prompt code for corral and corra
 
 [dependencies]
 serde_json = "1"
+# X11 window focus via EWMH (pure-Rust XCB, links libxcb which is always
+# present in an X11 session; no libX11).
+x11rb = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

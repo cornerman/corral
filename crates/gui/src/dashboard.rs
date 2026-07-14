@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use corral_core::focus::{SwayFocuser, WindowFocuser};
+use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, KittyLauncher, Launcher};
 use corral_core::model::{Agent, Column, Origin, State};
 use corral_core::{engine::Engine, nav, paths, prompt};
@@ -49,7 +49,7 @@ enum Act {
 
 pub struct Dashboard {
     engine: Engine,
-    focuser: SwayFocuser,
+    focuser: Box<dyn WindowFocuser>,
     launcher: KittyLauncher,
     dir: PathBuf,
     filter: String,
@@ -68,7 +68,7 @@ impl Dashboard {
         let dir = paths::registry_dir().expect("registry dir (set $HOME or $CORRAL_REGISTRY_DIR)");
         Self {
             engine: Engine::new(dir.clone()),
-            focuser: SwayFocuser,
+            focuser: focus::detect(),
             launcher: KittyLauncher,
             dir,
             filter: String::new(),
@@ -330,7 +330,7 @@ impl Dashboard {
             Act::None => {}
             Act::Go => {
                 if let Some(a) = agent {
-                    self.status = match activate(&a, &self.focuser, &self.launcher) {
+                    self.status = match activate(&a, self.focuser.as_ref(), &self.launcher) {
                         Ok(()) => format!("→ {}", a.title.as_deref().unwrap_or("agent")),
                         Err(e) => e,
                     };
