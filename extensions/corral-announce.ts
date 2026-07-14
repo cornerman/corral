@@ -162,9 +162,11 @@ export default function (pi: ExtensionAPI) {
 		clients.clear();
 		server?.close();
 		server = undefined;
-		// Clear the socket in the registry before unlinking it: the record
-		// stays as a dormant, resumable entry.
-		if (currentCtx && registryFile) writeRegistry(currentCtx, null);
+		// Clear the socket in the registry before unlinking it: the record stays
+		// a dormant, resumable entry. Done WITHOUT ctx: stop() can run during a
+		// session replacement (resume/fork/reload), when the captured currentCtx
+		// is stale and touching ctx.sessionManager throws — which would crash pi.
+		clearSocketInRegistry();
 		if (socketPath) {
 			fs.rmSync(socketPath, { force: true });
 			socketPath = undefined;
@@ -446,7 +448,25 @@ export default function (pi: ExtensionAPI) {
 	// corral's single discovery store: `<sessionId>.json` names the live socket
 	// (or null when dormant) plus enough to resume. Written atomically
 	// (tmp + rename) so a scanning corral never reads a half-written file.
+	// Mark the session dormant by clearing the live socket, without any ctx:
+	// reads the known registry file and rewrites `socket: null`. Used by stop(),
+	// which may run when the captured ctx is stale (session replacement), where
+	// touching ctx.sessionManager would throw and crash pi. Best-effort.
+	function clearSocketInRegistry() {
+		if (!registryFile) return;
+		try {
+			const rec = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+			rec.socket = null;
+			const tmp = `${registryFile}.${process.pid}.tmp`;
+			fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), { mode: 0o600 });
+			fs.renameSync(tmp, registryFile);
+		} catch {
+			// Record already gone or unreadable: nothing to clear.
+		}
+	}
+
 	function writeRegistry(ctx: ExtensionContext, socket: string | null) {
+		try {
 		const dir = registryDir();
 		if (!dir) return;
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -483,6 +503,11 @@ export default function (pi: ExtensionAPI) {
 		const tmp = `${registryFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 		fs.renameSync(tmp, registryFile);
+		} catch {
+			// A stale ctx (after session replacement/reload) throws on
+			// sessionManager access; announcing is best-effort and must never
+			// crash pi. Skip this update.
+		}
 	}
 
 	function sessionInfo(ctx: ExtensionContext) {
