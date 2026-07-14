@@ -292,16 +292,22 @@ impl Board {
             return Task::none();
         }
         if self.filtering {
-            // First Escape: just unfocus, leaving the filter text and cursor.
+            // Unfocus, leaving the filter text and cursor.
             self.filtering = false;
             // Focus a nonexistent id to blur the filter field.
             return text_input::focus(text_input::Id::new("corral-blur"));
         }
-        // Second Escape (field already blurred): clear and reset to the top.
-        self.filter.clear();
-        self.selected = 0;
-        self.refresh();
-        self.scroll_to_selection()
+        if !self.filter.is_empty() {
+            // Field already blurred: clear the filter and reset to the top.
+            self.filter.clear();
+            self.selected = 0;
+            self.refresh();
+            return self.scroll_to_selection();
+        }
+        // Nothing left to dismiss: exit. Escape peels layers (compose, filter
+        // focus, filter text) and only quits at this final stage, so an
+        // accidental Escape mid-filter never kills the window.
+        iced::exit()
     }
 
     fn on_key(&mut self, key: keyboard::Key, mods: keyboard::Modifiers) -> Task<Message> {
