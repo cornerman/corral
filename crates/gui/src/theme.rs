@@ -22,8 +22,6 @@ use iced::Color;
 #[derive(Debug, Clone)]
 pub struct Base16 {
     pub name: String,
-    /// The scheme's own variant (dark ramp vs light ramp).
-    pub dark: bool,
     pub base: [Color; 8],
     pub accent: [Color; 8],
 }
@@ -49,14 +47,9 @@ fn parse_hex(s: &str) -> Option<Color> {
     ))
 }
 
-/// Whether a scheme is dark, inferred from `base00`'s luminance when the file
-/// omits `variant`.
-fn infer_dark(base00: Color) -> bool {
-    0.299 * base00.r + 0.587 * base00.g + 0.114 * base00.b < 0.5
-}
-
 /// Parse a tinted-theming base16 scheme. Returns `None` unless all sixteen
-/// `base0X` colors are present and valid.
+/// `base0X` colors are present and valid. The `variant` field is not read: the
+/// active pair is chosen by slug, not by a scheme's self-declared variant.
 pub fn parse(src: &str) -> Option<Base16> {
     let mut kv: HashMap<String, String> = HashMap::new();
     for line in src.lines() {
@@ -76,17 +69,7 @@ pub fn parse(src: &str) -> Option<Base16> {
         accent[i] = color(i + 8)?;
     }
     let name = kv.get("name").cloned().unwrap_or_else(|| "unnamed".into());
-    let dark = match kv.get("variant").map(String::as_str) {
-        Some("light") => false,
-        Some("dark") => true,
-        _ => infer_dark(base[0]),
-    };
-    Some(Base16 {
-        name,
-        dark,
-        base,
-        accent,
-    })
+    Some(Base16 { name, base, accent })
 }
 
 const fn rgb(hex: u32) -> Color {
@@ -112,7 +95,6 @@ const SOLARIZED_ACCENT: [Color; 8] = [
 fn solarized_dark() -> Base16 {
     Base16 {
         name: "Solarized Dark".into(),
-        dark: true,
         base: [
             rgb(0x002b36),
             rgb(0x073642),
@@ -130,7 +112,6 @@ fn solarized_dark() -> Base16 {
 fn solarized_light() -> Base16 {
     Base16 {
         name: "Solarized Light".into(),
-        dark: false,
         // The Solarized Dark ramp reversed.
         base: [
             rgb(0xfdf6e3),
@@ -238,7 +219,6 @@ palette:
     fn parses_tinted_theming_spec() {
         let b = parse(SAMPLE).expect("parse");
         assert_eq!(b.name, "Test Scheme");
-        assert!(b.dark);
         assert_eq!(b.base[0], Color::from_rgb8(0x1a, 0x1a, 0x1a));
         // A leading '#' on the value is tolerated.
         assert_eq!(b.base[1], Color::from_rgb8(0x28, 0x28, 0x28));
@@ -253,24 +233,18 @@ palette:
     }
 
     #[test]
-    fn infers_variant_from_luminance_when_absent() {
-        let no_variant = SAMPLE.replace("variant: \"dark\"\n", "");
-        assert!(parse(&no_variant).expect("parse").dark);
-    }
-
-    #[test]
     fn presets_include_the_solarized_pair() {
         let p = presets();
         assert!(p.contains_key("solarized-dark"));
         assert!(p.contains_key("solarized-light"));
-        assert!(p["solarized-dark"].dark);
-        assert!(!p["solarized-light"].dark);
+        assert_eq!(p["solarized-dark"].name, "Solarized Dark");
     }
 
     #[test]
     fn solarized_ramp_reverses_and_shares_accents() {
         let d = solarized_dark();
         let l = solarized_light();
+        assert_eq!(d.name, "Solarized Dark");
         assert_eq!(d.base[0], l.base[7]);
         assert_eq!(d.base[7], l.base[0]);
         assert_eq!(d.accent, l.accent);

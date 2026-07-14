@@ -16,4 +16,5 @@ path = "src/main.rs"
 
 [dependencies]
 corral-core = { path = "../core" }
-iced = "0.13"
+# canvas: the corral mark; tokio: enables iced::time::every (the tick timer).
+iced = { version = "0.13", features = ["canvas", "tokio"] }
