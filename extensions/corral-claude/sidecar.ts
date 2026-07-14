@@ -274,10 +274,16 @@ function handleControl(line: string, conn: Sock) {
 			applyTitle(ev.session_title);
 			setState("idle");
 			return respond(null);
-		case "UserPromptSubmit":
-			if (!title) applyTitle(ev.prompt); // fallback title from first prompt
+		case "UserPromptSubmit": {
+			// Fallback title from the first real user prompt. Skip corral's own
+			// injected deliveries: Claude wraps a Stop-hook block message in a
+			// <task-notification> envelope and re-fires UserPromptSubmit with it, so
+			// an unguarded fallback would title the session with our own re-wake text.
+			const p = typeof ev.prompt === "string" ? ev.prompt : "";
+			if (!title && !p.trimStart().startsWith("<task-notification>")) applyTitle(ev.prompt);
 			setState("running");
 			return respond(null);
+		}
 		case "PreToolUse":
 			setState("running");
 			broadcast({
