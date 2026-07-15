@@ -526,12 +526,6 @@ export default function (pi: ExtensionAPI) {
 			resumeCommand: resumable ? ["pi", "--session", sessionId] : null,
 			hidden,
 			lastSeen: new Date().toISOString(),
-			// Task-group membership, transported through the environment at
-			// launch (CONVENTION.md §2b): a consumer spawning a swarm member sets
-			// these, a human launch leaves them unset (private, no group). Copied
-			// verbatim so corral scopes cross-session tooling to the swarm.
-			group: process.env.CORRAL_GROUP || null,
-			name: process.env.CORRAL_NAME || null,
 		};
 		const tmp = `${registryFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });

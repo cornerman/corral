@@ -56,16 +56,6 @@ pub struct RegistryEntry {
     /// adapter from the `CORRAL_HIDDEN` env signal corral sets at a hidden
     /// spawn. Absent/false is a normal visible session.
     pub hidden: bool,
-    /// Task-group (swarm) id: the explicit trust/visibility boundary. All
-    /// sessions a spawner fans out share one `group`, inherited at launch (via
-    /// `$CORRAL_GROUP`). `None` = a human-started session, private to itself.
-    /// Rich cross-session verbs (list/history/status) are scoped to a group;
-    /// cross-group reach stays operator-gated. See the cross-box-tasking spec.
-    pub group: Option<String>,
-    /// Group-local short name (alias) a spawner assigns, inherited at launch
-    /// (via `$CORRAL_NAME`). Consumers resolve it to `session_id` for
-    /// addressing within the group. `None` = unnamed (address by session id).
-    pub name: Option<String>,
 }
 
 impl RegistryEntry {
@@ -106,8 +96,6 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         gui: v.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
         message_flag: str_field("messageFlag"),
         hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
-        group: str_field("group"),
-        name: str_field("name"),
     })
 }
 
@@ -250,18 +238,6 @@ mod tests {
         // launch_mode carries it.
         let e = parse_registry_json(r#"{"sessionId":"s5","hidden":true}"#).unwrap();
         assert!(e.launch_mode().hidden);
-    }
-
-    #[test]
-    fn group_and_name_parse_when_present_else_none() {
-        let e =
-            parse_registry_json(r#"{"sessionId":"s1","group":"g-42","name":"reviewer"}"#).unwrap();
-        assert_eq!(e.group.as_deref(), Some("g-42"));
-        assert_eq!(e.name.as_deref(), Some("reviewer"));
-        // Absent -> None (a human-started session has no group/name).
-        let e = parse_registry_json(r#"{"sessionId":"s2"}"#).unwrap();
-        assert_eq!(e.group, None);
-        assert_eq!(e.name, None);
     }
 
     #[test]

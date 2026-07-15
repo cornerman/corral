@@ -61,8 +61,6 @@ Fields:
 | `gui`       | boolean         | Optional; default `false`. `true` when the agent draws its own window (a GUI app like quine), so the consumer launches `spawnCommand`/`resumeCommand` **directly** rather than wrapping them in a terminal. Absent or `false` means terminal-wrapped, so every existing terminal agent keeps its behavior unchanged. |
 | `messageFlag` | string \| null | Optional CLI flag that carries the initial launch message (see §2a), e.g. `"--message"` for quine. When set, the consumer passes the message as this flag's value (`… --message "<text>"`); absent/null means the message is a trailing positional argument. Lets a flag-based agent take a launch message without accepting a positional. |
 | `hidden`    | boolean         | Optional; default `false`. `true` when the session runs **hidden**: inside a headless compositor, so its window never maps on the host. A consumer reveals a hidden session by resume (see §2b) rather than by focusing a window, and MAY show it as hidden. The agent SHOULD set this from the `CORRAL_HIDDEN=1` environment variable a consumer exports when it launches a hidden session (see §2b). Absent/false is a normal, visible session. |
-| `group` | string \| null | Optional; default `null`. Task-group (swarm) id: the trust/visibility boundary for cross-session tooling (see §2b). All sessions a spawner fans out share one `group`, inherited at launch. `null` = a human-started session, private to itself. |
-| `name`  | string \| null | Optional; default `null`. Group-local short name (alias) a spawner assigns, so a consumer resolves it to `sessionId` for addressing within the group. `null` = unnamed (address by session id). |
 
 The consumer runs `spawnCommand` / `resumeCommand` **verbatim and never parses
 them**, so it stays agent-neutral: pi's `--session` grammar, opencode's, and any
@@ -101,24 +99,6 @@ terminal wrapper.)
 
 A record with `socket == null` denotes a **dormant** session: not running, but
 resumable via `resumeCommand`.
-
-### 2b. Task Groups (MAY)
-
-A **group** is the explicit trust-and-visibility boundary for cross-session
-tooling. A single-process subagent swarm gets this boundary for free (one
-process = one trust domain); a corral swarm spans real boxes, so it must name
-the boundary. When a session is spawned as part of a swarm, its `group` (and
-optional group-local `name`) are set on the record; every session sharing a
-`group` is one swarm. A human-started session leaves `group` absent (`null`),
-which makes it private: not a member of any swarm.
-
-The convention transports group membership through the **environment** at
-launch: a consumer that spawns a swarm member sets `$CORRAL_GROUP` (and
-optionally `$CORRAL_NAME`), and the announcing agent copies those into its
-record's `group` / `name`. Absent env variables mean no group (a human launch).
-Rich cross-session verbs (list a swarm, read a member's history, a member's
-status) are scoped to a group; reaching outside a group stays operator-gated.
-An agent that does not participate in swarms MAY ignore both fields.
 
 ### 2a. Launch (initial message injection)
 

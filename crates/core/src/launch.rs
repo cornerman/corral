@@ -368,11 +368,7 @@ mod tests {
         // The message is appended in both modes.
         assert_eq!(
             setsid_args(&gui, &term, &cmd, Some("hi")),
-            vec![
-                "quine".to_string(),
-                "--corral".to_string(),
-                "hi".to_string()
-            ]
+            vec!["quine".to_string(), "--corral".to_string(), "hi".to_string()]
         );
     }
 

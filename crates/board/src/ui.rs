@@ -738,13 +738,8 @@ mod card_tests {
 
     #[test]
     fn title_line_puts_age_right_aligned() {
-        let line = title_line(
-            "fix the auth flow",
-            Some("5m"),
-            30,
-            Style::default(),
-            Style::default(),
-        );
+        let line =
+            title_line("fix the auth flow", Some("5m"), 30, Style::default(), Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text.chars().count(), 30, "fills the card width exactly");
         assert!(text.starts_with("fix the auth flow"));

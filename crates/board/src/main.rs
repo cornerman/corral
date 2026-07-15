@@ -141,15 +141,11 @@ fn handle_overlay(
                             resume_command,
                             mode,
                         } => {
-                            *status = match launcher.launch(
-                                Path::new(cwd),
-                                resume_command,
-                                Some(text),
-                                mode,
-                            ) {
-                                Ok(()) => format!("resuming {} to deliver", c.label),
-                                Err(e) => format!("resume: {e}"),
-                            };
+                            *status =
+                                match launcher.launch(Path::new(cwd), resume_command, Some(text), mode) {
+                                    Ok(()) => format!("resuming {} to deliver", c.label),
+                                    Err(e) => format!("resume: {e}"),
+                                };
                         }
                     }
                 }
