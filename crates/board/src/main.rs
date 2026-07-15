@@ -4,8 +4,9 @@
 //! (override with $CORRAL_REGISTRY_DIR): each `<sessionId>.json` names a
 //! workdir-local ACP socket. Corral watches each live socket for its
 //! running/idle/requires_action state,
-//! and shows them in four columns. Enter or a mouse click focuses an agent's
-//! window, Shift+Enter spawns a new agent in the selected agent's dir, `/`
+//! and shows them in four columns. Enter or a double-click focuses an agent's
+//! window (a single click just selects; right-click opens a context menu of the
+//! footer actions), Shift+Enter spawns a new agent in the selected agent's dir, `/`
 //! focuses the inline filter, `m` composes a message, `d` dismisses, `q`
 //! quits (Esc peels one layer per press but never exits — q is the sole quit).
 //! `--launcher` opens an ephemeral popup that exits after a go/spawn, or on a
@@ -31,7 +32,9 @@ use ratatui::widgets::ListState;
 
 mod ui;
 
+use corral_core::click::{ClickKind, ClickTracker};
 use corral_core::discovery::{self, RegistryEntry};
+use corral_core::menu::MenuAction;
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Board, Origin, Update};
@@ -105,6 +108,14 @@ struct Compose {
 enum Overlay {
     /// `m`: compose a message to a live agent.
     Compose(Compose),
+}
+
+/// The open right-click context menu: where it is anchored and which entry is
+/// highlighted. The menu always acts on the board's current `selected` (a
+/// right-click selects the card under the cursor before opening).
+struct Menu {
+    anchor: (u16, u16),
+    highlight: usize,
 }
 
 /// Feed one event to the open overlay. Returns the overlay to keep it open, or
@@ -194,6 +205,12 @@ fn run(
     let mut filtering = launcher_mode;
     // The active input overlay, if any (`m` compose a message).
     let mut overlay: Option<Overlay> = None;
+    // The open right-click context menu, if any: its cursor anchor and the
+    // highlighted entry. Captures input while open.
+    let mut menu: Option<Menu> = None;
+    // Classifies left clicks into select (single) vs go (double) on the same
+    // card within the double-click window.
+    let mut clicks = ClickTracker::default();
     // Inter-agent messaging lives entirely in the corrald daemon now; the board
     // is a pure viewer of the registry plus the operator's own actions (focus,
     // spawn, resume, and the ungated `m` message to a selected agent).
@@ -310,10 +327,88 @@ fn run(
                 Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
                 None => {}
             }
+            if let Some(m) = &menu {
+                ui::render_menu(f, m.anchor, m.highlight);
+            }
         })?;
 
         if event::poll(POLL)? {
             let ev = event::read()?;
+            // An open context menu captures all input: arrows move the
+            // highlight, Enter/left-click runs an entry, Esc/outside-click
+            // closes. The chosen action runs on the board's current selection
+            // (a right-click selected the card before opening).
+            if let Some(mut m) = menu.take() {
+                let mut chosen: Option<MenuAction> = None;
+                let mut keep = true;
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                        KeyCode::Esc => keep = false,
+                        KeyCode::Up => {
+                            m.highlight = (m.highlight + MenuAction::ALL.len() - 1)
+                                % MenuAction::ALL.len();
+                        }
+                        KeyCode::Down => {
+                            m.highlight = (m.highlight + 1) % MenuAction::ALL.len();
+                        }
+                        KeyCode::Enter => chosen = Some(MenuAction::ALL[m.highlight]),
+                        _ => {}
+                    },
+                    Event::Mouse(me) => match me.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let s = terminal.size()?;
+                            let area = Rect::new(0, 0, s.width, s.height);
+                            let rect = ui::menu_rect(area, m.anchor);
+                            match ui::menu_hit_test(rect, me.column, me.row) {
+                                Some(i) => chosen = Some(MenuAction::ALL[i]),
+                                None => keep = false, // click outside dismisses
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Right) => keep = false,
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                if let Some(action) = chosen {
+                    // Menu closed; run the same path as the footer/key.
+                    match action {
+                        MenuAction::Go => {
+                            if activate_selected(
+                                focuser.as_ref(),
+                                &launcher,
+                                &board,
+                                selected,
+                                &mut status,
+                            ) && launcher_mode
+                            {
+                                break;
+                            }
+                        }
+                        MenuAction::Spawn => {
+                            if spawn_new(&launcher, &board, selected, &mut status) && launcher_mode {
+                                break;
+                            }
+                        }
+                        MenuAction::Message => {
+                            status.clear();
+                            overlay = open_compose(&board, selected);
+                        }
+                        MenuAction::ToggleHidden => toggle_selected(
+                            focuser.as_ref(),
+                            &launcher,
+                            &board,
+                            selected,
+                            &mut status,
+                        ),
+                        MenuAction::Dismiss => {
+                            dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
+                        }
+                    }
+                } else if keep {
+                    menu = Some(m);
+                }
+                continue;
+            }
             // Filter edit mode: printable keys edit the query, arrows still
             // navigate, Enter keeps it, Esc leaves filter mode (never quits).
             if filtering {
@@ -502,23 +597,36 @@ fn run(
                         } else {
                             let scroll = std::array::from_fn(|i| list_states[i].offset());
                             if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
-                                match click_action(idx, selected) {
-                                    Click::Select => selected = idx,
-                                    Click::Go => {
-                                        selected = idx;
-                                        if activate_selected(
-                                            focuser.as_ref(),
-                                            &launcher,
-                                            &board,
-                                            selected,
-                                            &mut status,
-                                        ) && launcher_mode
-                                        {
-                                            break;
-                                        }
+                                // Single click selects; a double click on the
+                                // same card goes (focus/reveal/resume).
+                                selected = idx;
+                                if let ClickKind::Go = clicks.press(idx, Instant::now()) {
+                                    if activate_selected(
+                                        focuser.as_ref(),
+                                        &launcher,
+                                        &board,
+                                        selected,
+                                        &mut status,
+                                    ) && launcher_mode
+                                    {
+                                        break;
                                     }
                                 }
                             }
+                        }
+                    }
+                    // Right click a card: select it, then open the context menu
+                    // anchored at the cursor. Empty space does nothing.
+                    MouseEventKind::Down(MouseButton::Right) => {
+                        let s = terminal.size()?;
+                        let area = Rect::new(0, 0, s.width, s.height);
+                        let scroll = std::array::from_fn(|i| list_states[i].offset());
+                        if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
+                            selected = idx;
+                            menu = Some(Menu {
+                                anchor: (m.column, m.row),
+                                highlight: 0,
+                            });
                         }
                     }
                     _ => {}
@@ -530,23 +638,7 @@ fn run(
     Ok(())
 }
 
-/// A left click first selects a card; only a click on the already-selected
-/// card goes to it. Keeps a stray click from teleporting the operator's
-/// window. Extracted pure so the rule is unit-tested.
-enum Click {
-    Select,
-    Go,
-}
-
-fn click_action(clicked: usize, selected: usize) -> Click {
-    if clicked == selected {
-        Click::Go
-    } else {
-        Click::Select
-    }
-}
-
-/// Enter/click on the selected agent: focus a live window, or resume a dormant
+/// Enter/double-click on the selected agent: focus a live window, or resume a dormant
 /// session. Errors land in the status line. Returns whether an agent was
 /// activated (so the launcher can exit on success).
 fn activate_selected(
@@ -722,14 +814,3 @@ fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn click_goes_only_on_the_already_selected_card() {
-        assert!(matches!(click_action(3, 3), Click::Go));
-        assert!(matches!(click_action(3, 1), Click::Select));
-        assert!(matches!(click_action(0, 5), Click::Select));
-    }
-}

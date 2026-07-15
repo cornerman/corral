@@ -246,8 +246,10 @@ ratatui / iced, the daemon keeps ksni).
     Up/Down, Left/Right, Enter go, Shift+Enter spawn, `m` message
     (compose overlay), `d` dismiss, `h` toggle hidden (hide a visible session,
     reveal a hidden one, start a dormant one hidden — all via
-    `core::placement`), `q` quit; a two-stage left click and a
-    clickable footer. Enter on a live hidden card reveals it (resume) rather
+    `core::placement`), `q` quit; a single left click selects a card, a double
+    click goes, a right click opens a context menu of the five footer actions
+    (`core::menu`; `core::click` classifies the double click), plus a clickable
+    footer. Enter on a live hidden card reveals it (resume) rather
     than focusing a non-existent window; Shift+Enter beside a hidden card
     spawns the new agent hidden too (placement follows the selected card).
     A live hidden card shows the 🫥 hidden icon (a bare glyph; the GUI adds a
@@ -265,8 +267,9 @@ ratatui / iced, the daemon keeps ksni).
   `core::engine::Engine`. iced renders text via cosmic-text (crisp, shaped),
   the reason for the toolkit over egui. Flat and base16-themed (dark/light
   polled from the freedesktop appearance portal); an underline-only centered
-  filter over the four columns of fixed-height cards; click a card to go
-  (two-stage: select then go), Shift+Enter spawns the selected card's kind in
+  filter over the four columns of fixed-height cards; single-click selects a
+  card, double-click goes, right-click opens a context menu of the footer
+  actions, Shift+Enter spawns the selected card's kind in
   its dir, a bottom key-hint footer with the canvas-drawn corral mark, the same
   keys as the TUI. Each card is two rows: the title with the column age at the
   top-right, then a hash-colored cwd basename pill (`core::palette`, same color
@@ -590,7 +593,7 @@ message/tool updates) is ACP v1.
 
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
   Dormant. Up/Down (or scroll) move within a column; Left/Right switch
-  columns; Enter or left-click goes to the selected agent (focus a
+  columns; Enter or double-click goes to the selected agent (focus a
   live window, resume a dormant session by running its `resumeCommand`);
   Shift+Enter spawns a fresh agent of the selected card's kind (its
   `spawnCommand`) in the selected agent's cwd; `/` focuses a prominent
@@ -606,9 +609,10 @@ message/tool updates) is ACP v1.
   (the sole quit), and Esc peels one layer per press (edit-mode blur, then clear
   filter) but never exits the normal board. `--launcher` opens the TUI as an
   ephemeral popup (filter focused, a successful go/spawn exits, as does a single
-  Esc), the same as `corral-gui --launcher`. A left click
-  is two-stage: first click selects, a click on the
-  already-selected card goes. Shift+Enter needs the kitty keyboard protocol
+  Esc), the same as `corral-gui --launcher`. A single left click selects a
+  card, a double click goes, and a right click opens a context menu of the
+  footer actions (go / message / spawn / toggle-hidden / dismiss) acting on the
+  card under the cursor (Esc or a click outside closes it). Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
   visible; live cards show time-in-state. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir; uses `swaymsg` and `kitty` for
@@ -616,8 +620,9 @@ message/tool updates) is ACP v1.
 - CLI `corral-gui` — the same attention board as a desktop (iced) window,
   a second parallel viewer for when no terminal is wanted. Flat,
   base16-Solarized, follows the system light/dark (freedesktop appearance
-  portal). A centered filter line over the four columns; click a card to go,
-  `+ new` to spawn, arrows / Enter / Shift+Enter / `m` / `d` / `/` as in the
+  portal). A centered filter line over the four columns; single-click selects
+  a card, double-click goes, right-click opens the context menu of footer
+  actions, `+ new` to spawn, arrows / Enter / Shift+Enter / `m` / `d` / `/` as in the
   TUI, a bottom key-hint footer. Links the graphics libs (libGL / wayland / X11
   / xkbcommon); on NixOS the flake wraps it with the driver library path. The
   tray's “Open board” launches this.

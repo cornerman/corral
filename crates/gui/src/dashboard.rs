@@ -7,16 +7,18 @@
 //! Interaction mirrors the TUI, keeping the egui shell's learnings: `/` focuses
 //! the filter (narrows cards by whole content); arrows move, Enter
 //! goes, Shift+Enter spawns, `m` messages (compose overlay), `d` dismisses,
-//! `Esc` clears the filter then quits, `q` quits; a two-stage card click (first
-//! click selects, click the selected card goes); selection survives a filter
-//! clear.
+//! `Esc` clears the filter then quits, `q` quits; a single click selects a
+//! card, a double click goes, and a right-click opens a context menu of the
+//! footer actions; selection survives a filter clear.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use corral_core::click::{ClickKind, ClickTracker};
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
+use corral_core::menu::MenuAction;
 use corral_core::model::{Agent, Column, Origin, State};
 use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::{engine::Engine, nav, palette::basename, palette::color_index, paths, prompt};
@@ -38,6 +40,14 @@ use crate::theme::{self, Base16};
 const CARD_H: f32 = 56.0;
 /// Vertical gap between cards in a column (the list `spacing`).
 const CARD_GAP: f32 = 6.0;
+/// Context-menu geometry (points): fixed width sized for the longest label
+/// ("Toggle hidden"), one row per entry, plus vertical padding. Used to clamp
+/// the anchor so the whole menu stays on-screen.
+const MENU_W: f32 = 160.0;
+const MENU_ROW_H: f32 = 26.0;
+fn menu_h() -> f32 {
+    MenuAction::ALL.len() as f32 * MENU_ROW_H + 8.0
+}
 
 /// A column's scrollable id (for programmatic scroll-into-view).
 fn col_scroll_id(c: usize) -> scrollable::Id {
@@ -67,6 +77,16 @@ pub enum Message {
     FilterSubmit,
     FocusFilter,
     CardClicked(usize),
+    /// Right-click a card: select it, then open the context menu at the cursor.
+    CardRightClicked(usize),
+    /// Latest cursor position, tracked so the context menu opens at the cursor.
+    CursorMoved(Point),
+    /// Window size, tracked so the context menu clamps on-screen.
+    Resized(Size),
+    /// Run a context-menu entry on the selected card, then close the menu.
+    MenuPick(MenuAction),
+    /// Close the context menu without acting (Esc or a click outside).
+    MenuDismiss,
     Go,
     Spawn,
     /// Window gained (true) or lost (false) focus. Launcher dismisses on blur.
@@ -119,6 +139,14 @@ pub struct Board {
     selected: usize,
     status: String,
     compose: Option<Compose>,
+    /// Classifies left clicks into select (single) vs go (double).
+    clicks: ClickTracker,
+    /// The open right-click context menu, anchored at the cursor (clamped
+    /// on-screen). Acts on the current `selected` card.
+    menu: Option<Point>,
+    /// Latest cursor position and window size, for menu placement + clamping.
+    cursor: Point,
+    window: Size,
     // Snapshot rebuilt each tick / filter change; view and actions read it.
     columns: Vec<Vec<Agent>>,
     in_state: HashMap<PathBuf, String>,
@@ -147,6 +175,10 @@ impl Board {
             selected: 0,
             status: String::new(),
             compose: None,
+            clicks: ClickTracker::default(),
+            menu: None,
+            cursor: Point::ORIGIN,
+            window: Size::new(1024.0, 768.0),
             columns: vec![Vec::new(); Column::ALL.len()],
             in_state: HashMap::new(),
             quiet: HashMap::new(),
@@ -205,6 +237,14 @@ impl Board {
         std::array::from_fn(|i| self.columns[i].len())
     }
 
+    /// Clamp a menu anchor so the whole box stays inside the window.
+    fn clamp_menu(&self, p: Point) -> Point {
+        Point {
+            x: p.x.min((self.window.width - MENU_W).max(0.0)),
+            y: p.y.min((self.window.height - menu_h()).max(0.0)),
+        }
+    }
+
     fn selected_agent(&self) -> Option<&Agent> {
         self.columns.iter().flatten().nth(self.selected)
     }
@@ -236,13 +276,34 @@ impl Board {
             Message::CardClicked(idx) => {
                 // A click blurs the filter field, so leave filter mode too.
                 self.filtering = false;
-                // Two-stage: first click selects, click on the selected goes.
-                if idx == self.selected {
-                    return self.act_go();
-                }
                 self.selected = idx;
+                // Single click selects; a double click on the same card goes
+                // (focus/reveal/resume).
+                match self.clicks.press(idx, Instant::now()) {
+                    ClickKind::Go => return self.act_go(),
+                    ClickKind::Select => return self.scroll_to_selection(),
+                }
+            }
+            Message::CardRightClicked(idx) => {
+                self.filtering = false;
+                self.selected = idx;
+                // Anchor the menu at the cursor, clamped so it stays on-screen.
+                self.menu = Some(self.clamp_menu(self.cursor));
                 return self.scroll_to_selection();
             }
+            Message::CursorMoved(p) => self.cursor = p,
+            Message::Resized(sz) => self.window = sz,
+            Message::MenuPick(action) => {
+                self.menu = None;
+                return match action {
+                    MenuAction::Go => self.act_go(),
+                    MenuAction::Message => self.update(Message::OpenCompose),
+                    MenuAction::Spawn => self.act_spawn(),
+                    MenuAction::ToggleHidden => self.act_toggle_hidden(),
+                    MenuAction::Dismiss => self.update(Message::Dismiss),
+                };
+            }
+            Message::MenuDismiss => self.menu = None,
             Message::Go => return self.act_go(),
             Message::Spawn => return self.act_spawn(),
             Message::Focused(focused) => {
@@ -311,6 +372,10 @@ impl Board {
         if self.launcher_mode {
             return iced::exit();
         }
+        if self.menu.is_some() {
+            self.menu = None;
+            return Task::none();
+        }
         if self.compose.is_some() {
             self.compose = None;
             return Task::none();
@@ -335,6 +400,12 @@ impl Board {
     fn on_key(&mut self, key: keyboard::Key, mods: keyboard::Modifiers) -> Task<Message> {
         use keyboard::key::Named;
         let counts = self.counts();
+        // An open context menu captures the keyboard: only Escape acts (owned
+        // by `escape()` via the dedicated listener, closing the menu), so keys
+        // never leak to the board behind it. Mirrors the TUI's capture.
+        if self.menu.is_some() {
+            return Task::none();
+        }
         // In the compose overlay, Enter sends; Esc (cancel) is owned by
         // `escape()` via the dedicated listener; nothing else.
         if self.compose.is_some() {
@@ -558,6 +629,14 @@ impl Board {
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::Focused(false))
                 }
+                // Track the cursor so the context menu opens at it, and the
+                // window size so it clamps on-screen.
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(Message::CursorMoved(position))
+                }
+                iced::Event::Window(iced::window::Event::Resized(size)) => {
+                    Some(Message::Resized(size))
+                }
                 _ => None,
             }),
         ])
@@ -583,6 +662,9 @@ impl Board {
         if let Some(compose) = &self.compose {
             // Overlay the compose card centered over a dimmed board.
             iced::widget::stack![board, compose_overlay(compose, &s)].into()
+        } else if let Some(anchor) = self.menu {
+            // A full-window dismiss layer under the menu catches outside clicks.
+            iced::widget::stack![board, menu_overlay(anchor, &s)].into()
         } else {
             board
         }
@@ -820,6 +902,7 @@ impl Board {
             });
         mouse_area(card)
             .on_press(Message::CardClicked(idx))
+            .on_right_press(Message::CardRightClicked(idx))
             .interaction(mouse::Interaction::Pointer)
             .into()
     }
@@ -873,6 +956,47 @@ impl Board {
         .align_y(Alignment::Center)
         .into()
     }
+}
+
+/// The right-click context menu overlay: a full-window transparent layer that
+/// dismisses on a click (outside the menu), with the menu itself positioned at
+/// the cursor anchor on top. Each entry runs its action via `MenuPick`.
+fn menu_overlay<'a>(anchor: Point, s: &Base16) -> Element<'a, Message> {
+    let (bg, border, fg) = (s.base[1], s.base[2], s.base[5]);
+    let mut items = column![].width(Length::Fixed(MENU_W));
+    for action in MenuAction::ALL {
+        let entry = container(text(action.label()).size(14).color(fg))
+            .width(Length::Fill)
+            .padding([4, 10]);
+        items = items.push(
+            mouse_area(entry)
+                .on_press(Message::MenuPick(action))
+                .interaction(mouse::Interaction::Pointer),
+        );
+    }
+    let menu = container(items)
+        .padding(4)
+        .style(move |_t| container::Style {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                color: border,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..container::Style::default()
+        });
+    // Position the menu at the anchor by padding the top-left of a full-window
+    // container (iced has no absolute placement; padding offsets it).
+    let positioned = container(menu)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(iced::Padding::ZERO.top(anchor.y).left(anchor.x));
+    // The dismiss layer sits under the menu (earlier in the stack), so a click
+    // on an entry hits the entry and a click anywhere else closes the menu.
+    let dismiss = mouse_area(container(Space::new(Length::Fill, Length::Fill)))
+        .on_press(Message::MenuDismiss)
+        .on_right_press(Message::MenuDismiss);
+    iced::widget::stack![dismiss, positioned].into()
 }
 
 /// The compose overlay: a centered card with a message field. Enter sends

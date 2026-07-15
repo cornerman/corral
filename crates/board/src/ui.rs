@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use corral_core::menu::MenuAction;
 use corral_core::model::{Agent, Board, Column, Origin};
 use corral_core::palette::{basename, color_index};
 
@@ -172,6 +173,69 @@ pub fn render_compose(frame: &mut Frame, target: &str, buf: &str) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(format!("> {buf}")), inner);
+}
+
+/// The right-click context menu's on-screen rect, anchored at the cursor
+/// `(col,row)` and clamped so it stays fully inside `area`. Width fits the
+/// widest entry label plus padding and borders; height is one row per entry
+/// plus the top/bottom border. Shared by `render_menu` and `menu_hit_test` so
+/// their geometry cannot drift.
+pub fn menu_rect(area: Rect, anchor: (u16, u16)) -> Rect {
+    let label_w = MenuAction::ALL
+        .iter()
+        .map(|a| a.label().chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    // borders (2) + one space of padding on each side (2).
+    let width = label_w + 4;
+    let height = MenuAction::ALL.len() as u16 + 2;
+    let (cx, cy) = anchor;
+    // Clamp the top-left so the whole box fits on screen.
+    let x = cx.min(area.x + area.width.saturating_sub(width));
+    let y = cy.min(area.y + area.height.saturating_sub(height));
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// Map a click inside the menu to an entry index, or None for the border rows
+/// or a click outside the menu entirely. Uses the same rect `render_menu`
+/// draws.
+pub fn menu_hit_test(rect: Rect, col: u16, row: u16) -> Option<usize> {
+    let inside = col >= rect.x
+        && col < rect.x + rect.width
+        && row > rect.y // skip the top border
+        && row < rect.y + rect.height - 1; // skip the bottom border
+    inside.then(|| (row - rect.y - 1) as usize)
+}
+
+/// Draw the right-click context menu: a bordered box of the five actions, the
+/// highlighted entry reversed. `selected` is the highlighted entry index.
+pub fn render_menu(frame: &mut Frame, anchor: (u16, u16), selected: usize) {
+    let rect = menu_rect(frame.area(), anchor);
+    frame.render_widget(Clear, rect);
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    let lines: Vec<Line> = MenuAction::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let style = if i == selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            // Pad the label to the inner width so the reversed highlight spans
+            // the whole row, not just the text.
+            let text = format!(" {:<w$}", a.label(), w = inner.width.saturating_sub(1) as usize);
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// A footer action the operator can click (the key hints double as buttons).
@@ -656,6 +720,31 @@ mod tests {
 
         // A scrolled left column maps the first visible row to the offset item.
         assert_eq!(hit_test(area, &b, 5, 6, [1, 0, 0, 0]), Some(1));
+    }
+
+    #[test]
+    fn menu_rect_clamps_to_stay_on_screen() {
+        let area = Rect::new(0, 0, 100, 28);
+        // Anchored near the bottom-right, the box shifts left/up to fit.
+        let r = menu_rect(area, (98, 26));
+        assert!(r.x + r.width <= area.width);
+        assert!(r.y + r.height <= area.height);
+        assert_eq!(r.height as usize, MenuAction::ALL.len() + 2);
+    }
+
+    #[test]
+    fn menu_hit_test_maps_rows_to_entries_and_skips_borders() {
+        let area = Rect::new(0, 0, 100, 28);
+        let r = menu_rect(area, (10, 5));
+        // Top border row: no entry.
+        assert_eq!(menu_hit_test(r, r.x + 1, r.y), None);
+        // First entry row (just below the top border).
+        assert_eq!(menu_hit_test(r, r.x + 1, r.y + 1), Some(0));
+        assert_eq!(menu_hit_test(r, r.x + 1, r.y + 5), Some(4));
+        // Bottom border row: no entry.
+        assert_eq!(menu_hit_test(r, r.x + 1, r.y + r.height - 1), None);
+        // A column outside the box: no entry.
+        assert_eq!(menu_hit_test(r, r.x + r.width + 1, r.y + 1), None);
     }
 }
 
