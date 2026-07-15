@@ -36,8 +36,11 @@
  *
  * VERIFICATION: the plugin API surface is typechecked against
  * @opencode-ai/plugin@1.16.2 (matching the installed opencode) — the `Plugin`
- * signature, the `client.session.list/prompt/abort` calls, the `tool()` helper,
- * and every `event.type` string against the SDK `Event` union. That check found
+ * signature, the `client.session.list/prompt/abort` calls, and every
+ * `event.type` string against the SDK `Event` union. The `corral_message_agent`
+ * tool is defined with a plain JSON-schema `args` (not the zod-based `tool()`
+ * helper) so the plugin needs no runtime import from @opencode-ai/plugin, which
+ * is unresolvable from the nix store path this plugin loads from. That check found
  * tool activity arrives as the dedicated `tool.execute.before/after` plugin
  * hooks (there is no `tool.*` event), so it is handled as hooks here, not in the
  * `event` switch. Still UNVERIFIED at runtime: opencode is a Bun-compiled
@@ -57,7 +60,12 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
-import { type Plugin, tool } from "@opencode-ai/plugin";
+// Type-only import: erased at compile time. A runtime value import (e.g. the
+// `tool` helper) would fail to resolve from the immutable nix store path this
+// plugin loads from (no node_modules up-tree), and opencode drops the whole
+// plugin on an unresolved import. So the tool below uses a plain JSON-schema
+// definition instead of opencode's zod-based `tool()`/`tool.schema` builder.
+import type { Plugin } from "@opencode-ai/plugin";
 
 // Longest title corral should receive; an auto-generated title can be long.
 const MAX_TITLE = 60;
@@ -527,10 +535,15 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		// an agent, and injects with a provenance tag. Sandboxed agents cannot reach
 		// each other directly, so this indirection is the only cross-session path.
 		//
-		// UNVERIFIED: the `tool()` registration helper and its schema/ctx shape are
-		// coded from opencode's docs, not typechecked here.
+		// The tool is defined with a plain JSON-schema `args` (no zod / no `tool()`
+		// wrapper) so the plugin needs no runtime import from @opencode-ai/plugin,
+		// which is unresolvable from the nix store path (see the import note above).
+		// opencode's plugin-tool loader accepts plain-object arg schemas directly.
+		// Caveat: that path advertises every arg as `required`; the descriptions
+		// tell the model to leave the unused addressing field empty, and execute()
+		// treats an empty string as absent, so exactly-one-of still holds.
 		tool: {
-			corral_message_agent: tool({
+			corral_message_agent: {
 				description:
 					"Message another coding-agent session and hold a back-and-forth with it. Use it to " +
 					"ask a peer agent a question, hand off a subtask, or answer a message you received.\n\n" +
@@ -546,35 +559,37 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"message you back; if you received a message and a reply would help, send one to its " +
 					"session id. Every message is tagged with your identity so the recipient can reply to you.",
 				args: {
-					target_session: tool.schema
-						.string()
-						.optional()
-						.describe(
+					target_session: {
+						type: "string",
+						description:
 							"Reach this exact session id (resuming it if dormant). Use it to REPLY: it is the " +
-							"<id> from the '[from agent in <dir> (session <id>)]' tag on a message you received.",
-						),
-					target_dir: tool.schema
-						.string()
-						.optional()
-						.describe(
+							"<id> from the '[from agent in <dir> (session <id>)]' tag on a message you received. " +
+							"Give EITHER this OR target_dir; leave the other one empty (\"\").",
+					},
+					target_dir: {
+						type: "string",
+						description:
 							"Absolute path: reach whoever works in this directory, starting a new agent there " +
-							"if none is live. Use it to start a conversation when you have no session id yet.",
-						),
-					message: tool.schema.string().describe("The message text to deliver to the other agent."),
-					force_new: tool.schema
-						.boolean()
-						.optional()
-						.describe(
+							"if none is live. Use it to start a conversation when you have no session id yet. " +
+							"Give EITHER this OR target_session; leave the other one empty (\"\").",
+					},
+					message: {
+						type: "string",
+						description: "The message text to deliver to the other agent.",
+					},
+					force_new: {
+						type: "boolean",
+						description:
 							"With target_dir only: always start a dedicated fresh agent instead of reusing the " +
-							"one already working there.",
-						),
-					label: tool.schema
-						.string()
-						.optional()
-						.describe(
+							"one already working there. Pass false when not needed.",
+					},
+					label: {
+						type: "string",
+						description:
 							'With target_dir only: which agent kind to start if a fresh agent is spawned ' +
-							'(e.g. "pi", "opencode"). Defaults to the kind already used in that directory.',
-						),
+							'(e.g. "pi", "opencode"). Defaults to the kind already used in that directory; ' +
+							'leave empty ("") to use the default.',
+					},
 				},
 				async execute(args: {
 					target_dir?: string;
@@ -618,7 +633,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					}
 					return describeAck(status, String(dest));
 				},
-			}),
+			},
 		},
 	};
 };
