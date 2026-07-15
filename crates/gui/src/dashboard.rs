@@ -400,8 +400,16 @@ impl Board {
                 // then show where it will land).
                 if let Some(source) = self.drag_source {
                     if let Some(c) = self.column_at_x(p.x).map(|i| Column::ALL[i]) {
-                        if c != source && transition::DESTINATIONS.contains(&c) {
-                            self.move_mode = Some((source, c));
+                        match self.move_mode {
+                            // Once moving, retarget to any column under the
+                            // cursor, including back onto the source (a no-op =
+                            // drop to cancel).
+                            Some((src, _)) => self.move_mode = Some((src, c)),
+                            // Crossing into a different column begins the move;
+                            // intra-column jitter does not (a plain click stays
+                            // a click).
+                            None if c != source => self.move_mode = Some((source, c)),
+                            None => {}
                         }
                     }
                 }
@@ -558,10 +566,10 @@ impl Board {
         if let Some((source, target)) = self.move_mode {
             match key {
                 keyboard::Key::Named(Named::ArrowLeft) => {
-                    self.move_mode = Some((source, transition::slide_target(target, false)));
+                    self.move_mode = Some((source, transition::slide_target(source, target, false)));
                 }
                 keyboard::Key::Named(Named::ArrowRight) => {
-                    self.move_mode = Some((source, transition::slide_target(target, true)));
+                    self.move_mode = Some((source, transition::slide_target(source, target, true)));
                 }
                 keyboard::Key::Named(Named::Enter) => {
                     self.move_mode = None;
@@ -957,7 +965,7 @@ impl Board {
         // In move mode the columns become labeled drop-boxes (cards hidden),
         // the target highlighted, Requires Action greyed as a non-destination.
         let mid: Element<'_, Message> = match self.move_mode {
-            Some((_src, target)) => self.move_columns(s, target),
+            Some((src, target)) => self.move_columns(s, src, target),
             None => cols.into(),
         };
 
@@ -979,16 +987,21 @@ impl Board {
     /// box titled with the column name, the `target` box highlighted with the
     /// moving card's label, Requires Action greyed as a non-destination.
     /// Mirrors the TUI's `render_move`.
-    fn move_columns(&self, s: &Base16, target: Column) -> Element<'_, Message> {
+    fn move_columns(&self, s: &Base16, source: Column, target: Column) -> Element<'_, Message> {
         let label = self
             .selected_agent()
             .and_then(|a| a.title.clone())
             .unwrap_or_else(|| "agent".into());
+        // A no-op target (the source column, or Requires Action) = drop to
+        // cancel.
+        let cancels = matches!(transition::action_for(source, target), MoveAction::NoOp);
         let mut cols = row![].spacing(14).height(Length::Fill);
         for col in Column::ALL {
             let is_target = col == target;
-            let is_dest = transition::DESTINATIONS.contains(&col);
-            let (border_col, fg) = if is_target {
+            let is_dest = transition::DESTINATIONS.contains(&col) || col == source;
+            let (border_col, fg) = if is_target && cancels {
+                (s.accent[Base16::YELLOW], s.base[5])
+            } else if is_target {
                 (s.accent[Base16::GREEN], s.base[5])
             } else if is_dest {
                 (s.base[2], s.base[4])
@@ -1002,7 +1015,12 @@ impl Board {
             };
             let mut body = column![text(title).size(15).color(fg).font(semibold())].spacing(10);
             if is_target {
-                body = body.push(text(label.clone()).size(14).color(fg).font(semibold()));
+                let note = if cancels {
+                    format!("{label} (drop to cancel)")
+                } else {
+                    label.clone()
+                };
+                body = body.push(text(note).size(14).color(fg).font(semibold()));
             }
             let bw = if is_target { 2.0 } else { 1.0 };
             let boxed = container(body)

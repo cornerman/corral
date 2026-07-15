@@ -635,21 +635,25 @@ fn column(
 /// greyed as a non-destination. The moving card's label sits inside the target
 /// box, and a hint line shows the controls. Drawn as an overlay over the board
 /// so `render` stays untouched.
-pub fn render_move(frame: &mut Frame, target: Column, moving_label: &str) {
+pub fn render_move(frame: &mut Frame, source: Column, target: Column, moving_label: &str) {
+    use corral_core::transition::{action_for, MoveAction, DESTINATIONS};
     let cols = column_layout(frame.area());
+    // Whether committing on the target does anything: a no-op target (the source
+    // column, or Requires Action) means "drop to cancel".
+    let cancels = matches!(action_for(source, target), MoveAction::NoOp);
     for (i, col) in Column::ALL.into_iter().enumerate() {
         let rect = cols[i];
         frame.render_widget(Clear, rect);
         let is_target = col == target;
-        let is_dest = corral_core::transition::DESTINATIONS.contains(&col);
-        let border_style = if is_target {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
+        let is_dest = DESTINATIONS.contains(&col) || col == source;
+        let border_style = if is_target && cancels {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else if is_target {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
         } else if is_dest {
             Style::default().add_modifier(Modifier::DIM)
         } else {
-            // Requires Action: never a destination.
+            // Requires Action (not the source): never a destination.
             Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
         };
         let title = if is_dest {
@@ -664,8 +668,14 @@ pub fn render_move(frame: &mut Frame, target: Column, moving_label: &str) {
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
         if is_target {
-            // Show the moving card's label centered in the target box.
-            let label = truncate(moving_label, inner.width.saturating_sub(2) as usize);
+            // Show the moving card's label centered in the target box, plus a
+            // "drop to cancel" note when the target is a no-op.
+            let text = if cancels {
+                format!("{moving_label} (drop to cancel)")
+            } else {
+                moving_label.to_string()
+            };
+            let label = truncate(&text, inner.width.saturating_sub(2) as usize);
             let mid = Rect {
                 y: inner.y + inner.height / 2,
                 height: 1,

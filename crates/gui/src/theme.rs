@@ -29,6 +29,7 @@ pub struct Base16 {
 /// Accents referenced by role so cards/badges never hardcode indices.
 impl Base16 {
     pub const RED: usize = 0; // base08 — attention
+    pub const YELLOW: usize = 2; // base0A — caution / cancel
     pub const GREEN: usize = 3; // base0B — running
     pub const BLUE: usize = 5; // base0D — selection / links
 }

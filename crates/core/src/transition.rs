@@ -59,36 +59,37 @@ pub fn action_for(from: Column, to: Column) -> MoveAction {
 /// source but never a destination.
 pub const DESTINATIONS: [Column; 3] = [Column::Idle, Column::Running, Column::Dormant];
 
-/// Slide the ghost target one step across the valid destination columns
-/// (`DESTINATIONS`), clamped at the ends. `right` steps toward Dormant, else
-/// toward Idle. A `current` not in `DESTINATIONS` (only Requires Action) snaps
-/// to the first destination. Shared by both shells so keyboard-move and
-/// drag-target agree on where the ghost can rest.
-pub fn slide_target(current: Column, right: bool) -> Column {
-    let idx = DESTINATIONS.iter().position(|&c| c == current);
-    match idx {
-        None => DESTINATIONS[0],
-        Some(i) => {
-            let next = if right {
-                (i + 1).min(DESTINATIONS.len() - 1)
-            } else {
-                i.saturating_sub(1)
-            };
-            DESTINATIONS[next]
-        }
-    }
+/// The columns the ghost may rest on when moving a card out of `source`, in
+/// display order: every destination, plus the source itself so the operator
+/// can drop back where they started to cancel (`action_for(source, source)` is
+/// a no-op). Requires Action is thus a stop only when it *is* the source.
+pub fn stops(source: Column) -> Vec<Column> {
+    Column::ALL
+        .into_iter()
+        .filter(|c| *c == source || DESTINATIONS.contains(c))
+        .collect()
 }
 
-/// The destination a move first targets when entering move mode from `source`
-/// in a given direction: the adjacent valid destination. From Requires Action
-/// either direction begins at Idle (its only sensible first step).
+/// Slide the ghost one step across `stops(source)`, clamped at the ends.
+/// `right` steps toward Dormant, else toward Idle. Shared by both shells so
+/// keyboard-move and drag-target agree on where the ghost can rest.
+pub fn slide_target(source: Column, current: Column, right: bool) -> Column {
+    let stops = stops(source);
+    let i = stops.iter().position(|&c| c == current).unwrap_or(0);
+    let next = if right {
+        (i + 1).min(stops.len() - 1)
+    } else {
+        i.saturating_sub(1)
+    };
+    stops[next]
+}
+
+/// The column a move first targets when entering move mode from `source` in a
+/// given direction: one step off the source across `stops(source)` (clamped, so
+/// grabbing at an edge and pressing into the wall rests on the source = a
+/// cancel until the operator slides the other way).
 pub fn initial_target(source: Column, right: bool) -> Column {
-    match DESTINATIONS.iter().position(|&c| c == source) {
-        // Source is a valid destination column: step off it in the direction.
-        Some(_) => slide_target(source, right),
-        // Source is Requires Action: begin at the nearest destination (Idle).
-        None => Column::Idle,
-    }
+    slide_target(source, source, right)
 }
 
 /// Whether a pending move to `target` has landed, given the agent's current
@@ -139,14 +140,34 @@ mod tests {
     }
 
     #[test]
-    fn slide_clamps_within_destinations() {
-        assert_eq!(slide_target(Idle, false), Idle); // clamp at left end
-        assert_eq!(slide_target(Idle, true), Running);
-        assert_eq!(slide_target(Running, true), Dormant);
-        assert_eq!(slide_target(Dormant, true), Dormant); // clamp at right end
-        assert_eq!(slide_target(Dormant, false), Running);
-        // Requires Action is not a destination: snaps to the first.
-        assert_eq!(slide_target(RequiresAction, false), Idle);
+    fn stops_include_source_and_destinations() {
+        // A destination source: stops are just the destinations.
+        assert_eq!(stops(Running), vec![Idle, Running, Dormant]);
+        // Requires Action source: it is a stop too (so you can cancel by
+        // dropping back home), in display order.
+        assert_eq!(stops(RequiresAction), vec![RequiresAction, Idle, Running, Dormant]);
+    }
+
+    #[test]
+    fn slide_clamps_within_stops() {
+        // From a Running-origin card (stops = Idle/Running/Dormant).
+        assert_eq!(slide_target(Running, Idle, false), Idle); // clamp left
+        assert_eq!(slide_target(Running, Idle, true), Running);
+        assert_eq!(slide_target(Running, Running, true), Dormant);
+        assert_eq!(slide_target(Running, Dormant, true), Dormant); // clamp right
+        // A Requires-Action-origin card can slide back onto Requires Action.
+        assert_eq!(slide_target(RequiresAction, Idle, false), RequiresAction);
+        assert_eq!(slide_target(RequiresAction, RequiresAction, true), Idle);
+    }
+
+    #[test]
+    fn can_rest_on_source_to_cancel() {
+        // Sliding back to the source column yields a no-op action = cancel.
+        assert_eq!(action_for(Running, slide_target(Running, Idle, true)), MoveAction::NoOp);
+        assert_eq!(
+            action_for(RequiresAction, slide_target(RequiresAction, Idle, false)),
+            MoveAction::NoOp
+        );
     }
 
     #[test]
@@ -154,9 +175,10 @@ mod tests {
         assert_eq!(initial_target(Running, false), Idle);
         assert_eq!(initial_target(Running, true), Dormant);
         assert_eq!(initial_target(Idle, true), Running);
-        // From Requires Action, either direction begins at Idle.
+        assert_eq!(initial_target(Idle, false), Idle); // clamp at left stop
+        // Requires Action steps right to Idle; left clamps onto itself (cancel).
         assert_eq!(initial_target(RequiresAction, true), Idle);
-        assert_eq!(initial_target(RequiresAction, false), Idle);
+        assert_eq!(initial_target(RequiresAction, false), RequiresAction);
     }
 
     #[test]

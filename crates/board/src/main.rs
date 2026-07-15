@@ -448,8 +448,8 @@ fn run(
             ui::render(f, &board, selected, &status, &mut list_states, &meta);
             // Move mode owns the screen (drop-boxes over the columns); the
             // filter/overlay/menu are all closed while moving.
-            if let Some((_src, target)) = &move_mode {
-                ui::render_move(f, *target, move_label.as_deref().unwrap_or(""));
+            if let Some((src, target)) = &move_mode {
+                ui::render_move(f, *src, *target, move_label.as_deref().unwrap_or(""));
             } else {
                 ui::render_filter(f, &filter, filtering);
                 match &overlay {
@@ -483,22 +483,22 @@ fn run(
                         (KeyCode::Enter, KeyEventKind::Press) => commit = true,
                         (KeyCode::Esc, KeyEventKind::Press) => cancel = true,
                         (KeyCode::Left, KeyEventKind::Press) => {
-                            target = transition::slide_target(target, false)
+                            target = transition::slide_target(source, target, false)
                         }
                         (KeyCode::Right, KeyEventKind::Press) => {
-                            target = transition::slide_target(target, true)
+                            target = transition::slide_target(source, target, true)
                         }
                         _ => {}
                     },
                     Event::Mouse(m) => match m.kind {
-                        // Drag over a valid destination column retargets.
+                        // Drag retargets to the column under the cursor,
+                        // including back onto the source column (a no-op = drop
+                        // to cancel).
                         MouseEventKind::Drag(MouseButton::Left) => {
                             let s = terminal.size()?;
                             let area = Rect::new(0, 0, s.width, s.height);
                             if let Some(c) = ui::column_at(area, m.column) {
-                                if transition::DESTINATIONS.contains(&c) {
-                                    target = c;
-                                }
+                                target = c;
                             }
                         }
                         MouseEventKind::Up(MouseButton::Left) => commit = true,
@@ -839,8 +839,11 @@ fn run(
                         if let Some(source) = drag_source {
                             let s = terminal.size()?;
                             let area = Rect::new(0, 0, s.width, s.height);
+                            // Crossing into a different column begins the move;
+                            // intra-column jitter does not (so a plain click is
+                            // never a move).
                             if let Some(c) = ui::column_at(area, m.column) {
-                                if c != source && transition::DESTINATIONS.contains(&c) {
+                                if c != source {
                                     move_mode = Some((source, c));
                                 }
                             }

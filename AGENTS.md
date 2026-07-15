@@ -163,10 +163,11 @@ ratatui / iced, the daemon keeps ksni).
     (Running/RequiresAction → Idle), nudge `"continue"` (Idle → Running), kill
     (any live → Dormant), resume / resume+nudge (Dormant → Idle / Running).
     Requires Action is never a destination (corral cannot open a question).
-    `slide_target`/`initial_target` step the ghost across the valid
-    destinations; `confirms` says a move landed once the agent reaches the
-    target column (the board never fakes state). The single source both shells
-    consume, unit-tested exhaustively.
+    `stops(source)`/`slide_target`/`initial_target` step the ghost across the
+    destinations plus the source column itself, so dropping back on the source
+    (a no-op) cancels the move; `confirms` says a move landed once the agent
+    reaches the target column (the board never fakes state). The single source
+    both shells consume, unit-tested exhaustively.
   - `src/paths.rs` — the well-known on-disk locations (`registry_dir`,
     `control_socket`, `whitelist_file`), each the `env` override or a fixed name
     under `~/.corral`. Shared so all binaries agree on where things live.
