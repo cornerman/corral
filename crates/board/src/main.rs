@@ -34,6 +34,7 @@ use corral_core::discovery::{self, RegistryEntry};
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Board, Origin, Update};
+use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::prompt;
 use corral_core::{model, nav, paths, watch};
 
@@ -401,6 +402,23 @@ fn run(
                     KeyCode::Char('d') => {
                         dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
                     }
+                    KeyCode::Char('h') => {
+                        // Toggle placement: hide a visible agent, reveal a
+                        // hidden one, or start a dormant one hidden. Always
+                        // kill-and-resume (no live surface migration).
+                        status.clear();
+                        if let Some(agent) = board.selectable().get(selected).copied() {
+                            status = match apply_placement(
+                                agent,
+                                focuser.as_ref(),
+                                &launcher,
+                                &kill_pid,
+                            ) {
+                                Ok(()) => format!("toggling {}", ui::focus_label(agent)),
+                                Err(e) => e,
+                            };
+                        }
+                    }
                     KeyCode::Char('/') => {
                         // Focus the inline filter; typing narrows the cards.
                         status.clear();
@@ -537,6 +555,11 @@ fn activate(
     launcher: &dyn Launcher,
 ) -> Result<(), String> {
     match agent.origin {
+        // A live hidden agent has no host window to focus; going to it reveals
+        // it (kill + resume visible), the same kill-and-resume as `h`.
+        Origin::Live if agent.hidden => {
+            apply_placement(agent, focuser, launcher, &kill_pid).map_err(|e| format!("reveal: {e}"))
+        }
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
             (Some(cwd), Some(command)) => launcher
@@ -583,6 +606,8 @@ fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &m
         return false;
     };
     let cwd = launch::default_cwd(agent.cwd.as_deref());
+    // agent.launch_mode() carries the selected card's `hidden`, so Shift+Enter
+    // beside a hidden card spawns the new agent hidden too (same placement).
     match launcher.launch(&cwd, command, None, &agent.launch_mode()) {
         Ok(()) => true,
         Err(e) => {

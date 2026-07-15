@@ -191,7 +191,7 @@ const FOOTER_GAP: u16 = 2;
 /// triggers (`None` for the non-clickable movement hint). Keys are spelled in
 /// plain ASCII (no `⏎`/`⇧`/arrow glyphs) so they render in every terminal
 /// font; the keycap styling in `footer_layout` supplies the visual polish.
-fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 7] {
+fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 8] {
     [
         (None, "arrows", "move"),
         (Some(FooterAction::Go), "enter", "go"),
@@ -199,6 +199,8 @@ fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 7] {
         (Some(FooterAction::Jump), "/", "filter"),
         (Some(FooterAction::Msg), "m", "msg"),
         (Some(FooterAction::Delete), "d", "delete"),
+        // `h` toggles hide/show (placement); not a click target, key-only.
+        (None, "h", "hide/show"),
         (Some(FooterAction::Quit), "q", "quit"),
     ]
 }
@@ -316,6 +318,16 @@ pub fn age_label(d: Duration) -> String {
 
 /// Label for the compose target and the `f` focus picker: the title and the
 /// cwd's last path segment.
+/// The badge suffix shown after the kind badge: `"hidden"` for a live hidden
+/// agent, empty otherwise. Kept pure so it is unit-tested without a terminal.
+pub fn hidden_badge(agent: &Agent) -> &'static str {
+    if agent.origin == Origin::Live && agent.hidden {
+        "hidden"
+    } else {
+        ""
+    }
+}
+
 pub fn focus_label(agent: &Agent) -> String {
     let title = agent.title.as_deref().unwrap_or("(unnamed)");
     let cwd = agent.cwd.as_deref().unwrap_or("?");
@@ -403,6 +415,14 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
     }
     used += agent.label.chars().count();
     row2.push(Span::styled(agent.label.clone(), faint));
+    // A live hidden agent shows a dim `hidden` badge: it runs in a headless
+    // cage, so Enter reveals it by resume rather than focusing a window.
+    let hidden = hidden_badge(agent);
+    if !hidden.is_empty() {
+        used += hidden.chars().count() + 1;
+        row2.push(Span::raw(" "));
+        row2.push(Span::styled(hidden, faint));
+    }
     if let Some(a) = agent.activity.as_deref() {
         let act_w = width.saturating_sub(used + 2); // two spaces before activity
         row2.push(Span::raw("  "));
@@ -590,6 +610,7 @@ mod tests {
             activity: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }));
     }
 
@@ -646,7 +667,20 @@ mod card_tests {
             activity: activity.map(String::from),
             gui: false,
             message_flag: None,
+            hidden: false,
         }
+    }
+
+    #[test]
+    fn hidden_badge_only_for_live_hidden() {
+        let mut a = agent(State::Idle, None);
+        a.hidden = true;
+        assert_eq!(hidden_badge(&a), "hidden");
+        a.hidden = false;
+        assert_eq!(hidden_badge(&a), "");
+        a.hidden = true;
+        a.origin = Origin::Dormant;
+        assert_eq!(hidden_badge(&a), "", "dormant cards never show the badge");
     }
 
     #[allow(clippy::type_complexity)]
