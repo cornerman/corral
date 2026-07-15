@@ -51,6 +51,11 @@ pub struct RegistryEntry {
     /// argument (see §2a). Lets a flag-based agent take a launch message
     /// without a positional.
     pub message_flag: Option<String>,
+    /// Whether this session runs hidden (inside a headless cage), so the board
+    /// reveals it by resume rather than focusing a host window. Written by the
+    /// adapter from the `CORRAL_HIDDEN` env signal corral sets at a hidden
+    /// spawn. Absent/false is a normal visible session.
+    pub hidden: bool,
 }
 
 impl RegistryEntry {
@@ -60,7 +65,7 @@ impl RegistryEntry {
         crate::launch::LaunchMode {
             gui: self.gui,
             message_flag: self.message_flag.clone(),
-            hidden: false,
+            hidden: self.hidden,
         }
     }
 }
@@ -90,6 +95,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         last_seen: str_field("lastSeen"),
         gui: v.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
         message_flag: str_field("messageFlag"),
+        hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
     })
 }
 
@@ -215,6 +221,23 @@ mod tests {
         // Absent -> None (positional message, the default for pi/opencode).
         let e = parse_registry_json(r#"{"sessionId":"s2"}"#).unwrap();
         assert_eq!(e.message_flag, None);
+    }
+
+    #[test]
+    fn hidden_field_parses_true_false_and_absent() {
+        let e = parse_registry_json(r#"{"sessionId":"s1","hidden":true}"#).unwrap();
+        assert!(e.hidden);
+        let e = parse_registry_json(r#"{"sessionId":"s2","hidden":false}"#).unwrap();
+        assert!(!e.hidden);
+        // Absent defaults to false (existing pi/opencode records).
+        let e = parse_registry_json(r#"{"sessionId":"s3"}"#).unwrap();
+        assert!(!e.hidden);
+        // Non-boolean ignored leniently.
+        let e = parse_registry_json(r#"{"sessionId":"s4","hidden":"yes"}"#).unwrap();
+        assert!(!e.hidden);
+        // launch_mode carries it.
+        let e = parse_registry_json(r#"{"sessionId":"s5","hidden":true}"#).unwrap();
+        assert!(e.launch_mode().hidden);
     }
 
     #[test]

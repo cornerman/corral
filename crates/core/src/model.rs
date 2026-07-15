@@ -400,6 +400,7 @@ mod tests {
             last_seen: Some(last_seen.into()),
             gui: false,
             message_flag: None,
+            hidden: false,
         }
     }
 
@@ -422,6 +423,7 @@ mod tests {
             last_seen: None,
             gui: true,
             message_flag: Some("--message".into()),
+            hidden: false,
         };
         board.sync_registry(&[rec], &HashSet::new());
         let dormant = board.dormant();
