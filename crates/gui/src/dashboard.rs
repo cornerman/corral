@@ -296,14 +296,21 @@ impl Board {
         Task::none()
     }
 
-    /// Escape, in stages (never quits — only `q` does). Owns all Escape
-    /// handling so it is reliable even when the focused filter field captures
-    /// the key event:
-    ///   1. compose overlay open -> cancel it;
-    ///   2. filter field focused -> blur it, keeping the filter and selection;
-    ///   3. otherwise -> clear the filter, keeping the current selection (its
-    ///      index stays in range once the full board returns).
+    /// Escape. Owns all Escape handling so it is reliable even when the focused
+    /// filter field captures the key event.
+    ///   - Launcher: dismiss the popup at once (a throwaway summon, single
+    ///     press to bail), regardless of filter/edit state.
+    ///   - Normal board, in stages (never quits — only `q` does, so a stray
+    ///     Esc can never nuke the persistent window):
+    ///       1. compose overlay open -> cancel it;
+    ///       2. filter field focused -> blur it, keeping the filter and selection;
+    ///       3. filter non-empty -> clear it, keeping the current selection (its
+    ///          index stays in range once the full board returns);
+    ///       4. otherwise -> nothing.
     fn escape(&mut self) -> Task<Message> {
+        if self.launcher_mode {
+            return iced::exit();
+        }
         if self.compose.is_some() {
             self.compose = None;
             return Task::none();
@@ -320,10 +327,9 @@ impl Board {
             self.refresh();
             return self.scroll_to_selection();
         }
-        // Nothing left to dismiss: exit. Escape peels layers (compose, filter
-        // focus, filter text) and only quits at this final stage, so an
-        // accidental Escape mid-filter never kills the window.
-        iced::exit()
+        // Nothing left to peel: do nothing. The normal board never exits on
+        // Escape (q is the sole quit), so an accidental Escape never kills it.
+        Task::none()
     }
 
     fn on_key(&mut self, key: keyboard::Key, mods: keyboard::Modifiers) -> Task<Message> {

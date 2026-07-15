@@ -7,8 +7,9 @@
 //! and shows them in four columns. Enter or a mouse click focuses an agent's
 //! window, Shift+Enter spawns a new agent in the selected agent's dir, `/`
 //! focuses the inline filter, `m` composes a message, `d` dismisses, `q`
-//! quits (Esc peels one layer per press, then exits). `--launcher` opens an
-//! ephemeral popup that exits after a go/spawn. Up/Down (or scroll) move
+//! quits (Esc peels one layer per press but never exits — q is the sole quit).
+//! `--launcher` opens an ephemeral popup that exits after a go/spawn, or on a
+//! single Esc. Up/Down (or scroll) move
 //! within a column; Left/Right switch columns. Corral never drives an agent;
 //! it routes the operator's attention.
 //!
@@ -315,8 +316,11 @@ fn run(
                 if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
-                            // Esc peels one layer: leave edit mode but keep
+                            // Launcher: Esc dismisses the popup at once (a
+                            // throwaway summon, single press to bail). Normal:
+                            // Esc peels one layer, leaving edit mode but keeping
                             // the query (a second Esc then clears it).
+                            KeyCode::Esc if launcher_mode => break,
                             KeyCode::Esc => filtering = false,
                             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                                 if spawn_new(&launcher, &board, selected, &mut status)
@@ -359,15 +363,15 @@ fn run(
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') => break,
-                    // Esc peels layers, quitting at the last: clear a non-empty
-                    // filter, else exit. The selection stays put (a smaller
-                    // filtered set means its index is still in range once the
-                    // full board returns). Matches the GUI so both shells
-                    // behave alike.
+                    // Launcher: Esc dismisses the popup at once. Normal: Esc
+                    // only clears a non-empty filter and otherwise does nothing
+                    // — it never exits (q is the sole quit), so a stray Esc can
+                    // never nuke the persistent board. The selection stays put
+                    // (a smaller filtered set means its index is still in range
+                    // once the full board returns). Matches the GUI so both
+                    // shells behave alike.
+                    KeyCode::Esc if launcher_mode => break,
                     KeyCode::Esc => {
-                        if filter.is_empty() {
-                            break;
-                        }
                         filter.clear();
                     }
                     KeyCode::Down => {

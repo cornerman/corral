@@ -243,10 +243,12 @@ ratatui / iced, the daemon keeps ksni).
     clickable footer. Enter on a live hidden card reveals it (resume) rather
     than focusing a non-existent window; Shift+Enter beside a hidden card
     spawns the new agent hidden too (placement follows the selected card).
-    A live hidden card shows a dim `hidden` badge. Esc peels one layer per press and quits at the last
-    (edit-mode blur -> clear filter -> exit), matching the GUI. `--launcher`
-    opens the TUI as an ephemeral popup: filter focused at boot, a successful
-    go/spawn exits the process (m/d keep it open), mirroring the GUI launcher.
+    A live hidden card shows a dim `hidden` badge. Esc peels one layer per press
+    (edit-mode blur -> clear filter) but never exits the normal board — q is the
+    sole quit, so a stray Esc cannot nuke the window; matches the GUI.
+    `--launcher` opens the TUI as an ephemeral popup: filter focused at boot, a
+    successful go/spawn exits the process, as does a single Esc (dismiss the
+    throwaway summon at once, no peeling), mirroring the GUI launcher.
     Operator `m` delivers ungated via `core::prompt` / `core::launch`; no
     router.
 
@@ -542,15 +544,16 @@ message/tool updates) is ACP v1.
   centered filter box that fuzzily narrows the cards by their content (title /
   cwd / activity / state / harness label), cards grouped by cwd with the
   most-used directories first; while filtering, Enter goes and Shift+Enter spawns
-  directly, arrows still navigate, Esc clears then exits;
+  directly, arrows still navigate, Esc clears (never exits the normal board);
   `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant
   one by resuming it with the message as its first prompt; `d` close the
   selected live agent (kill its terminal process, closing the window; pi then
-  goes dormant and resumable) or forget the selected dormant record; `q` quits,
-  and Esc peels one layer per press (edit-mode blur, then clear filter, then
-  exit). `--launcher` opens the TUI as an ephemeral popup (filter focused, a
-  successful go/spawn exits), the same as `corral-gui --launcher`. A left click
+  goes dormant and resumable) or forget the selected dormant record; `q` quits
+  (the sole quit), and Esc peels one layer per press (edit-mode blur, then clear
+  filter) but never exits the normal board. `--launcher` opens the TUI as an
+  ephemeral popup (filter focused, a successful go/spawn exits, as does a single
+  Esc), the same as `corral-gui --launcher`. A left click
   is two-stage: first click selects, a click on the
   already-selected card goes. Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
