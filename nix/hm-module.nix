@@ -100,16 +100,24 @@ in
     # Uses Cursor's own registration (extensions.json), coexisting with
     # hand-installed extensions. Never fails activation: a broken editor must not
     # block a rebuild. Runs after writeBoundary so $HOME writes are settled.
+    #
+    # `cursor --install-extension` exits 0 even when it actually fails (e.g.
+    # EACCES on the extensions dir), so its exit code is not trustworthy. Verify
+    # the ground truth instead: the marker is written only once corral-cursor
+    # appears in extensions.json. A silent failure leaves no marker, so the next
+    # activation retries rather than latching a false success (fail loud, retry).
     home.activation.corralCursorExtension = lib.mkIf (cfg.cursor.package != null)
       (lib.hm.dag.entryAfter [ "writeBoundary" ] ''
         marker="$HOME/.cursor/.corral-cursor-vsix"
         want="${cursorVsix}"
+        registry="$HOME/.cursor/extensions/extensions.json"
         if [ "$(cat "$marker" 2>/dev/null)" != "$want" ]; then
           mkdir -p "$HOME/.cursor"
-          if ${cfg.cursor.package}/bin/cursor --install-extension "$want" --force; then
+          ${cfg.cursor.package}/bin/cursor --install-extension "$want" --force || true
+          if grep -q corral-cursor "$registry" 2>/dev/null; then
             printf '%s' "$want" > "$marker"
           else
-            echo "corral: 'cursor --install-extension' failed; corral-cursor not registered" >&2
+            echo "corral: cursor did not register corral-cursor (not in $registry); will retry next activation" >&2
           fi
         fi
       '');
