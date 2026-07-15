@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use corral_core::focus::{self, WindowFocuser};
+use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Agent, Column, Origin, State};
 use corral_core::{engine::Engine, nav, palette::basename, palette::color_index, paths, prompt};
@@ -361,6 +362,7 @@ impl Board {
             keyboard::Key::Character(c) => match c.as_str() {
                 "m" => return self.update(Message::OpenCompose),
                 "d" => return self.update(Message::Dismiss),
+                "h" => return self.act_toggle_hidden(),
                 "q" => std::process::exit(0),
                 "/" => {
                     self.filtering = true;
@@ -434,6 +436,8 @@ impl Board {
         {
             Some((a, command)) => {
                 let cwd = launch::default_cwd(a.cwd.as_deref());
+                // a.launch_mode() carries the selected card's `hidden`, so a
+                // spawn beside a hidden card is hidden too (same placement).
                 match self.launcher.launch(&cwd, command, None, &a.launch_mode()) {
                     Ok(()) => {
                         ok = true;
@@ -446,6 +450,20 @@ impl Board {
         };
         if ok && self.launcher_mode {
             return iced::exit();
+        }
+        Task::none()
+    }
+
+    /// `h`: toggle the selected agent's placement (hide a visible one, reveal a
+    /// hidden one, start a dormant one hidden). Kill-and-resume in every case,
+    /// mirroring the TUI.
+    fn act_toggle_hidden(&mut self) -> Task<Message> {
+        if let Some(a) = self.selected_agent().cloned() {
+            self.status = match apply_placement(&a, self.focuser.as_ref(), &self.launcher, &kill_pid)
+            {
+                Ok(()) => "toggling".into(),
+                Err(e) => e,
+            };
         }
         Task::none()
     }
@@ -710,6 +728,11 @@ impl Board {
             meta_row = meta_row.push(pill);
         }
         meta_row = meta_row.push(text(&agent.label).size(11).color(dim));
+        // A live hidden agent shows a dim `hidden` badge: it runs in a headless
+        // cage, so going to it reveals it by resume rather than focusing.
+        if agent.origin == Origin::Live && agent.hidden {
+            meta_row = meta_row.push(text("hidden").size(11).color(dim));
+        }
         if let Some(info) = agent.activity.as_deref().filter(|s| !s.is_empty()) {
             meta_row = meta_row.push(
                 container(
@@ -796,6 +819,7 @@ impl Board {
             hint("/", "filter", Some(Message::FocusFilter)),
             hint("m", "msg", Some(Message::OpenCompose)),
             hint("d", "delete", Some(Message::Dismiss)),
+            hint("h", "hide/show", None),
             hint("q", "quit", Some(Message::Quit)),
             Space::new(Length::Fill, 0.0),
             canvas(Mark { color: dim })
@@ -975,6 +999,11 @@ fn activate(
     launcher: &dyn Launcher,
 ) -> Result<(), String> {
     match agent.origin {
+        // A live hidden agent has no host window to focus; going to it reveals
+        // it (kill + resume visible), the same kill-and-resume as `h`.
+        Origin::Live if agent.hidden => {
+            apply_placement(agent, focuser, launcher, &kill_pid).map_err(|e| format!("reveal: {e}"))
+        }
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
         Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
             (Some(cwd), Some(command)) => launcher
