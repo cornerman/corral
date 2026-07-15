@@ -26,3 +26,43 @@ test("buildRecord fixes label/gui/commands and omits messageFlag", () => {
   assert.equal(r.socket, "/w/.corral/cursor-42.sock");
   assert.equal(r.lastSeen, "2026-07-15T00:00:00.000Z");
 });
+
+test("acpReply: initialize returns cursor identity", () => {
+  const r = lib.acpReply({ id: 0, method: "initialize", params: {} }, { sessionId: "s", title: "t", cwd: "/w", state: "idle" });
+  assert.equal(r.result.agentInfo.name, "cursor");
+  assert.equal(r.result.agentCapabilities.loadSession, false);
+  assert.equal(r.id, 0);
+});
+
+test("acpReply: session/list returns the single session", () => {
+  const r = lib.acpReply({ id: 1, method: "session/list", params: {} }, { sessionId: "s", title: "t", cwd: "/w", state: "idle" });
+  assert.deepEqual(r.result.sessions, [{ sessionId: "s", title: "t", cwd: "/w" }]);
+});
+
+test("acpReply: session/prompt yields an __inject sentinel with joined text", () => {
+  const r = lib.acpReply({ id: 2, method: "session/prompt", params: { prompt: [{ type: "text", text: "a" }, { type: "text", text: "b" }, { type: "image" }] } }, {});
+  assert.equal(r.__inject, "a\nb");
+  assert.equal(r.id, 2);
+});
+
+test("acpReply: empty prompt is a JSON-RPC error", () => {
+  const r = lib.acpReply({ id: 3, method: "session/prompt", params: { prompt: [] } }, {});
+  assert.equal(r.error.code, -32602);
+});
+
+test("acpReply: session/cancel and id-less requests return null", () => {
+  assert.equal(lib.acpReply({ method: "session/cancel" }, {}), null);
+  assert.equal(lib.acpReply({ method: "initialize" }, {}), null);
+});
+
+test("acpReply: unknown method is -32601", () => {
+  const r = lib.acpReply({ id: 9, method: "session/new", params: {} }, {});
+  assert.equal(r.error.code, -32601);
+});
+
+test("acpUpdate wraps an update in the session/update envelope", () => {
+  const u = lib.acpUpdate("s", { sessionUpdate: "state_update", state: "running" });
+  assert.equal(u.method, "session/update");
+  assert.equal(u.params.sessionId, "s");
+  assert.equal(u.params.update.state, "running");
+});

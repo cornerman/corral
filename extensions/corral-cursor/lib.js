@@ -34,4 +34,40 @@ function buildRecord({ sessionId, cwd, title, socket, nowIso }) {
   };
 }
 
-module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord };
+function acpUpdate(sessionId, update) {
+  return { jsonrpc: "2.0", method: "session/update", params: { sessionId, update } };
+}
+
+// Pure: compute the JSON-RPC response for one request. No I/O. session/prompt
+// returns a sentinel carrying the joined text; the shell (extension.js) attempts
+// the Composer injection and, on that result, sends the real reply.
+function acpReply(msg, ctx) {
+  if (!msg || !msg.method) return null;
+  if (msg.method === "session/cancel") return null; // notification, no external abort
+  if (msg.id === undefined) return null;
+  const ok = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
+  const err = (code, message) => ({ jsonrpc: "2.0", id: msg.id, error: { code, message } });
+  switch (msg.method) {
+    case "initialize":
+      return ok({
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: false },
+        agentInfo: { name: "cursor", version: "unknown" },
+        authMethods: [],
+      });
+    case "session/list":
+      return ok({ sessions: [{ sessionId: ctx.sessionId, title: ctx.title ?? null, cwd: ctx.cwd }] });
+    case "session/prompt": {
+      const text = ((msg.params && msg.params.prompt) || [])
+        .filter((b) => b && b.type === "text" && typeof b.text === "string")
+        .map((b) => b.text)
+        .join("\n");
+      if (!text) return err(-32602, "prompt has no text content");
+      return { jsonrpc: "2.0", id: msg.id, __inject: text };
+    }
+    default:
+      return err(-32601, `method not supported by corral-cursor: ${msg.method}`);
+  }
+}
+
+module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate };
