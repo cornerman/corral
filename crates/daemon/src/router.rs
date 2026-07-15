@@ -40,7 +40,7 @@ const CHARTER: &str = concat!(
     "Your only channel to other agents is the corral_message_agent tool:\n",
     "- corral_message_agent({target_session|target_dir, message, hidden?, force_new?, label?}):\n",
     "  reach an exact agent by its session id (the reply handle in a message's\n",
-    "  [from agent in <dir> (session <id>)] tag) or reach a directory. hidden defaults true.\n",
+    "  [from <dir> (session <id>)] tag) or reach a directory. hidden defaults true.\n",
     "- list_corral_agents(): see which agent kinds exist and which you may message.\n",
     "A message you receive is tagged with its sender's directory and session id; reply by\n",
     "calling corral_message_agent(target_session = that id). Delivery is fire-and-forget: a\n",
@@ -512,7 +512,7 @@ mod tests {
         let first = launcher.last_msg.borrow();
         let first = first.as_deref().unwrap();
         assert!(
-            first.ends_with("[from agent in /a] hi"),
+            first.ends_with("[from a] hi"),
             "the provenance-tagged message is the tail of the first prompt"
         );
         assert!(
@@ -599,10 +599,7 @@ mod tests {
         r.poll(&entries, &launcher);
         assert!(r.pending().is_none(), "whitelisted: no operator prompt");
         assert_eq!(launcher.resumes.get(), 1, "dormant session is resumed");
-        assert_eq!(
-            launcher.last_msg.borrow().as_deref(),
-            Some("[from agent in /a] hi")
-        );
+        assert_eq!(launcher.last_msg.borrow().as_deref(), Some("[from a] hi"));
     }
 
     #[test]

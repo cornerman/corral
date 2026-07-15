@@ -289,7 +289,7 @@ ratatui / iced, the daemon keeps ksni).
   - `src/mailbox.rs` — cross-session message types: parse a submitted message (a
     `Target` is a directory or an exact session id), `classify` it into an `Ack`
     (accepted / approval_needed / recipient_not_found / directory_not_known)
-    from resolved facts, add the `[from agent in <dir> (session <id>)]`
+    from resolved facts, add the `[from <dir> (session <id>)]`
     provenance/reply-handle tag, and read/append the `(sender -> target)`
     whitelist. `classify` also forces the approval gate on a visible spawn
     (`hidden:false`) regardless of the whitelist. It also builds the read-only
@@ -514,7 +514,7 @@ failure means corrald is down, so submission fails loud instead of queuing
 silently. Routable messages are then routed asynchronously: corrald authorizes
 the pair against the whitelist (or asks the operator on its tray menu — Allow
 once / Allow always / Deny), resolves the target, and injects the message over
-that agent's socket with a `[from agent in <dir> (session <id>)]` provenance
+that agent's socket with a short `[from <dir> (session <id>)]` provenance
 tag. The approval gate is not awaited by the sender (a human is unbounded): a
 `approval_needed` message is acked at once and delivered after approval, without
 a delivery ack. Delivery reuses `core::prompt::send_prompt`, the same path as the

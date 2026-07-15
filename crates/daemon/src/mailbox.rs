@@ -45,15 +45,17 @@ pub struct Message {
 impl Message {
     /// The delivered text, carrying in-band provenance so the receiving model
     /// and the watching human see it came from another agent, not the
-    /// operator. When the sender's session is known it is included as a reply
-    /// handle: the receiver answers with `corral_message_agent(target_session = ..)`.
+    /// operator. Kept short so it does not dominate a board activity line: the
+    /// sender directory is shown as its basename (the full cwd is not needed to
+    /// reply, which uses the session id, and `list_corral_agents` still gives
+    /// the full cwd for a reachable dir). When the sender's session is known it
+    /// is included in full as a reply handle: the receiver answers with
+    /// `corral_message_agent(target_session = ..)`.
     pub fn tagged(&self) -> String {
+        let from = basename(&self.from_cwd);
         match &self.from_session {
-            Some(sid) => format!(
-                "[from agent in {} (session {})] {}",
-                self.from_cwd, sid, self.message
-            ),
-            None => format!("[from agent in {}] {}", self.from_cwd, self.message),
+            Some(sid) => format!("[from {from} (session {sid})] {}", self.message),
+            None => format!("[from {from}] {}", self.message),
         }
     }
 
@@ -318,7 +320,7 @@ mod tests {
         let json = r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi"}"#;
         let m = parse_message(json).unwrap();
         assert_eq!(m, msg());
-        assert_eq!(m.tagged(), "[from agent in /a] hi");
+        assert_eq!(m.tagged(), "[from a] hi");
         assert!(!m.force_new);
     }
 
@@ -329,8 +331,9 @@ mod tests {
         let m = parse_message(json).unwrap();
         assert_eq!(m.target, Target::Session("sid-7".into()));
         assert_eq!(m.target_label(), "session sid-7");
-        // The reply handle (sender's session) rides in the provenance tag.
-        assert_eq!(m.tagged(), "[from agent in /a (session sid-9)] hi");
+        // The reply handle (sender's session) rides in the provenance tag; the
+        // dir shows as its basename, the session id stays full.
+        assert_eq!(m.tagged(), "[from a (session sid-9)] hi");
     }
 
     #[test]

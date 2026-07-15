@@ -555,7 +555,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"ask a peer agent a question, hand off a subtask, or answer a message you received.\n\n" +
 					"Addressing — give EXACTLY ONE of:\n" +
 					"• target_session: reach one specific session by its id. This is how you REPLY: an " +
-					"incoming message is tagged '[from agent in <dir> (session <id>)]', so pass that <id> " +
+					"incoming message is tagged '[from <dir> (session <id>)]', so pass that <id> " +
 					"as target_session and your answer lands on the exact agent that wrote to you (never a " +
 					"sibling in the same directory). A dormant session is resumed to receive it.\n" +
 					"• target_dir: reach whoever works in that directory (absolute path), starting a new " +
@@ -569,7 +569,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						type: "string",
 						description:
 							"Reach this exact session id (resuming it if dormant). Use it to REPLY: it is the " +
-							"<id> from the '[from agent in <dir> (session <id>)]' tag on a message you received. " +
+							"<id> from the '[from <dir> (session <id>)]' tag on a message you received. " +
 							"Give EITHER this OR target_dir; leave the other one empty (\"\").",
 					},
 					target_dir: {
