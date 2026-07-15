@@ -26,6 +26,9 @@ function buildRecord({ sessionId, cwd, title, socket, nowIso, hidden }) {
     cwd,
     title: title ?? null,
     label: "cursor",
+    // One-line kind description for the list_corral_agents roster peers read.
+    // Adapter-authored, not model output.
+    description: "cursor: Cursor desktop IDE agent",
     socket,
     gui: true,
     spawnCommand: ["cursor", cwd],

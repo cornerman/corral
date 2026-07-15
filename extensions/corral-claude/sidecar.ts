@@ -353,6 +353,9 @@ function writeRegistry() {
 			cwd,
 			title,
 			label: "claude",
+			// One-line kind description for the list_corral_agents roster peers read.
+			// Adapter-authored, not model output.
+			description: "claude: Claude Code terminal agent",
 			socket: acpSocketPath,
 			// Run verbatim by corral. resumeCommand resumes this exact session; a
 			// trailing message (CONVENTION §2a) is appended by corral for
