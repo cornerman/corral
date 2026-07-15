@@ -56,7 +56,7 @@
             # Ship the harness adapters beside the binaries so the home-manager
             # module symlinks from one artifact, not the flake source tree.
             mkdir -p "$out/share/corral/extensions"
-            cp extensions/corral-announce.ts extensions/corral-opencode.ts \
+            cp extensions/corral-pi.ts extensions/corral-opencode.ts \
               "$out/share/corral/extensions/"
             # The Claude adapter is a plugin directory (plugin.json + hooks +
             # sidecar/hook), so ship the whole tree, not a single file.

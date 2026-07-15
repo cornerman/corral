@@ -1,7 +1,7 @@
 /**
  * corral-opencode: make this opencode session discoverable and drivable by ACP
  * clients while the interactive TUI keeps running. The pi counterpart is
- * extensions/corral-announce.ts; this file mirrors it closely and deviates only
+ * extensions/corral-pi.ts; this file mirrors it closely and deviates only
  * where opencode's plugin API forces it. It is the second worked adapter that
  * proves the corral convention (CONVENTION.md) is harness-neutral: corral needs
  * zero changes, since it reads the launch commands and label straight from the

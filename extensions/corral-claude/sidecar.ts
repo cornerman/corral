@@ -8,7 +8,7 @@
  * opencode adapters — which run *inside* the session and serve ACP directly —
  * this adapter is a resident sidecar the session's SessionStart hook spawns
  * (detached), driven by Claude's hook events arriving over a control socket.
- * See ../corral-announce.ts and ../corral-opencode.ts for the in-process shape;
+ * See ../corral-pi.ts and ../corral-opencode.ts for the in-process shape;
  * the served ACP surface and registry record are identical (CONVENTION.md).
  *
  * Two unix sockets, both under <cwd>/.corral/ (override $CORRAL_SOCKET_DIR):

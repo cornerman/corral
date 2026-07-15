@@ -89,8 +89,8 @@ in
 
     home.file = lib.mkMerge [
       (lib.mkIf cfg.extensions.pi.enable {
-        ".pi/agent/extensions/corral-announce.ts".source =
-          "${extDir}/corral-announce.ts";
+        ".pi/agent/extensions/corral-pi.ts".source =
+          "${extDir}/corral-pi.ts";
       })
       (lib.mkIf cfg.extensions.opencode.enable {
         ".config/opencode/plugin/corral-opencode.ts".source =

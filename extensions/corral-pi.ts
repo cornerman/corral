@@ -1,5 +1,5 @@
 /**
- * corral-announce: make this pi session discoverable and drivable by ACP
+ * corral-pi: make this pi session discoverable and drivable by ACP
  * clients while the interactive TUI keeps running.
  *
  * Binds an ACP socket inside this session's own workdir at
@@ -37,7 +37,7 @@
  * reply to precisely this agent.
  *
  * Install: symlink into ~/.pi/agent/extensions/ or run pi with
- *   pi -e /path/to/corral-announce.ts
+ *   pi -e /path/to/corral-pi.ts
  *
  * Multiple concurrent clients are fine: every request is answered from
  * current state and updates go to all connections.
@@ -429,7 +429,7 @@ export default function (pi: ExtensionAPI) {
 				break;
 			}
 			default:
-				fail(-32601, `method not supported by corral-announce: ${msg.method}`);
+				fail(-32601, `method not supported by corral-pi: ${msg.method}`);
 		}
 	}
 
