@@ -264,9 +264,19 @@ One per-session file drives discovery, isolation, and resume.
       "msg"` accepting a trailing prompt interactively (dormant delivery);
       exact `Notification` matcher values and `last_assistant_message` on
       `Stop`; and that `asyncRewake` exit-2 wakes a fully idle terminal TUI.
-- [ ] Merge `feat/corral-claude` once verified (rebase, no merge commit).
+- [x] Claude adapter is on `main` (the `feat/corral-claude` work is merged);
+      what remains is the runtime verification above, not a merge.
 
 ## Future Features
+
+- [ ] Cross-box tasking: grow `corral_message_agent` into the full pi-subagents
+      verb set (`spawn`/`send`/`list`/`history`/`kill`/`set_status`), scoped by
+      a new **task-group** primitive where same-group agents skip the
+      whitelist/approval gate. Design:
+      `docs/superpowers/specs/2026-07-15-cross-box-tasking-design.md`. Partial
+      code head-start on branch `cross-box-tasking-plan` (commits `f2db1ad`
+      group/name registry fields, `c9f9174` same-group auth) — rebase those onto
+      `main` to resume, do not merge the stale branch wholesale.
 
 - [x] Multi-agent: a second harness announces. `extensions/corral-opencode.ts`
       (an opencode plugin) mirrors `corral-pi`, binding
