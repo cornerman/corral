@@ -1,7 +1,8 @@
 //! Selection navigation over the board's columns. Pure index math on the
 //! per-column counts (`Board::column_counts`, in `Column::ALL` order): the
-//! selection is one flat index across all columns, and these functions move it
-//! within a column (up/down) or across columns (left/right).
+//! selection is one flat index across all columns. Down/Up flow across that
+//! flat index (crossing column boundaries), Left/Right jump between columns,
+//! and mouse scroll stays within one column.
 
 /// Flat selectable index -> (column, row).
 fn locate(index: usize, counts: &[usize; 4]) -> (usize, usize) {
@@ -20,7 +21,28 @@ fn flat(col: usize, row: usize, counts: &[usize; 4]) -> usize {
     counts[..col].iter().sum::<usize>() + row
 }
 
-/// Move within the current column (Up/Down), clamped to that column.
+/// Total selectable cards across all columns.
+fn total(counts: &[usize; 4]) -> usize {
+    counts.iter().sum()
+}
+
+/// Move one card down/up across the WHOLE board, flowing from a column's last
+/// card into the next column's first (columns in `Column::ALL` order; empty
+/// columns add no indices, so they are skipped for free). Clamped at the board
+/// ends — the shell rings to the filter input there via `at_board_edge`.
+pub fn move_selection(index: usize, counts: &[usize; 4], down: bool) -> usize {
+    let t = total(counts);
+    if t == 0 {
+        return index;
+    }
+    if down {
+        (index + 1).min(t - 1)
+    } else {
+        index.saturating_sub(1)
+    }
+}
+
+/// Move within the current column (mouse scroll), clamped to that column.
 pub fn move_row(index: usize, counts: &[usize; 4], down: bool) -> usize {
     let (c, r) = locate(index, counts);
     if counts[c] == 0 {
@@ -34,33 +56,39 @@ pub fn move_row(index: usize, counts: &[usize; 4], down: bool) -> usize {
     flat(c, r, counts)
 }
 
-/// True if a vertical move (`down`) from `index` would leave its column — it
-/// already sits at the far edge (top for up, bottom for down). The hook a shell
-/// uses to hand focus back to the filter input: the input sits as one node
-/// above the first row and below the last, so navigation rings through it.
-pub fn at_vertical_edge(index: usize, counts: &[usize; 4], down: bool) -> bool {
-    let (c, r) = locate(index, counts);
-    if counts[c] == 0 {
+/// True if a vertical move (`down`) from `index` would leave the board entirely
+/// — it already sits at the very last card (down) or the very first card (up).
+/// The single hook a shell uses to hand focus back to the filter input: the
+/// input is one ring node above the first card of the whole board and below the
+/// last, so navigation rings through it only at the two board ends. Empty board
+/// is always an edge.
+pub fn at_board_edge(index: usize, counts: &[usize; 4], down: bool) -> bool {
+    let t = total(counts);
+    if t == 0 {
         return true;
     }
     if down {
-        r + 1 >= counts[c]
+        index + 1 >= t
     } else {
-        r == 0
+        index == 0
     }
 }
 
-/// Landing index when entering the board from the filter input: the first row
-/// (`down`) or the last row (up) of the column holding `index`. The inverse of
-/// `at_vertical_edge` — stepping off the input into the board. Empty column or
-/// empty board leaves `index` unchanged.
-pub fn column_entry(index: usize, counts: &[usize; 4], down: bool) -> usize {
-    let (c, _) = locate(index, counts);
-    if counts[c] == 0 {
+/// Landing index when entering the board from the filter input: the first card
+/// of the whole board (`down`) or the last card (up). The inverse of
+/// `at_board_edge` — the input is the single ring node of the vertical cycle
+/// (input -> card0 -> ... -> cardN -> input), so stepping off it lands at the
+/// matching board end. Empty board leaves `index` unchanged.
+pub fn board_entry(index: usize, counts: &[usize; 4], down: bool) -> usize {
+    let t = total(counts);
+    if t == 0 {
         return index;
     }
-    let r = if down { 0 } else { counts[c] - 1 };
-    flat(c, r, counts)
+    if down {
+        0
+    } else {
+        t - 1
+    }
 }
 
 /// Jump to the nearest non-empty column in a direction (Left/Right), keeping
@@ -90,7 +118,7 @@ mod tests {
         let counts = [2usize, 0, 1, 0];
         assert_eq!(locate(0, &counts), (0, 0));
         assert_eq!(locate(2, &counts), (2, 0));
-        // Down within the column, clamped.
+        // Down within the column (mouse scroll), clamped.
         assert_eq!(move_row(0, &counts, true), 1);
         assert_eq!(move_row(1, &counts, true), 1);
         assert_eq!(move_row(1, &counts, false), 0);
@@ -103,20 +131,28 @@ mod tests {
     }
 
     #[test]
-    fn vertical_edges_ring_through_the_input() {
+    fn down_up_flow_across_columns_and_ring_at_board_ends() {
         // RA=2, Idle=0, Running=1, Dormant=0. flat: RA0=0, RA1=1, Run0=2.
         let counts = [2usize, 0, 1, 0];
-        // Top of a column (row 0) is an up-edge; not a down-edge.
-        assert!(at_vertical_edge(0, &counts, false));
-        assert!(!at_vertical_edge(0, &counts, true));
-        // Bottom of the RA column (RA1) is a down-edge; not an up-edge.
-        assert!(at_vertical_edge(1, &counts, true));
-        assert!(!at_vertical_edge(1, &counts, false));
-        // A single-row column (Running) is both edges at once.
-        assert!(at_vertical_edge(2, &counts, true));
-        assert!(at_vertical_edge(2, &counts, false));
-        // Entering from the input: Down -> that column's first row, Up -> last.
-        assert_eq!(column_entry(1, &counts, true), 0);
-        assert_eq!(column_entry(0, &counts, false), 1);
+        // Down flows from the RA column's last card into Running (crossing the
+        // empty Idle column), not back to the input.
+        assert_eq!(move_selection(1, &counts, true), 2);
+        assert_eq!(move_selection(0, &counts, true), 1);
+        // Up flows back the same way.
+        assert_eq!(move_selection(2, &counts, false), 1);
+        // Clamped at the board ends.
+        assert_eq!(move_selection(2, &counts, true), 2);
+        assert_eq!(move_selection(0, &counts, false), 0);
+        // Only the very first/last card of the whole board is a ring edge.
+        assert!(at_board_edge(0, &counts, false));
+        assert!(!at_board_edge(0, &counts, true));
+        assert!(at_board_edge(2, &counts, true));
+        assert!(!at_board_edge(2, &counts, false));
+        assert!(!at_board_edge(1, &counts, true));
+        assert!(!at_board_edge(1, &counts, false));
+        // Entering from the input rings to the matching board end: Down -> the
+        // first card, Up -> the last.
+        assert_eq!(board_entry(1, &counts, true), 0);
+        assert_eq!(board_entry(0, &counts, false), 2);
     }
 }

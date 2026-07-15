@@ -444,17 +444,17 @@ fn run(
                                 filter.pop();
                             }
                             // Down/Up step off the input into the board (the
-                            // input is a nav node above the first row and below
-                            // the last): Down lands on the column's first row,
-                            // Up on its last. Leaving edit mode makes m/d/h
-                            // reachable as commands. No-op on an empty board.
+                            // input is the single ring node above the board's
+                            // first card and below its last): Down lands on the
+                            // first card, Up on the last. Leaving edit mode makes
+                            // m/d/h reachable as commands. No-op on empty board.
                             KeyCode::Down if counts.iter().sum::<usize>() > 0 => {
                                 filtering = false;
-                                selected = nav::column_entry(selected, &counts, true);
+                                selected = nav::board_entry(selected, &counts, true);
                             }
                             KeyCode::Up if counts.iter().sum::<usize>() > 0 => {
                                 filtering = false;
-                                selected = nav::column_entry(selected, &counts, false);
+                                selected = nav::board_entry(selected, &counts, false);
                             }
                             KeyCode::Left => selected = nav::move_col(selected, &counts, false),
                             KeyCode::Right => selected = nav::move_col(selected, &counts, true),
@@ -484,20 +484,21 @@ fn run(
                     KeyCode::Esc => {
                         filter.clear();
                     }
-                    // At a column's bottom (Down) or top (Up) edge, ring back
-                    // to the filter input; otherwise move within the column.
+                    // Down/Up flow across the whole board (a column's last card
+                    // into the next column's first); only at the very last card
+                    // (Down) or first card (Up) of the board ring to the input.
                     KeyCode::Down => {
-                        if nav::at_vertical_edge(selected, &counts, true) {
+                        if nav::at_board_edge(selected, &counts, true) {
                             filtering = true;
                         } else {
-                            selected = nav::move_row(selected, &counts, true);
+                            selected = nav::move_selection(selected, &counts, true);
                         }
                     }
                     KeyCode::Up => {
-                        if nav::at_vertical_edge(selected, &counts, false) {
+                        if nav::at_board_edge(selected, &counts, false) {
                             filtering = true;
                         } else {
-                            selected = nav::move_row(selected, &counts, false);
+                            selected = nav::move_selection(selected, &counts, false);
                         }
                     }
                     KeyCode::Left => {

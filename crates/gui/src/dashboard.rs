@@ -471,18 +471,18 @@ impl Board {
             }
             // Step off the input into the board and blur the field.
             self.filtering = false;
-            self.selected = nav::column_entry(self.selected, counts, down);
+            self.selected = nav::board_entry(self.selected, counts, down);
             return Task::batch([
                 text_input::focus(text_input::Id::new("corral-blur")),
                 self.scroll_to_selection(),
             ]);
         }
-        if nav::at_vertical_edge(self.selected, counts, down) {
+        if nav::at_board_edge(self.selected, counts, down) {
             // Ring back to the filter input.
             self.filtering = true;
             return text_input::focus(filter_id());
         }
-        self.selected = nav::move_row(self.selected, counts, down);
+        self.selected = nav::move_selection(self.selected, counts, down);
         self.scroll_to_selection()
     }
 

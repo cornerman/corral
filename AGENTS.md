@@ -177,11 +177,14 @@ ratatui / iced, the daemon keeps ksni).
     into the `Board`, and track per-agent age timers. A shell calls `tick`
     then renders `board()` + the age maps. (The TUI still runs an equivalent
     loop inline; converging it onto the engine, or retiring it, is a TODO.)
-  - `src/nav.rs` — pure selection math: move within a column or across columns
-    over the per-column counts. `at_vertical_edge` / `column_entry` ring the
-    filter input into the vertical cycle (the input sits above the first row
-    and below the last), so a shell hands focus to the input at a column edge
-    and steps back onto the first/last row when leaving it. Unit-tested.
+  - `src/nav.rs` — pure selection math over the per-column counts. Down/Up
+    (`move_selection`) flow across the flat index, crossing a column's last
+    card into the next column's first; `at_board_edge` / `board_entry` ring the
+    filter input as the single node of the vertical cycle (input -> card0 ->
+    ... -> cardN -> input), so a shell hands focus to the input only at the
+    board's first/last card and steps back onto the matching end when leaving
+    it. Left/Right jump columns; mouse scroll (`move_row`) stays within one
+    column. Unit-tested.
   - `src/palette.rs` — `color_index`: a stable FNV-1a hash of a cwd path into a
     palette bucket, so both shells color a directory's basename pill the same
     way (same color per path, keyed on the full path). Pure, unit-tested; each
@@ -592,7 +595,9 @@ message/tool updates) is ACP v1.
 ## Interfaces to the Outside World
 
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
-  Dormant. Up/Down (or scroll) move within a column; Left/Right switch
+  Dormant. Up/Down move the selection across the whole board (flowing from a
+  column's last card into the next column's first, ringing to the filter input
+  only at the board ends); scroll moves within a column; Left/Right switch
   columns; Enter or double-click goes to the selected agent (focus a
   live window, resume a dormant session by running its `resumeCommand`);
   Shift+Enter spawns a fresh agent of the selected card's kind (its
