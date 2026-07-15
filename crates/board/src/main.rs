@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    KeyboardEnhancementFlags, ModifierKeyCode, MouseButton, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use ratatui::layout::Rect;
@@ -37,9 +37,10 @@ use corral_core::discovery::{self, RegistryEntry};
 use corral_core::menu::MenuAction;
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
-use corral_core::model::{Board, Origin, Update};
+use corral_core::model::{Board, Column, Origin, Update};
 use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::prompt;
+use corral_core::transition::{self, MoveAction};
 use corral_core::{model, nav, paths, watch};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
@@ -70,7 +71,7 @@ fn main() {
     // `--launcher`: open as an ephemeral popup (filter focused, a successful
     // go/spawn exits) to match the GUI launcher.
     let launcher_mode = std::env::args().any(|a| a == "--launcher");
-    let result = run(&mut terminal, &dir, launcher_mode);
+    let result = run(&mut terminal, &dir, launcher_mode, enhanced);
     if enhanced {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
@@ -179,10 +180,98 @@ fn handle_overlay(
     }
 }
 
+/// A committed-but-unconfirmed card move: the destination column and when it
+/// was fired. The card stays in its real column with an in-flight badge until
+/// the agent's own state reaches `target` (or this times out).
+const PENDING_TTL: Duration = Duration::from_secs(5);
+
+/// Push the extra keyboard flags move mode needs: report event *types* (so we
+/// see the shift-key release that commits) and all keys as escape codes (so the
+/// modifier key itself is reported). Scoped to move mode via push/pop so normal
+/// input is untouched. Only meaningful where the terminal supports enhancement.
+fn push_move_flags(enhanced: bool) {
+    if enhanced {
+        let _ = execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        );
+    }
+}
+
+fn pop_move_flags(enhanced: bool) {
+    if enhanced {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
+/// Fire the real agent action a card move triggers (see `core::transition`).
+/// Returns the (agent key, target) to record as pending on success, or None for
+/// a no-op / failure (the status line carries any error).
+fn commit_move(
+    source: Column,
+    target: Column,
+    agent: &model::Agent,
+    focuser: &dyn WindowFocuser,
+    launcher: &dyn Launcher,
+    status: &mut String,
+) -> Option<(String, Column)> {
+    let key = ui::agent_key(agent);
+    let label = ui::focus_label(agent);
+    let result: Result<(), String> = match transition::action_for(source, target) {
+        // Stop the turn (also unblocks a pending question).
+        MoveAction::Cancel => {
+            prompt::send_cancel(&agent.socket_path).map_err(|e| format!("cancel: {e}"))
+        }
+        // Start a turn with the literal nudge.
+        MoveAction::Nudge => {
+            prompt::send_prompt(&agent.socket_path, "continue").map_err(|e| format!("nudge: {e}"))
+        }
+        // Kill the agent: a hidden one by pid, a visible one via its window
+        // (same as `d`); pi goes dormant and resumable.
+        MoveAction::Kill => {
+            if agent.hidden {
+                kill_pid(agent.pid).map_err(|e| format!("close: {e}"))
+            } else {
+                focuser.close(agent).map_err(|e| format!("close: {e}"))
+            }
+        }
+        // Resume the dormant session; ResumeAndNudge also delivers the nudge as
+        // its first prompt so it lands running rather than idle.
+        MoveAction::Resume | MoveAction::ResumeAndNudge => {
+            match (&agent.cwd, &agent.resume_command) {
+                (Some(cwd), Some(cmd)) => {
+                    let msg = matches!(transition::action_for(source, target), MoveAction::ResumeAndNudge)
+                        .then_some("continue");
+                    launcher
+                        .launch(Path::new(cwd), cmd, msg, &agent.launch_mode())
+                        .map_err(|e| format!("resume: {e}"))
+                }
+                _ => Err("resume: dormant record missing cwd/command".into()),
+            }
+        }
+        MoveAction::NoOp => return None,
+    };
+    match result {
+        Ok(()) => {
+            *status = format!("moving {label} → {}", target.title());
+            Some((key, target))
+        }
+        Err(e) => {
+            *status = e;
+            None
+        }
+    }
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     dir: &std::path::Path,
     launcher_mode: bool,
+    enhanced: bool,
 ) -> std::io::Result<()> {
     let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
     // EWMH on X11, sway on Wayland (until other Wayland focusers land).
@@ -211,6 +300,17 @@ fn run(
     // Classifies left clicks into select (single) vs go (double) on the same
     // card within the double-click window.
     let mut clicks = ClickTracker::default();
+    // The in-progress card move (shift+arrow, or a mouse drag): the source
+    // column and the ghost target the operator is choosing. The moving agent is
+    // the current `selected`. `None` when not moving.
+    let mut move_mode: Option<(Column, Column)> = None;
+    // Source column of a started mouse drag (set on left-press over a card),
+    // used to begin a move once the drag crosses into another column.
+    let mut drag_source: Option<Column> = None;
+    // Committed-but-unconfirmed moves, keyed by agent key (see `ui::agent_key`):
+    // the target column and when fired. Rendered as an in-flight badge; cleared
+    // when the agent reaches the target or after `PENDING_TTL`.
+    let mut pending: HashMap<String, (Column, Instant)> = HashMap::new();
     // Inter-agent messaging lives entirely in the corrald daemon now; the board
     // is a pure viewer of the registry plus the operator's own actions (focus,
     // spawn, resume, and the ungated `m` message to a selected agent).
@@ -301,6 +401,23 @@ fn run(
         }
 
         board.set_filter(filter.clone());
+        // Reconcile pending moves against the live board: a move confirms when
+        // the agent reaches its target column (the board never fakes the move);
+        // otherwise it expires after PENDING_TTL. Keyed by agent key so a
+        // resume (new socket) still matches by session id.
+        let by_key: HashMap<String, Column> = board
+            .selectable()
+            .iter()
+            .map(|a| (ui::agent_key(a), a.column()))
+            .collect();
+        pending.retain(|k, (target, since)| {
+            by_key.get(k) != Some(target) && since.elapsed() <= PENDING_TTL
+        });
+        let pending_labels: HashMap<String, String> = pending
+            .iter()
+            .map(|(k, (t, _))| (k.clone(), t.title().to_string()))
+            .collect();
+
         let counts = board.column_counts();
         let count: usize = counts.iter().sum();
         if selected >= count {
@@ -319,21 +436,98 @@ fn run(
             in_state: &in_state,
             quiet: &quiet,
             dormant_age: &dormant_ages,
+            pending: &pending_labels,
         };
+        let move_label = move_mode.and_then(|_| {
+            board
+                .selectable()
+                .get(selected)
+                .map(|a| ui::focus_label(a))
+        });
         terminal.draw(|f| {
             ui::render(f, &board, selected, &status, &mut list_states, &meta);
-            ui::render_filter(f, &filter, filtering);
-            match &overlay {
-                Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
-                None => {}
-            }
-            if let Some(m) = &menu {
-                ui::render_menu(f, m.anchor, m.highlight);
+            // Move mode owns the screen (drop-boxes over the columns); the
+            // filter/overlay/menu are all closed while moving.
+            if let Some((_src, target)) = &move_mode {
+                ui::render_move(f, *target, move_label.as_deref().unwrap_or(""));
+            } else {
+                ui::render_filter(f, &filter, filtering);
+                match &overlay {
+                    Some(Overlay::Compose(c)) => ui::render_compose(f, &c.label, &c.buf),
+                    None => {}
+                }
+                if let Some(m) = &menu {
+                    ui::render_menu(f, m.anchor, m.highlight);
+                }
             }
         })?;
 
         if event::poll(POLL)? {
             let ev = event::read()?;
+            // A card move in progress captures all input: shift+arrow (or a
+            // mouse drag) slides the ghost target; shift-release, Enter, or a
+            // mouse drop commits; Esc or a right-click cancels. Committing fires
+            // the real agent action and records it pending until confirmed.
+            if let Some((source, mut target)) = move_mode {
+                let mut commit = false;
+                let mut cancel = false;
+                match ev {
+                    Event::Key(key) => match (key.code, key.kind) {
+                        // The shift key released: drop where the ghost rests.
+                        (
+                            KeyCode::Modifier(
+                                ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift,
+                            ),
+                            KeyEventKind::Release,
+                        ) => commit = true,
+                        (KeyCode::Enter, KeyEventKind::Press) => commit = true,
+                        (KeyCode::Esc, KeyEventKind::Press) => cancel = true,
+                        (KeyCode::Left, KeyEventKind::Press) => {
+                            target = transition::slide_target(target, false)
+                        }
+                        (KeyCode::Right, KeyEventKind::Press) => {
+                            target = transition::slide_target(target, true)
+                        }
+                        _ => {}
+                    },
+                    Event::Mouse(m) => match m.kind {
+                        // Drag over a valid destination column retargets.
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            let s = terminal.size()?;
+                            let area = Rect::new(0, 0, s.width, s.height);
+                            if let Some(c) = ui::column_at(area, m.column) {
+                                if transition::DESTINATIONS.contains(&c) {
+                                    target = c;
+                                }
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => commit = true,
+                        MouseEventKind::Down(MouseButton::Right) => cancel = true,
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                if commit {
+                    if let Some(agent) = board.selectable().get(selected).copied() {
+                        if let Some((key, tgt)) =
+                            commit_move(source, target, agent, focuser.as_ref(), &launcher, &mut status)
+                        {
+                            pending.insert(key, (tgt, Instant::now()));
+                        }
+                    }
+                    move_mode = None;
+                    drag_source = None;
+                    pop_move_flags(enhanced);
+                } else if cancel {
+                    move_mode = None;
+                    drag_source = None;
+                    status.clear();
+                    pop_move_flags(enhanced);
+                } else {
+                    move_mode = Some((source, target));
+                }
+                continue;
+            }
             // An open context menu captures all input: arrows move the
             // highlight, Enter/left-click runs an entry, Esc/outside-click
             // closes. The chosen action runs on the board's current selection
@@ -501,6 +695,23 @@ fn run(
                             selected = nav::move_selection(selected, &counts, false);
                         }
                     }
+                    // Shift+Left/Right grab the selected card into move mode
+                    // (drive its state by moving it between columns); plain
+                    // Left/Right just switch the selected column.
+                    KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        if let Some(a) = board.selectable().get(selected).copied() {
+                            let source = a.column();
+                            move_mode = Some((source, transition::initial_target(source, false)));
+                            push_move_flags(enhanced);
+                        }
+                    }
+                    KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        if let Some(a) = board.selectable().get(selected).copied() {
+                            let source = a.column();
+                            move_mode = Some((source, transition::initial_target(source, true)));
+                            push_move_flags(enhanced);
+                        }
+                    }
                     KeyCode::Left => {
                         selected = nav::move_col(selected, &counts, false);
                     }
@@ -601,6 +812,11 @@ fn run(
                                 // Single click selects; a double click on the
                                 // same card goes (focus/reveal/resume).
                                 selected = idx;
+                                // Arm a possible drag: remember the card's
+                                // column so a drag into another column begins a
+                                // move (see the Drag arm).
+                                drag_source =
+                                    board.selectable().get(idx).map(|a| a.column());
                                 if let ClickKind::Go = clicks.press(idx, Instant::now()) {
                                     if activate_selected(
                                         focuser.as_ref(),
@@ -616,6 +832,23 @@ fn run(
                             }
                         }
                     }
+                    // Dragging an armed card into a different, valid
+                    // destination column begins a move; the move-mode handler
+                    // above then owns the drag until the drop.
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        if let Some(source) = drag_source {
+                            let s = terminal.size()?;
+                            let area = Rect::new(0, 0, s.width, s.height);
+                            if let Some(c) = ui::column_at(area, m.column) {
+                                if c != source && transition::DESTINATIONS.contains(&c) {
+                                    move_mode = Some((source, c));
+                                }
+                            }
+                        }
+                    }
+                    // A left-release with no move started was just a click; drop
+                    // the drag arming.
+                    MouseEventKind::Up(MouseButton::Left) => drag_source = None,
                     // Right click a card: select it, then open the context menu
                     // anchored at the cursor. Empty space does nothing.
                     MouseEventKind::Down(MouseButton::Right) => {

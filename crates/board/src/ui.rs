@@ -88,6 +88,16 @@ pub fn hit_test(
     None
 }
 
+/// The column whose rect contains the mouse cell `col` (x only; during a move
+/// the drop-boxes span the full column height). Used to pick a drag/drop target
+/// column. None for the gutters or outside the columns.
+pub fn column_at(area: Rect, col: u16) -> Option<Column> {
+    let cols = column_layout(area);
+    cols.iter()
+        .position(|r| col >= r.x && col < r.x + r.width)
+        .map(|i| Column::ALL[i])
+}
+
 /// A Rect centered in `area` at the given width/height percentages.
 fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
     let v = Layout::vertical([
@@ -255,16 +265,18 @@ const FOOTER_GAP: u16 = 2;
 /// Footer entries left to right: the key(s), the label, and the action a click
 /// triggers (`None` for the non-clickable movement hint). Keys are spelled in
 /// plain ASCII (no `⏎`/`⇧`/arrow glyphs) so they render in every terminal
-/// font; the keycap styling in `footer_layout` supplies the visual polish.
+/// font; the keycap styling in `footer_layout` supplies the visual polish. The
+/// verbs shared with the context menu come from `MenuAction::label` so the two
+/// cannot drift (footer is the source of truth for those strings).
 fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 8] {
     [
         (None, "arrows", "move"),
-        (Some(FooterAction::Go), "enter", "go"),
-        (Some(FooterAction::New), "shift+enter", "new"),
+        (Some(FooterAction::Go), "enter", MenuAction::Go.label()),
+        (Some(FooterAction::New), "shift+enter", MenuAction::Spawn.label()),
         (Some(FooterAction::Jump), "/", "filter"),
-        (Some(FooterAction::Msg), "m", "msg"),
-        (Some(FooterAction::Delete), "d", "delete"),
-        (Some(FooterAction::Toggle), "h", "hide/show"),
+        (Some(FooterAction::Msg), "m", MenuAction::Message.label()),
+        (Some(FooterAction::Delete), "d", MenuAction::Dismiss.label()),
+        (Some(FooterAction::Toggle), "h", MenuAction::ToggleHidden.label()),
         (Some(FooterAction::Quit), "q", "quit"),
     ]
 }
@@ -425,6 +437,21 @@ pub struct CardMeta<'a> {
     pub quiet: &'a HashMap<PathBuf, String>,
     /// Age of the session record, by session id (for Dormant).
     pub dormant_age: &'a HashMap<String, String>,
+    /// Cards with a pending card-move, keyed by agent id (session id, else
+    /// socket path), mapped to the destination column title. Such a card stays
+    /// in its real column with a `→ <target> ⋯` in-flight badge until the
+    /// agent's own state reaches the target (the board never fakes state).
+    pub pending: &'a HashMap<String, String>,
+}
+
+/// The stable id a card-move is keyed on: the session id if known, else the
+/// socket path. Shared by the shell (recording a pending move) and the card
+/// renderer (showing the badge) so both agree on the key.
+pub fn agent_key(agent: &Agent) -> String {
+    agent
+        .session_id
+        .clone()
+        .unwrap_or_else(|| agent.socket_path.to_string_lossy().into_owned())
 }
 
 /// The column-specific age shown at the card's top-right. It differs per column
@@ -479,6 +506,10 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
     let name = agent.title.as_deref().unwrap_or("(unnamed)");
     let age = card_age(agent, col, meta);
 
+    // A pending card-move shows a bright in-flight badge; the card has not
+    // moved yet (it waits for the agent's real state to reach the target).
+    let pending = meta.pending.get(&agent_key(agent)).cloned();
+
     // Second row: colored basename pill, kind badge, then the activity hint
     // filling the rest. Widths are counted so the activity truncates to fit.
     let mut row2 = Vec::new();
@@ -501,7 +532,15 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         row2.push(Span::raw(" "));
         row2.push(tag_pill(hidden, dormant));
     }
-    if let Some(a) = agent.activity.as_deref() {
+    if let Some(target) = &pending {
+        // The in-flight badge takes precedence over the activity hint: it is
+        // the operator's own pending action and the more urgent thing to see.
+        let badge = format!("  → {target} ⋯");
+        row2.push(Span::styled(
+            truncate(&badge, width.saturating_sub(used)),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    } else if let Some(a) = agent.activity.as_deref() {
         let act_w = width.saturating_sub(used + 2); // two spaces before activity
         row2.push(Span::raw("  "));
         row2.push(Span::styled(truncate(a, act_w), dim));
@@ -592,6 +631,68 @@ fn column(
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
     state.select(selected_row);
     frame.render_stateful_widget(list, rows[2], state);
+}
+
+/// Draw move mode: the columns become labeled drop-boxes with their cards
+/// hidden (the boxes cover them), the target box highlighted, Requires Action
+/// greyed as a non-destination. The moving card's label sits inside the target
+/// box, and a hint line shows the controls. Drawn as an overlay over the board
+/// so `render` stays untouched.
+pub fn render_move(frame: &mut Frame, target: Column, moving_label: &str) {
+    let cols = column_layout(frame.area());
+    for (i, col) in Column::ALL.into_iter().enumerate() {
+        let rect = cols[i];
+        frame.render_widget(Clear, rect);
+        let is_target = col == target;
+        let is_dest = corral_core::transition::DESTINATIONS.contains(&col);
+        let border_style = if is_target {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else if is_dest {
+            Style::default().add_modifier(Modifier::DIM)
+        } else {
+            // Requires Action: never a destination.
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+        };
+        let title = if is_dest {
+            format!(" {} ", col.title())
+        } else {
+            format!(" {} (not a target) ", col.title())
+        };
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        if is_target {
+            // Show the moving card's label centered in the target box.
+            let label = truncate(moving_label, inner.width.saturating_sub(2) as usize);
+            let mid = Rect {
+                y: inner.y + inner.height / 2,
+                height: 1,
+                ..inner
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    label,
+                    Style::default().add_modifier(Modifier::BOLD),
+                )))
+                .alignment(Alignment::Center),
+                mid,
+            );
+        }
+    }
+    // Control hint on the footer row.
+    let footer = footer_rect(frame.area());
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "moving: shift+←/→ choose column, release shift to drop, esc cancel",
+            Style::default().add_modifier(Modifier::DIM),
+        ))),
+        footer,
+    );
 }
 
 /// Render the whole board. `selected` indexes `board.selectable()`
@@ -793,21 +894,23 @@ mod card_tests {
         HashMap<PathBuf, String>,
         HashMap<PathBuf, String>,
         HashMap<String, String>,
+        HashMap<String, String>,
     ) {
         let in_state = in_state
             .iter()
             .map(|(k, v)| (PathBuf::from(*k), v.to_string()))
             .collect();
-        (in_state, HashMap::new(), HashMap::new())
+        (in_state, HashMap::new(), HashMap::new(), HashMap::new())
     }
 
     #[test]
     fn idle_age_is_time_in_state() {
-        let (i, q, d) = meta(&[("/s/a.sock", "5m")]);
+        let (i, q, d, p) = meta(&[("/s/a.sock", "5m")]);
         let m = CardMeta {
             in_state: &i,
             quiet: &q,
             dormant_age: &d,
+            pending: &p,
         };
         let a = agent(State::Idle, Some("edit model.rs"));
         assert_eq!(card_age(&a, Column::Idle, &m).as_deref(), Some("5m"));
@@ -815,11 +918,12 @@ mod card_tests {
 
     #[test]
     fn age_is_none_when_unknown() {
-        let (i, q, d) = meta(&[]);
+        let (i, q, d, p) = meta(&[]);
         let m = CardMeta {
             in_state: &i,
             quiet: &q,
             dormant_age: &d,
+            pending: &p,
         };
         let a = agent(State::Idle, None);
         assert_eq!(card_age(&a, Column::Idle, &m), None);

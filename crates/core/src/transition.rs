@@ -54,6 +54,43 @@ pub fn action_for(from: Column, to: Column) -> MoveAction {
     }
 }
 
+/// The columns a card can be moved *into*, left to right. Requires Action is
+/// excluded: corral cannot make an agent open a question, so it is a valid
+/// source but never a destination.
+pub const DESTINATIONS: [Column; 3] = [Column::Idle, Column::Running, Column::Dormant];
+
+/// Slide the ghost target one step across the valid destination columns
+/// (`DESTINATIONS`), clamped at the ends. `right` steps toward Dormant, else
+/// toward Idle. A `current` not in `DESTINATIONS` (only Requires Action) snaps
+/// to the first destination. Shared by both shells so keyboard-move and
+/// drag-target agree on where the ghost can rest.
+pub fn slide_target(current: Column, right: bool) -> Column {
+    let idx = DESTINATIONS.iter().position(|&c| c == current);
+    match idx {
+        None => DESTINATIONS[0],
+        Some(i) => {
+            let next = if right {
+                (i + 1).min(DESTINATIONS.len() - 1)
+            } else {
+                i.saturating_sub(1)
+            };
+            DESTINATIONS[next]
+        }
+    }
+}
+
+/// The destination a move first targets when entering move mode from `source`
+/// in a given direction: the adjacent valid destination. From Requires Action
+/// either direction begins at Idle (its only sensible first step).
+pub fn initial_target(source: Column, right: bool) -> Column {
+    match DESTINATIONS.iter().position(|&c| c == source) {
+        // Source is a valid destination column: step off it in the direction.
+        Some(_) => slide_target(source, right),
+        // Source is Requires Action: begin at the nearest destination (Idle).
+        None => Column::Idle,
+    }
+}
+
 /// Whether a pending move to `target` has landed, given the agent's current
 /// column `now`. A move confirms exactly when the agent has reached the target
 /// column (its own `state_update` or a live/dormant registry transition moved
@@ -99,6 +136,27 @@ mod tests {
         for c in Column::ALL {
             assert_eq!(action_for(c, c), MoveAction::NoOp);
         }
+    }
+
+    #[test]
+    fn slide_clamps_within_destinations() {
+        assert_eq!(slide_target(Idle, false), Idle); // clamp at left end
+        assert_eq!(slide_target(Idle, true), Running);
+        assert_eq!(slide_target(Running, true), Dormant);
+        assert_eq!(slide_target(Dormant, true), Dormant); // clamp at right end
+        assert_eq!(slide_target(Dormant, false), Running);
+        // Requires Action is not a destination: snaps to the first.
+        assert_eq!(slide_target(RequiresAction, false), Idle);
+    }
+
+    #[test]
+    fn initial_target_steps_off_source() {
+        assert_eq!(initial_target(Running, false), Idle);
+        assert_eq!(initial_target(Running, true), Dormant);
+        assert_eq!(initial_target(Idle, true), Running);
+        // From Requires Action, either direction begins at Idle.
+        assert_eq!(initial_target(RequiresAction, true), Idle);
+        assert_eq!(initial_target(RequiresAction, false), Idle);
     }
 
     #[test]

@@ -946,15 +946,16 @@ impl Board {
                 }
             };
         // Same keys, order and keycap styling as the TUI footer (ui.rs
-        // footer_items / footer_layout).
+        // footer_items / footer_layout). Verbs shared with the context menu
+        // come from MenuAction::label so footer and menu cannot drift.
         row![
             hint("arrows", "move", None),
-            hint("enter", "go", Some(Message::Go)),
-            hint("shift+enter", "new", Some(Message::Spawn)),
+            hint("enter", MenuAction::Go.label(), Some(Message::Go)),
+            hint("shift+enter", MenuAction::Spawn.label(), Some(Message::Spawn)),
             hint("/", "filter", Some(Message::FocusFilter)),
-            hint("m", "msg", Some(Message::OpenCompose)),
-            hint("d", "delete", Some(Message::Dismiss)),
-            hint("h", "hide/show", Some(Message::ToggleHidden)),
+            hint("m", MenuAction::Message.label(), Some(Message::OpenCompose)),
+            hint("d", MenuAction::Dismiss.label(), Some(Message::Dismiss)),
+            hint("h", MenuAction::ToggleHidden.label(), Some(Message::ToggleHidden)),
             hint("q", "quit", Some(Message::Quit)),
             Space::new(Length::Fill, 0.0),
             canvas(Mark { color: dim })
