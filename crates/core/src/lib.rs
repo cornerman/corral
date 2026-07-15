@@ -13,5 +13,6 @@ pub mod nav;
 pub mod paths;
 pub mod palette;
 pub mod picker;
+pub mod placement;
 pub mod prompt;
 pub mod watch;
