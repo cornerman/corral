@@ -16,6 +16,9 @@ corral-core = { path = "../core" }
 serde_json = "1"
 ratatui = "0.29"
 crossterm = "0.28"
+# Emoji/CJK render wider than one cell; count display width so the hidden
+# icon does not throw off the activity-text truncation on the card's second row.
+unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -7,6 +7,7 @@
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
+use unicode_width::UnicodeWidthStr;
 
 /// Left/right padding inside every column, so text never touches a separator.
 const PAD: u16 = 1;
@@ -330,11 +331,14 @@ pub fn age_label(d: Duration) -> String {
 
 /// Label for the compose target and the `f` focus picker: the title and the
 /// cwd's last path segment.
-/// The badge suffix shown after the kind badge: `"hidden"` for a live hidden
-/// agent, empty otherwise. Kept pure so it is unit-tested without a terminal.
+/// The icon shown after the kind badge for a live hidden agent, empty
+/// otherwise: the "dotted line face" emoji, Unicode's own glyph for
+/// hidden/invisible/disappear. Kept pure so it is unit-tested without a
+/// terminal. (The GUI shows the same glyph with a `hidden` hover tooltip; the
+/// terminal has no hover, so the icon stands alone.)
 pub fn hidden_badge(agent: &Agent) -> &'static str {
     if agent.origin == Origin::Live && agent.hidden {
-        "hidden"
+        "\u{1FAE5}"
     } else {
         ""
     }
@@ -423,13 +427,15 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
     }
     used += agent.label.chars().count() + 2; // pill padding
     row2.push(tag_pill(&agent.label, dormant));
-    // A live hidden agent shows a `hidden` pill: it runs in a headless cage,
-    // so Enter reveals it by resume rather than focusing a window.
+    // A live hidden agent shows the hidden icon (it runs in a headless cage, so
+    // Enter reveals it by resume rather than focusing a window). A bare glyph,
+    // not a pill: it reads as an icon. Count display width (the emoji spans two
+    // cells) so the activity text below still truncates to fit.
     let hidden = hidden_badge(agent);
     if !hidden.is_empty() {
-        used += 1 + hidden.chars().count() + 2; // separating space + pill padding
+        used += 1 + UnicodeWidthStr::width(hidden); // separating space + glyph cells
         row2.push(Span::raw(" "));
-        row2.push(tag_pill(hidden, dormant));
+        row2.push(Span::styled(hidden, dim));
     }
     if let Some(a) = agent.activity.as_deref() {
         let act_w = width.saturating_sub(used + 2); // two spaces before activity
@@ -683,7 +689,7 @@ mod card_tests {
     fn hidden_badge_only_for_live_hidden() {
         let mut a = agent(State::Idle, None);
         a.hidden = true;
-        assert_eq!(hidden_badge(&a), "hidden");
+        assert_eq!(hidden_badge(&a), "\u{1FAE5}");
         a.hidden = false;
         assert_eq!(hidden_badge(&a), "");
         a.hidden = true;

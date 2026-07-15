@@ -22,7 +22,7 @@ use corral_core::model::{Agent, Column, Origin, State};
 use corral_core::{engine::Engine, nav, palette::basename, palette::color_index, paths, prompt};
 
 use iced::widget::{
-    canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
+    canvas, column, container, mouse_area, row, scrollable, text, text_input, tooltip, Space,
 };
 use iced::{
     keyboard, mouse, Alignment, Background, Border, Color, Element, Font, Length, Point, Rectangle,
@@ -767,10 +767,13 @@ impl Board {
             meta_row = meta_row.push(pill);
         }
         meta_row = meta_row.push(tag_pill(&agent.label, s));
-        // A live hidden agent shows a `hidden` pill: it runs in a headless
-        // cage, so going to it reveals it by resume rather than focusing.
+        // A live hidden agent shows the hidden icon (it runs in a headless
+        // cage, so going to it reveals it by resume rather than focusing). The
+        // "dotted line face" emoji is Unicode's own hidden/invisible glyph; a
+        // hover tooltip spells out `hidden` (the terminal, lacking hover, shows
+        // the same bare glyph).
         if agent.origin == Origin::Live && agent.hidden {
-            meta_row = meta_row.push(tag_pill("hidden", s));
+            meta_row = meta_row.push(hidden_icon(s));
         }
         if let Some(info) = agent.activity.as_deref().filter(|s| !s.is_empty()) {
             meta_row = meta_row.push(
@@ -1137,6 +1140,18 @@ fn cwd_pill_colors(cwd: &str, s: &Base16, dormant: bool) -> (Color, Color) {
 /// A muted gray pill (matching the footer's keycap fill) for a plain tag —
 /// the kind badge and the `hidden` badge — so both read as tags distinct from
 /// the colored cwd pill and the plain activity text.
+/// The live-hidden card icon: the "dotted line face" emoji with a `hidden`
+/// hover tooltip. Kept beside `tag_pill` since it reuses the same chip styling
+/// for the tooltip bubble.
+fn hidden_icon<'a>(s: &Base16) -> Element<'a, Message> {
+    tooltip(
+        text("\u{1FAE5}").size(12),
+        tag_pill("hidden", s),
+        tooltip::Position::Top,
+    )
+    .into()
+}
+
 fn tag_pill<'a>(text_str: &'a str, s: &Base16) -> Element<'a, Message> {
     let (bg, fg) = (s.base[2], s.base[4]);
     container(text(text_str).size(11).color(fg))
