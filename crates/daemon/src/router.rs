@@ -25,6 +25,42 @@ use corral_core::prompt;
 
 use crate::mailbox::{is_whitelisted, whitelist_add, Message, Target};
 
+/// The swarm charter, prepended to the first prompt of a freshly spawned
+/// agent (ported from the subagents extension, adapted to corral's two verbs
+/// and its cross-box, sandboxed reality). It teaches a new agent that it is
+/// part of a swarm reachable only through corral, to confirm the task before
+/// working, to escalate uncertainty up, and to stay event-driven. The task
+/// itself (the provenance-tagged message) follows this block.
+const CHARTER: &str = concat!(
+    "You are a coding agent reached through corral, a board that connects independent\n",
+    "agent sessions running in separate working directories. Another agent spawned you to\n",
+    "do a task. You are sandboxed to your own directory and cannot see any other agent's\n",
+    "screen, thinking, or transcript.\n",
+    "\n",
+    "Your only channel to other agents is the corral_message_agent tool:\n",
+    "- corral_message_agent({target_session|target_dir, message, hidden?, force_new?, label?}):\n",
+    "  reach an exact agent by its session id (the reply handle in a message's\n",
+    "  [from agent in <dir> (session <id>)] tag) or reach a directory. hidden defaults true.\n",
+    "- list_corral_agents(): see which agent kinds exist and which you may message.\n",
+    "A message you receive is tagged with its sender's directory and session id; reply by\n",
+    "calling corral_message_agent(target_session = that id). Delivery is fire-and-forget: a\n",
+    "turn that ends without a corral_message_agent call tells the sender nothing.\n",
+    "\n",
+    "Before starting work, confirm the task (task-confirmation handshake): your FIRST turn\n",
+    "must message the agent that spawned you (using its session reply handle) with (1) the\n",
+    "task in your own words and (2) your clarification questions. Ask generously; assume the\n",
+    "task is underspecified. Then end your turn and wait for a go-ahead before working.\n",
+    "\n",
+    "Keep routine progress lateral or downward; reach up to your spawner for the handshake,\n",
+    "blockers you cannot resolve, decisions only it can make, and final results. If you are\n",
+    "genuinely unsure, first try to resolve it yourself (read code, use tools); if it is a\n",
+    "judgment only someone above can make, escalate the question up to your spawner rather\n",
+    "than guessing. You cannot reach the human directly; uncertainty flows up the chain.\n",
+    "\n",
+    "Event-driven: you run only when a message arrives. After you act, end your turn and go\n",
+    "idle; you are re-woken when another agent messages you. Do not poll or busy-wait.",
+);
+
 /// An operator decision on a pending approval, produced by the tray or the
 /// desktop notification and applied to the router.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +225,12 @@ fn deliver_dir(
     // set hidden:false asked for a visible window and already passed the
     // operator gate (control.rs classify) to get here.
     mode.hidden = msg.hidden;
-    match launcher.launch(Path::new(dir), command, Some(&msg.tagged()), &mode) {
+    // A fresh spawn is a brand-new agent that does not yet know it is part of a
+    // swarm: prepend the charter so it confirms the task and communicates only
+    // through corral. A resume (deliver_session) already has its transcript, so
+    // it gets no charter.
+    let first_prompt = format!("{CHARTER}\n\n{}", msg.tagged());
+    match launcher.launch(Path::new(dir), command, Some(&first_prompt), &mode) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
     }
@@ -465,10 +506,15 @@ mod tests {
         r.poll(&entries, &launcher);
         assert!(r.pending().is_none(), "whitelisted needs no decision");
         assert_eq!(launcher.spawns.get(), 1, "spawned an agent in the target");
-        assert_eq!(
-            launcher.last_msg.borrow().as_deref(),
-            Some("[from agent in /a] hi"),
-            "the provenance-tagged message is the new session's first prompt"
+        let first = launcher.last_msg.borrow();
+        let first = first.as_deref().unwrap();
+        assert!(
+            first.ends_with("[from agent in /a] hi"),
+            "the provenance-tagged message is the tail of the first prompt"
+        );
+        assert!(
+            first.contains("task-confirmation handshake"),
+            "a fresh spawn is prefixed with the swarm charter"
         );
     }
 
