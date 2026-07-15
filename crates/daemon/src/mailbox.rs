@@ -4,8 +4,11 @@
 //! message. Parsing, classification, and authorization are pure and
 //! unit-tested; the IO wrappers are thin.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+
+use corral_core::discovery::RegistryEntry;
 
 /// Who a message is addressed to. A directory reaches whoever works there
 /// (spawning one if none); a session reaches exactly that agent (resuming it if
@@ -151,6 +154,105 @@ pub fn parse_message(text: &str) -> Option<Message> {
     })
 }
 
+/// One line in the capability roster a `list` query returns. Either a full
+/// entry for an agent the caller may reach (its own directory or a whitelisted
+/// pair, so dir / session / liveness are exposed) or an anonymous kind entry
+/// that folds every unreachable directory to the distinct harness kinds present
+/// (kind + description only). It never carries a title, name, or activity:
+/// messaging is not reading, so the roster reveals that a kind of agent exists
+/// and whether the caller may message it, never what any agent is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterEntry {
+    /// The harness kind (the record `label`, or `agent` if unlabeled).
+    pub kind: String,
+    pub description: Option<String>,
+    /// Set only on a visible entry (`None` on an anonymous kind entry).
+    pub cwd: Option<String>,
+    pub session_id: Option<String>,
+    /// Liveness, meaningful only on a visible entry.
+    pub live: bool,
+    /// Whether the caller may message this without an approval popup.
+    pub can_message: bool,
+}
+
+/// Build the capability roster for a caller. `visible(target_cwd)` reports
+/// whether the caller may reach that directory (its own dir, or a whitelisted
+/// `(from -> target)` pair). A visible agent becomes a full per-session entry
+/// (so the caller can address a precise `target_session`); every other agent is
+/// folded, by harness kind, into one anonymous entry (latest-seen description
+/// wins), so a caller learns which kinds exist without learning who runs where.
+pub fn build_roster(entries: &[RegistryEntry], visible: impl Fn(&str) -> bool) -> Vec<RosterEntry> {
+    let mut roster = Vec::new();
+    // kind -> (description, its last_seen) for the anonymous fold; the latest
+    // last_seen wins the description, matching "latest description per kind".
+    let mut anon: BTreeMap<String, (Option<String>, Option<String>)> = BTreeMap::new();
+    for e in entries {
+        let kind = e.label.clone().unwrap_or_else(|| "agent".into());
+        if e.cwd.as_deref().is_some_and(&visible) {
+            roster.push(RosterEntry {
+                kind,
+                description: e.description.clone(),
+                cwd: e.cwd.clone(),
+                session_id: Some(e.session_id.clone()),
+                live: e.socket.is_some(),
+                can_message: true,
+            });
+        } else {
+            let slot = anon.entry(kind).or_insert((None, None));
+            // None (no timestamp) sorts below any Some, so a timestamped record
+            // wins over an undated one, and later wins over earlier.
+            if e.last_seen >= slot.1 {
+                *slot = (e.description.clone(), e.last_seen.clone());
+            }
+        }
+    }
+    roster.extend(anon.into_iter().map(|(kind, (description, _))| RosterEntry {
+        kind,
+        description,
+        cwd: None,
+        session_id: None,
+        live: false,
+        can_message: false,
+    }));
+    roster
+}
+
+/// Serialize a roster as the `list` reply line. A visible entry carries
+/// `cwd`/`sessionId`; an anonymous entry omits them, so nothing identifies an
+/// unreachable session.
+pub fn roster_json(roster: &[RosterEntry]) -> String {
+    let agents: Vec<serde_json::Value> = roster
+        .iter()
+        .map(|r| {
+            let mut m = serde_json::Map::new();
+            m.insert("kind".into(), r.kind.clone().into());
+            if let Some(d) = &r.description {
+                m.insert("description".into(), d.clone().into());
+            }
+            if let Some(c) = &r.cwd {
+                m.insert("cwd".into(), c.clone().into());
+            }
+            if let Some(s) = &r.session_id {
+                m.insert("sessionId".into(), s.clone().into());
+            }
+            m.insert("live".into(), r.live.into());
+            m.insert("canMessage".into(), r.can_message.into());
+            serde_json::Value::Object(m)
+        })
+        .collect();
+    serde_json::json!({ "status": "ok", "agents": agents }).to_string()
+}
+
+/// Parse a `list` roster query (`{"op":"list","fromCwd":"/a"}`), returning the
+/// caller's cwd. `None` means it is not a list query, so the caller falls
+/// through to message parsing.
+pub fn parse_list(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    (v.get("op").and_then(|o| o.as_str()) == Some("list"))
+        .then(|| v.get("fromCwd").and_then(|c| c.as_str()).map(String::from))
+        .flatten()
+}
+
 /// The `(from -> target)` separator in the whitelist file.
 const SEP: &str = " -> ";
 
@@ -261,6 +363,70 @@ mod tests {
         assert!(Ack::ApprovalNeeded.routable());
         assert!(!Ack::RecipientNotFound.routable());
         assert!(!Ack::DirectoryNotKnown.routable());
+    }
+
+    /// A registry entry with just the fields the roster reads.
+    fn rec(sid: &str, cwd: &str, label: &str, live: bool, desc: Option<&str>) -> RegistryEntry {
+        RegistryEntry {
+            session_id: sid.into(),
+            cwd: Some(cwd.into()),
+            title: Some("secret title".into()),
+            socket: live.then(|| std::path::PathBuf::from(format!("{cwd}/.corral/{label}-1.sock"))),
+            spawn_command: None,
+            resume_command: None,
+            label: Some(label.into()),
+            last_seen: None,
+            gui: false,
+            message_flag: None,
+            hidden: false,
+            description: desc.map(String::from),
+        }
+    }
+
+    #[test]
+    fn roster_exposes_visible_dirs_and_folds_the_rest_anonymously() {
+        let entries = [
+            rec("s1", "/a", "pi", true, Some("terminal agent")),
+            rec("s2", "/a", "pi", false, Some("terminal agent")),
+            rec("s3", "/secret", "quine", true, Some("gui app")),
+            rec("s4", "/other", "pi", true, Some("terminal agent")),
+        ];
+        // Caller sees only /a.
+        let roster = build_roster(&entries, |cwd| cwd == "/a");
+        // Two visible per-session entries for /a (live + dormant), addressable.
+        let visible: Vec<_> = roster.iter().filter(|r| r.cwd.is_some()).collect();
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().all(|r| r.can_message && r.cwd.as_deref() == Some("/a")));
+        assert_eq!(visible[0].session_id.as_deref(), Some("s1"));
+        assert!(visible[0].live && !visible[1].live);
+        // /secret and /other fold to distinct anonymous kinds: pi + quine, one
+        // each, no cwd/session, not messageable.
+        let anon: Vec<_> = roster.iter().filter(|r| r.cwd.is_none()).collect();
+        assert_eq!(anon.len(), 2, "pi and quine, folded once each");
+        assert!(anon.iter().all(|r| !r.can_message && r.session_id.is_none()));
+        let kinds: Vec<_> = anon.iter().map(|r| r.kind.as_str()).collect();
+        assert!(kinds.contains(&"pi") && kinds.contains(&"quine"));
+    }
+
+    #[test]
+    fn roster_json_hides_title_and_omits_cwd_for_anonymous() {
+        let entries = [rec("s1", "/secret", "pi", true, Some("terminal agent"))];
+        let json = roster_json(&build_roster(&entries, |_| false));
+        assert!(!json.contains("secret title"), "never leak the title");
+        assert!(!json.contains("/secret"), "never leak an unreachable cwd");
+        assert!(!json.contains("s1"), "never leak an unreachable session id");
+        assert!(json.contains("\"kind\":\"pi\"") && json.contains("terminal agent"));
+        assert!(json.contains("\"canMessage\":false"));
+    }
+
+    #[test]
+    fn parse_list_matches_only_the_list_op() {
+        assert_eq!(
+            parse_list(r#"{"op":"list","fromCwd":"/a"}"#).as_deref(),
+            Some("/a")
+        );
+        assert_eq!(parse_list(r#"{"id":"1","fromCwd":"/a","message":"hi"}"#), None);
+        assert_eq!(parse_list("nope"), None);
     }
 
     #[test]

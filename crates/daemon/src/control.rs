@@ -69,6 +69,18 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         return;
     }
     let mut conn = reader.into_inner();
+    // A read-only roster query is answered synchronously and never routed. It
+    // is ungated (it exposes only what the caller could already reach), but the
+    // roster itself withholds every unreachable directory's identity.
+    if let Some(from_cwd) = mailbox::parse_list(line.trim()) {
+        let entries = discovery::scan_registry(registry_dir);
+        let visible = |cwd: &str| {
+            cwd == from_cwd || mailbox::is_whitelisted(whitelist, &from_cwd, cwd)
+        };
+        let roster = mailbox::build_roster(&entries, visible);
+        let _ = writeln!(conn, "{}", mailbox::roster_json(&roster));
+        return;
+    }
     let Some(msg) = mailbox::parse_message(line.trim()) else {
         let _ = ack(&mut conn, "malformed");
         return;
@@ -197,6 +209,27 @@ mod tests {
             "1",
             "approval_needed still routes (for approval)"
         );
+    }
+
+    #[test]
+    fn list_query_exposes_whitelisted_dir_and_folds_the_rest() {
+        let (tmp, socket, registry, whitelist) = setup();
+        let reachable = tmp.path().join("reach");
+        std::fs::create_dir(&reachable).unwrap();
+        let reach = reachable.to_str().unwrap();
+        write_registry(&registry, "visible-1", reach);
+        write_registry(&registry, "hidden-1", "/secret/dir");
+        mailbox::whitelist_add(&whitelist, "/caller", reach).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let reply = submit(&socket, r#"{"op":"list","fromCwd":"/caller"}"#);
+        assert!(reply.contains("\"status\":\"ok\""));
+        // The whitelisted dir is fully exposed and addressable.
+        assert!(reply.contains("visible-1") && reply.contains(reach));
+        // The unlisted dir leaks neither its path nor its session id.
+        assert!(!reply.contains("/secret/dir") && !reply.contains("hidden-1"));
     }
 
     #[test]
