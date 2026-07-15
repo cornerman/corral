@@ -56,6 +56,12 @@ pub struct RegistryEntry {
     /// adapter from the `CORRAL_HIDDEN` env signal corral sets at a hidden
     /// spawn. Absent/false is a normal visible session.
     pub hidden: bool,
+    /// A one-line, human-readable description of this harness kind, authored
+    /// by the adapter (e.g. "terminal TUI coding agent"). Consumers surface it
+    /// in a capability roster so a caller can pick a kind to spawn; latest-seen
+    /// per label wins. The string is adapter code, not model output. Absent
+    /// for older/unknown producers.
+    pub description: Option<String>,
 }
 
 impl RegistryEntry {
@@ -96,6 +102,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         gui: v.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
         message_flag: str_field("messageFlag"),
         hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
+        description: str_field("description"),
     })
 }
 

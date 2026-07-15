@@ -338,6 +338,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            description: None,
         }
     }
 
@@ -356,6 +357,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            description: None,
         }
     }
 
@@ -372,6 +374,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            description: None,
         }
     }
 
@@ -586,6 +589,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            description: None,
         }];
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();

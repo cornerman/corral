@@ -411,6 +411,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: true,
+            description: None,
         };
         b.sync_registry(&[rec], &HashSet::new());
         let live = b.in_state(State::Running);
@@ -441,6 +442,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            description: None,
         }
     }
 
@@ -464,6 +466,7 @@ mod tests {
             gui: true,
             message_flag: Some("--message".into()),
             hidden: false,
+            description: None,
         };
         board.sync_registry(&[rec], &HashSet::new());
         let dormant = board.dormant();
