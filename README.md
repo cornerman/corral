@@ -96,6 +96,14 @@ harness-neutral convention, specified independently of pi and corral in
   so corral launches it directly instead of wrapping it in a terminal and
   focuses it by its own window pid. corral needed one small change for this
   (the `gui` launch mode); the rest of the convention was already neutral.
+- **corral-cursor** (VS Code extension, `extensions/corral-cursor/`) — the first
+  GUI-editor adapter and first VSIX. A resident extension (no sidecar: the
+  extension host is the resident runtime) announces an open Cursor window as a
+  `gui: true` record (`label: "cursor"`), focused by its Electron pid; a
+  state-hook auto-merged into `~/.cursor/hooks.json` feeds `running`/`idle`, and
+  `session/prompt` opens a new pre-filled Composer chat. Messaging and the
+  Cursor-specific correlations are best-effort and UNVERIFIED. corral needed no
+  change. See `extensions/corral-cursor/README.md`.
 
 ## Usage
 

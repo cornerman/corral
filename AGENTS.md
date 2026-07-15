@@ -389,6 +389,32 @@ ratatui / iced, the daemon keeps ksni).
   `~/.claude/skills/` symlink (zero-install skills-dir plugin), or
   `--plugin-dir`. See `extensions/corral-claude/README.md`.
 
+- `extensions/corral-cursor/` — the fourth adapter (Cursor desktop IDE), the
+  first GUI-editor kind and the first shipped as a VS Code **extension** (VSIX).
+  Cursor exposes no API to observe or drive its Composer agent and its hooks
+  cannot inject, but the extension host is a resident in-process runtime, so
+  — unlike `corral-claude` — there is no sidecar: the extension itself is the
+  resident owner. `extension.js` resolves the Cursor window's Electron pid,
+  binds `<cwd>/.corral/cursor-<electronPid>.sock` (that pid so corral's `gui`
+  focus by `match_pids` raises the real window), writes a `gui: true` record
+  (`label: "cursor"`, `spawnCommand`/`resumeCommand` = `["cursor", <cwd>]`, no
+  `messageFlag`), serves the ACP surface, and answers `session/prompt` by
+  opening a **new** pre-filled Composer chat (a prompt must land in a chat; a
+  fresh one avoids intruding). State is fed by a thin `state-hook.js` the
+  extension auto-registers in `~/.cursor/hooks.json` (additive, idempotent),
+  mapping `beforeSubmitPrompt`→running / `stop`→idle over a
+  `.cursor-ctl-<sessionId>.sock` control channel; coarse (no `requires_action`,
+  Cursor exposes no permission hook). One card per window (a chat can be neither
+  focused nor resumed independently); dormant delivery reopens the folder
+  without the message text. Authored in plain JavaScript (no build step: the
+  host loads `main` as JS); the pure core (`lib.js`) is unit-tested with
+  `node --test`. UNVERIFIED in this repo (no Cursor here): the Composer inject
+  command id(s), the Electron-pid walk / `_NET_WM_PID` equality, and the hook
+  payload fields — all guarded so the extension never throws into the host.
+  Requires `node` on PATH. Install: `cursor --install-extension`, copy into
+  `~/.cursor/extensions/`, or `--extensionDevelopmentPath`. corral needed no
+  change. See `extensions/corral-cursor/README.md`.
+
 ## Inter-Agent Messaging
 
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
