@@ -185,8 +185,10 @@ fn deliver_dir(
             None => return format!("route: no known agent kind for {dir} (never announced there)"),
         },
     };
-    // Agent-initiated spawns run hidden: an uninvited window must never pop up.
-    mode.hidden = true;
+    // Spawns default hidden so an uninvited window never pops up; a caller that
+    // set hidden:false asked for a visible window and already passed the
+    // operator gate (control.rs classify) to get here.
+    mode.hidden = msg.hidden;
     match launcher.launch(Path::new(dir), command, Some(&msg.tagged()), &mode) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
@@ -239,8 +241,8 @@ fn deliver_session(
     match (&entry.cwd, &entry.resume_command) {
         (Some(cwd), Some(command)) => {
             let mut mode = entry.launch_mode();
-            // Agent-initiated resume runs hidden, same rationale as dir spawn.
-            mode.hidden = true;
+            // Resume honors the requested visibility, same rationale as dir spawn.
+            mode.hidden = msg.hidden;
             match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), &mode) {
                 Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
                 Err(e) => format!("route resume: {e}"),
@@ -390,6 +392,21 @@ mod tests {
             launcher.last_hidden.get(),
             "agent-initiated spawn must be hidden"
         );
+    }
+
+    #[test]
+    fn visible_request_launches_unhidden() {
+        // A hidden:false message (already past the operator gate) spawns a
+        // visible window: the router honors the requested visibility.
+        let msg = mailbox::parse_message(
+            r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","hidden":false}"#,
+        )
+        .unwrap();
+        let entries = [dir_record("/b")];
+        let launcher = StubLauncher::default();
+        deliver(&msg, &entries, &launcher);
+        assert_eq!(launcher.spawns.get(), 1);
+        assert!(!launcher.last_hidden.get(), "visible request must not be hidden");
     }
 
     #[test]

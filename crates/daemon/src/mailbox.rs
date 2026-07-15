@@ -34,6 +34,12 @@ pub struct Message {
     /// (matched against a registry record's `label`). `None` = caller did not
     /// choose; the router falls back to the dir's own record.
     pub label: Option<String>,
+    /// Whether a spawn/resume this message triggers runs hidden (no window).
+    /// Defaults true, so an uninvited agent never pops a window; `false`
+    /// requests a visible window and always passes the operator approval gate
+    /// (a visible window is a stronger action than a message, so the whitelist
+    /// alone never authorizes it — see `classify`).
+    pub hidden: bool,
 }
 
 impl Message {
@@ -122,12 +128,16 @@ impl Ack {
 /// `target_cwd` is `Some` when the recipient is found (a known session's cwd,
 /// or an existing target directory), else `None`. `whitelisted` is consulted
 /// only when the recipient is found.
-pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) -> Ack {
+/// `hidden` is the requested spawn visibility: a visible spawn (`false`) always
+/// needs the operator, so the whitelist alone never accepts it.
+pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool, hidden: bool) -> Ack {
     match target_cwd {
         None => match target {
             Target::Session(_) => Ack::RecipientNotFound,
             Target::Dir(_) => Ack::DirectoryNotKnown,
         },
+        // A visible window is operator-gated regardless of the whitelist.
+        Some(_) if !hidden => Ack::ApprovalNeeded,
         Some(_) if whitelisted => Ack::Accepted,
         Some(_) => Ack::ApprovalNeeded,
     }
@@ -151,6 +161,7 @@ pub fn parse_message(text: &str) -> Option<Message> {
         message: s("message")?,
         force_new: v.get("forceNew").and_then(|x| x.as_bool()).unwrap_or(false),
         label: s("label"),
+        hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(true),
     })
 }
 
@@ -295,6 +306,7 @@ mod tests {
             message: "hi".into(),
             force_new: false,
             label: None,
+            hidden: true,
         }
     }
 
@@ -351,13 +363,15 @@ mod tests {
     fn classify_covers_every_ack() {
         let sess = Target::Session("sid".into());
         let dir = Target::Dir("/b".into());
-        // Recipient found -> whitelisted decides accepted vs approval_needed.
-        assert_eq!(classify(&sess, Some("/b"), true), Ack::Accepted);
-        assert_eq!(classify(&sess, Some("/b"), false), Ack::ApprovalNeeded);
-        assert_eq!(classify(&dir, Some("/b"), true), Ack::Accepted);
-        // Recipient not found -> reason depends on the target kind.
-        assert_eq!(classify(&sess, None, false), Ack::RecipientNotFound);
-        assert_eq!(classify(&dir, None, false), Ack::DirectoryNotKnown);
+        // Recipient found + hidden spawn -> whitelisted decides accepted vs approval.
+        assert_eq!(classify(&sess, Some("/b"), true, true), Ack::Accepted);
+        assert_eq!(classify(&sess, Some("/b"), false, true), Ack::ApprovalNeeded);
+        assert_eq!(classify(&dir, Some("/b"), true, true), Ack::Accepted);
+        // A visible spawn (hidden=false) always needs the operator, even whitelisted.
+        assert_eq!(classify(&dir, Some("/b"), true, false), Ack::ApprovalNeeded);
+        // Recipient not found -> reason depends on the target kind (visibility moot).
+        assert_eq!(classify(&sess, None, false, true), Ack::RecipientNotFound);
+        assert_eq!(classify(&dir, None, false, true), Ack::DirectoryNotKnown);
         // Only resolvable targets are routed onward.
         assert!(Ack::Accepted.routable());
         assert!(Ack::ApprovalNeeded.routable());
