@@ -6,7 +6,7 @@ Claude Code having any in-process plugin runtime.
 
 ## Why this is shaped differently
 
-The pi (`../corral-announce.ts`) and opencode (`../corral-opencode.ts`) adapters
+The pi (`../corral-pi.ts`) and opencode (`../corral-opencode.ts`) adapters
 run *inside* the session and serve ACP directly, because those harnesses load a
 long-lived plugin that can hold a socket and inject a prompt. Claude Code cannot:
 its hooks are subprocesses that exit, and its ACP mode is a separate headless

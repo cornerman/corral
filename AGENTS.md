@@ -33,7 +33,7 @@ supplies font, theme and flatness, runs over SSH, one tiny binary); the GUI is
 the no-terminal launcher window.
 
 Agent-agnostic by design; pi is the current proof of concept, announced via the
-`corral-announce` extension. The board reads agent identity generically, so
+`corral-pi` extension. The board reads agent identity generically, so
 other ACP agents are a matter of giving them a way to announce (see Future).
 
 The registry record, workdir-local socket, and ACP surface are a harness-neutral
@@ -68,7 +68,7 @@ the daemon (`corrald`) is the singleton that owns inter-agent messaging.
 
 ```
 your terminal (pi, interactive TUI)              another terminal
-  pi -e extensions/corral-announce.ts              corral (attention board, launch many)
+  pi -e extensions/corral-pi.ts              corral (attention board, launch many)
     |  writes ~/.corral/registry/<id>.json           |  scans the registry (1s)
     |  binds <cwd>/.corral/pi-<pid>.sock              |  one watch connection per live socket:
     |    on session_start                            |    initialize + session/list (seed)
@@ -293,7 +293,7 @@ ratatui / iced, the daemon keeps ksni).
 
 ## Extensions
 
-- `extensions/corral-announce.ts` — pi extension announcing an interactive pi
+- `extensions/corral-pi.ts` — pi extension announcing an interactive pi
   session: on `session_start` it writes the registry record and binds the
   workdir-local socket; on `session_shutdown` it clears the record's `socket`
   and unlinks. It writes `spawnCommand` (`["pi"]`) and `resumeCommand`
@@ -329,7 +329,7 @@ ratatui / iced, the daemon keeps ksni).
 - `extensions/corral-opencode.ts` — the second worked adapter (an opencode
   plugin), proving the convention is harness-neutral: corral itself needs zero
   changes, since it runs the record's launch commands and reads its `label`
-  verbatim. It mirrors `corral-announce` closely and deviates only where
+  verbatim. It mirrors `corral-pi` closely and deviates only where
   opencode's API forces it. It binds the same workdir-local socket
   (`<cwd>/.corral/opencode-<pid>.sock`), writes the same registry record with
   `label: "opencode"`, `spawnCommand` (`["opencode"]`) and `resumeCommand`
@@ -439,7 +439,7 @@ new message back using the reply handle.
 Corral tracks the ACP v2 Prompt Lifecycle RFD
 (agentclientprotocol.com/rfds/v2/prompt), which adds a `state_update`
 session/update with `running` / `idle` / `requires_action`, broadcast by the
-agent to every client (not just the prompt sender). corral-announce emits that
+agent to every client (not just the prompt sender). corral-pi emits that
 exact shape and vocabulary now, ahead of stabilization, so there is zero
 migration when v2 lands and any future ACP agent works unchanged. Tradeoff: a
 strict v1-only client that rejects unknown `sessionUpdate` variants would not
@@ -489,7 +489,7 @@ message/tool updates) is ACP v1.
   mirror. Uses the environment-resolved terminal to spawn/resume delivery
   targets. Reads the same registry
   as the board.
-- pi extension `corral-announce` — see Extensions above.
+- pi extension `corral-pi` — see Extensions above.
 - Registry records in `$HOME/.corral/registry/` and unix sockets in each
   `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /
   `$CORRAL_SOCKET_DIR`). No TCP ports, no network exposure. Peer authentication
@@ -517,10 +517,10 @@ message/tool updates) is ACP v1.
 - A transient watch read error reports the agent gone; the next 1s scan
   reconnects. A genuinely dead socket (crashed pi) reconnects-and-drops cheaply
   once per second until its file disappears.
-- corral-announce answers `session/new`/`session/load` with method-not-
+- corral-pi answers `session/new`/`session/load` with method-not-
   supported: clients can discover, watch, and prompt running pi sessions, but
   attaching with history replay is not yet served.
-- corral-announce's `session/prompt` responses resolve for all waiting clients
+- corral-pi's `session/prompt` responses resolve for all waiting clients
   at once when the queue drains (no per-message turn attribution).
 - Approvals stay in the pi TUI; socket clients never receive
   `session/request_permission`.
@@ -555,7 +555,7 @@ message/tool updates) is ACP v1.
 ## Future
 
 - More than pi. The board core is agent-agnostic; the only pi-specific piece is
-  the `corral-announce` adapter. The stable contract any ACP agent joins by:
+  the `corral-pi` adapter. The stable contract any ACP agent joins by:
   (1) write `~/.corral/registry/<sessionId>.json` with `label` set to the agent
   kind, `socket` pointing at (2) a workdir-local `<label>-<pid>.sock` speaking
   ACP (initialize, session/list, session/prompt), a `spawnCommand`/
@@ -566,7 +566,7 @@ message/tool updates) is ACP v1.
   `agent`; a missing `spawnCommand`/`resumeCommand` leaves the kind
   discoverable and drivable but not launchable by corral.
 - quine is the third worked kind and the first that serves the convention
-  *natively*: rather than a bespoke adapter file (like `corral-announce.ts` /
+  *natively*: rather than a bespoke adapter file (like `corral-pi.ts` /
   `corral-opencode.ts`), quine compiles the surface in as a `--corral`
   interface in its own repo. It is also the first GUI agent, so its record
   carries `gui: true`: corral launches it directly (no terminal wrapper, see

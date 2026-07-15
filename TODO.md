@@ -6,19 +6,20 @@ docs/superpowers/specs/ for the design.
 ## Built (on `main`)
 
 The attention board is shipped and working:
-- `crates/board`: 3 columns Requires Action / Idle / Running (ACP v2
-  `state_update` vocabulary), a live watch connection per socket, sway focus
-  (`/proc` parent-walk) and kitty spawn behind `WindowFocuser`/`Launcher`
-  seams. Keys: Up/Down (or scroll) within a column, Left/Right (h/l) across
-  columns, Enter/left-click focus, `n` spawn in selected cwd, `N` fuzzy dir
-  picker (cwds of sessions on the board only, no filesystem scan), `q`
-  quit. 20 tests, clippy clean.
+- `crates/board`: 4 columns Requires Action / Idle / Running / Dormant (ACP v2
+  `state_update` vocabulary), a live watch connection per socket, window focus
+  (EWMH on X11; sway / Hyprland / niri on Wayland) and terminal spawn behind
+  the `WindowFocuser` / `Launcher` seams. Keys: Up/Down (or scroll) within a
+  column, Left/Right across columns, Enter/left-click go (focus a live window
+  or resume a dormant session), Shift+Enter spawn in the selected card's dir,
+  `/` inline fuzzy filter, `m` message, `d` dismiss, `q` quit (Esc peels one
+  layer per press). `--launcher` opens an ephemeral popup.
 - Discovery: per-session registry `~/.corral/registry/<sessionId>.json`
   (override dir `$CORRAL_REGISTRY_DIR`) naming a workdir-local socket
-  `<cwd>/.corral/pi-<pid>.sock` (override `$CORRAL_SOCKET_DIR`). The board
-  watches live sockets; dormant records (socket cleared on clean shutdown) are
-  written but not yet rendered.
-- `corral-announce`: serves initialize / session/list / session/prompt /
+  `<cwd>/.corral/<label>-<pid>.sock` (override `$CORRAL_SOCKET_DIR`). The board
+  watches live sockets and renders dormant records (socket cleared on clean
+  shutdown) in the Dormant column.
+- `corral-pi`: serves initialize / session/list / session/prompt /
   session/cancel; broadcasts message + tool events, `state_update`
   (running/idle from turn events; requires_action while the `question` tool
   blocks), `session_info_update` on rename; title falls back to the first user
@@ -28,7 +29,7 @@ The attention board is shipped and working:
 
 One per-session file drives discovery, isolation, and resume.
 
-- [x] corral-announce: bind the socket at `<cwd>/.corral/pi-<pid>.sock`
+- [x] corral-pi: bind the socket at `<cwd>/.corral/pi-<pid>.sock`
       (workdir-local = sandbox-isolated); write
       `~/.corral/registry/<sessionId>.json`
       `{ sessionId, cwd, title, socket, resume, lastSeen }` on session_start;
@@ -139,7 +140,7 @@ One per-session file drives discovery, isolation, and resume.
 
 ## Platform (pi) — the requires_action follow-up (C)
 
-- [ ] Full `requires_action` coverage. Today corral-announce only detects the
+- [ ] Full `requires_action` coverage. Today corral-pi only detects the
       `question` tool. pi's built-in tool-approval confirms and other
       `ctx.ui.*` prompts (select, input, elicitation) are invisible to
       extensions. Wanted: pi emits a signal whenever any blocking UI prompt
@@ -158,9 +159,12 @@ One per-session file drives discovery, isolation, and resume.
       `picker`/`focus` lifted into `corral-core`.
 - [x] Dashboard v1: four columns of cards over the engine, state-colored dot,
       `~`-path, activity·age; click a card to go (focus/resume); `+ new agent`.
-- [ ] Parity with the TUI: `m` message compose, `/` fuzzy jump (reuse
-      `core::picker`), `d` dismiss, keyboard navigation + selection highlight,
-      two-stage click (select then go), path abbreviation polish.
+- [x] Parity with the TUI: `m` message compose, `/` inline fuzzy filter, `d`
+      dismiss, arrow navigation + selection highlight, two-stage click (select
+      then go), clickable footer, staged Escape, launcher mode. Column names
+      come from the shared `Column::title()` in both shells (no drift); each
+      shell keeps its own rendering idiom (ratatui uppercase headings + `▍`
+      selection bar vs iced title-case headings + accent-tinted card).
 - [ ] DEBT: the ratatui board still runs its own inline copy of the reflect
       loop and `age_label`/`prune`; converge it onto `core::engine`, or retire
       the TUI once the GUI is the daily driver. Duplication is temporary and
@@ -201,7 +205,7 @@ One per-session file drives discovery, isolation, and resume.
 - [x] `f` fuzzy-focus: picker over live agents (filter by title/cwd), Enter
       focuses the chosen window. Reuses the Picker via `selected_original`.
 
-## Extension (corral-announce)
+## Extension (corral-pi)
 
 - [x] `agentInfo.version`: now imports the exported `VERSION` constant from
       `@earendil-works/pi-coding-agent` (the old `require(package.json)` did
@@ -215,7 +219,7 @@ One per-session file drives discovery, isolation, and resume.
 
 ## Extension (corral-opencode)
 
-- [x] Second adapter: an opencode plugin mirroring `corral-announce` (registry
+- [x] Second adapter: an opencode plugin mirroring `corral-pi` (registry
       record, workdir-local ACP socket, `state_update` broadcast,
       `corral_message_agent` tool). Single active session per window;
       multi-session multiplexing deferred. Teardown clears the socket and
@@ -259,7 +263,7 @@ One per-session file drives discovery, isolation, and resume.
 ## Future Features
 
 - [x] Multi-agent: a second harness announces. `extensions/corral-opencode.ts`
-      (an opencode plugin) mirrors `corral-announce`, binding
+      (an opencode plugin) mirrors `corral-pi`, binding
       `<cwd>/.corral/opencode-<pid>.sock` and writing a record with
       `label: "opencode"`; corral needed zero changes (it runs the record's
       launch commands verbatim and reads `label` generically). Further non-pi

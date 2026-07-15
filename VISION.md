@@ -209,7 +209,7 @@ daily-use ergonomics.
    pi *and* of corral, with a MUST/SHOULD/MAY conformance checklist so any
    harness or tool can implement it without reading corral's source.
 2. **Prove cross-harness with a second adapter.** (done) An opencode plugin,
-   `extensions/corral-opencode.ts`, beside the pi `corral-announce`. Two
+   `extensions/corral-opencode.ts`, beside the pi `corral-pi`. Two
    harnesses on one board is the demonstration that makes the claim real; one
    harness is just a tool. corral itself needed zero changes: it runs the
    record's launch commands verbatim and reads its `label` generically, so the
@@ -231,9 +231,12 @@ daily-use ergonomics.
    router, control, or approval code) and a `corral-core` lib holds the shared
    code. Still nixos-side: the systemd user service that keeps `corrald` alive
    (restart-on-failure) and the WM keybind that summons the board window.
-6. **Board window hide** (nixos + a `WindowHider` seam): summon/dismiss the
-   board via the WM scratchpad; corral hides itself after a dismiss. See the
-   open "Hide trigger" question.
+6. **Board window hide** (dropped): superseded by the ephemeral launcher. The
+   board is summoned by a WM keybind as a `--launcher` popup and killed (it
+   exits) on a go/spawn, on focus loss (GUI), or on Escape, so no in-app
+   `WindowHider` seam or scratchpad-persistence is needed. A persistent,
+   hideable board can return if a real use appears; today spawn-and-die is
+   simpler and covers the launcher case.
 7. **Review surface**: a cohesive approval-review view showing the full prompt
    text, kept separate in code from the triage columns.
 
@@ -241,18 +244,11 @@ Items 3 through 7 improve corral for daily use; items 1 and 2 capture the space.
 
 ## Open Questions
 
-- **Hide trigger.** When should corral hide its own board window without
-  exiting (routing keeps running)? Research finding: vanilla sway/i3
-  scratchpads do not auto-hide on focus loss (people bolt that on with scripts
-  like `swayhide` or an `auto_scratchpad` watcher). So focusing the target does
-  not hide the board for free; even the go case may need an explicit hide, and
-  the dismiss-without-picking case (Esc, no target grabs focus) can only be
-  resolved by corral hiding itself. Candidate mechanism: a `WindowHider` seam
-  beside `WindowFocuser`, with a sway implementation that moves corral's own
-  window to the scratchpad by walking `/proc` from corral's pid to its terminal
-  window (the same parent-walk `SwayFocuser` already uses for other agents).
-  Trigger set (dismiss-only vs after-every-action vs not-corral's-job) is
-  undecided.
+- **Hide trigger.** (resolved) The board is not hidden; it is an ephemeral
+  `--launcher` popup spawned per summon and killed on action / focus loss /
+  Escape. So there is no persistent window to hide, no `WindowHider` seam, and
+  no scratchpad-persistence question. Revisit only if a persistent board earns
+  its place.
 - **Non-agent contexts.** The generic contract already permits any long-running
   process (a build, a REPL, a remote session) to announce as a tab. Do not
   build for this; do not foreclose it. Add nothing until a real use appears.

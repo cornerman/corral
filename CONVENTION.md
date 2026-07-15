@@ -5,7 +5,7 @@ Convention v1 — 2026-07-13
 This document specifies the filesystem-and-socket convention an agent harness
 follows to become discoverable, triageable, and drivable by a corral-compatible
 consumer. It is written to be implemented from this document alone, without
-reading corral's source or the reference `corral-announce` extension.
+reading corral's source or the reference `corral-pi` extension.
 
 Two roles:
 
@@ -333,7 +333,7 @@ after approval without a further ack.
 
 ## Appendix B — Reference Implementation (non-normative)
 
-- Agent side, first example: `extensions/corral-announce.ts` (a pi extension
+- Agent side, first example: `extensions/corral-pi.ts` (a pi extension
   implementing all of §2–§6 and Appendix A).
 - Agent side, second example: `extensions/corral-opencode.ts` (an opencode
   plugin implementing the same §2–§6 surface and Appendix A). It is the
