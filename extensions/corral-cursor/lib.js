@@ -125,4 +125,12 @@ function hookEventToState(eventName) {
   return null;
 }
 
-module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState };
+// The extension's control socket is named with OUR workspace session id, but a
+// Cursor hook payload only carries Cursor's own session/conversation id, so the
+// state-hook cannot reconstruct the path. Instead it globs the workdir's
+// `.corral/` for the one `.cursor-ctl-*.sock` the resident extension bound.
+function isControlSocketFile(name) {
+  return /^\.cursor-ctl-.*\.sock$/.test(name);
+}
+
+module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };

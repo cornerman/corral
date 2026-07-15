@@ -10,6 +10,7 @@
 "use strict";
 const fs = require("node:fs");
 const net = require("node:net");
+const path = require("node:path");
 const lib = require("./lib.js");
 
 function readStdin() {
@@ -26,23 +27,34 @@ function readStdin() {
 async function main() {
   const raw = await readStdin();
   let ev = {};
-  try { ev = JSON.parse(raw); } catch { return; }
-  // UNVERIFIED field names: accept several shapes defensively.
-  const cwd = ev.cwd || ev.workspace_root || ev.workspaceRoot || process.cwd();
-  const sessionId = ev.session_id || ev.sessionId || ev.conversation_id || "";
-  // Prefer the payload's event name; fall back to the stage passed as argv[2]
-  // (hooks.template.json passes the stage) when the payload omits it.
-  const eventName = ev.hook_event_name || ev.hookEventName || process.argv[2] || "";
-  if (!sessionId) return;
+  try { ev = JSON.parse(raw); } catch { ev = {}; }
+  // Stage: prefer the arg we pass in hooks.json (reliable), fall back to payload.
+  const eventName = process.argv[2] || ev.hook_event_name || ev.hookEventName || "";
   const state = lib.hookEventToState(eventName);
   if (!state) return;
-  const ctl = lib.controlSocketPath(cwd, sessionId, process.env);
-  if (!fs.existsSync(ctl)) return;
+  // cwd: Cursor's payload carries `workspace_roots` (array), not `cwd`; hooks also
+  // run from the project root, so process.cwd() is a final fallback.
+  const cwd =
+    (Array.isArray(ev.workspace_roots) && ev.workspace_roots[0]) ||
+    ev.cwd || ev.workspace_root || process.cwd();
+  const dir = process.env.CORRAL_SOCKET_DIR || path.join(cwd, ".corral");
+  // Find the extension's control socket by name (it is keyed on OUR session id,
+  // which the hook payload does not contain), not by reconstructing the path.
+  let name;
+  try { name = fs.readdirSync(dir).find(lib.isControlSocketFile); } catch { return; }
+  if (!name) return;
+  const ctl = path.join(dir, name);
   await new Promise((resolve) => {
     const conn = net.createConnection(ctl);
     const done = () => { try { conn.destroy(); } catch {} resolve(); };
     conn.setTimeout(1000, done);
-    conn.on("connect", () => { try { conn.write(JSON.stringify({ kind: "state", state }) + "\n"); } catch {} done(); });
+    // Write, then close only AFTER the write flushes (the callback). Destroying
+    // immediately after write() races the flush and drops the message.
+    conn.on("connect", () => {
+      try { conn.write(JSON.stringify({ kind: "state", state }) + "\n", () => conn.end()); }
+      catch { done(); }
+    });
+    conn.on("close", done);
     conn.on("error", done);
   });
 }

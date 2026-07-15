@@ -109,3 +109,9 @@ test("hookEventToState maps the two observed stages", () => {
   assert.equal(lib.hookEventToState("stop"), "idle");
   assert.equal(lib.hookEventToState("afterFileEdit"), null);
 });
+
+test("isControlSocketFile matches the ctl socket name only", () => {
+  assert.equal(lib.isControlSocketFile(".cursor-ctl-e55bb4e8.sock"), true);
+  assert.equal(lib.isControlSocketFile("cursor-121602.sock"), false);
+  assert.equal(lib.isControlSocketFile("pi-102342.sock"), false);
+});
