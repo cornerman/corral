@@ -291,12 +291,17 @@ ratatui / iced, the daemon keeps ksni).
     (accepted / approval_needed / recipient_not_found / directory_not_known)
     from resolved facts, add the `[from agent in <dir> (session <id>)]`
     provenance/reply-handle tag, and read/append the `(sender -> target)`
-    whitelist. Pure, unit-tested.
+    whitelist. `classify` also forces the approval gate on a visible spawn
+    (`hidden:false`) regardless of the whitelist. It also builds the read-only
+    capability roster (`build_roster` + `roster_json`): reachable directories
+    become full per-session entries, the rest fold into anonymous kind entries,
+    never a title or activity. Pure, unit-tested.
   - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
     `$CORRAL_CONTROL_SOCKET`). A background thread accepts one submission per
-    connection: read the request line, parse, find the recipient (registry
-    scan for a session, dir-exists for a directory), ack the verdict, and (if
-    routable) hand the message to the router over a channel. `serve` fails loud
+    connection: read the request line; a `{"op":"list"}` roster query is
+    answered synchronously and never routed; else parse the message, find the
+    recipient (registry scan for a session, dir-exists for a directory), ack the
+    verdict, and (if routable) hand the message to the router over a channel. `serve` fails loud
     on a bind error and `is_serving` is the singleton guard (a live listener
     means another corrald owns the socket, so the second refuses to start).
     Ack is synchronous; delivery and the approval gate run later. Unit-tested
@@ -309,12 +314,15 @@ ratatui / iced, the daemon keeps ksni).
     spawn/resume — the daemon needs no dead-socket tracking. Delivery to a
     not-yet-live target carries the message as the new session's first prompt
     (launch-with-message), atomic with no wait-for-announce; a spawn or resume
-    it triggers runs **hidden** (agent-initiated windows must never pop up).
-    Holds an in-memory
+    it triggers runs **hidden by default** (`msg.hidden`, so agent-initiated
+    windows never pop up unless a `hidden:false` message asked and the operator
+    approved). A fresh dir-spawn prepends the swarm **`CHARTER`** to its first
+    prompt (task-confirmation, comms-only-via-tool, escalate-up, event-driven);
+    a resume gets none. Holds an in-memory
     queue (no file spool), the authorization decisions, and the one message
     awaiting operator approval; owns `ApprovalAction` and `apply`. Unit-tested
-    (gating, spawn-with-message, live + dormant session delivery, allow/deny,
-    unknown-session drop).
+    (gating, spawn-with-message, visible-request unhidden, charter prefix,
+    live + dormant session delivery, allow/deny, unknown-session drop).
   - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
     pending approval to a desktop notification with Allow once / Allow always /
     Deny buttons (`notify-send -A`), reporting the choice back on a channel
@@ -359,12 +367,20 @@ ratatui / iced, the daemon keeps ksni).
   `turn_start`/`turn_end` and while the interactive `question` tool blocks on
   the user. A newly connected client is seeded with the current `state_update`.
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
-  (`target_dir` or `target_session`, `message`, `force_new`, optional `label`)
+  (`target_dir` or `target_session`, `message`, `force_new`, optional `label`,
+  optional `hidden` default true)
   that submits a
   cross-session message over `~/.corral/corrald.sock` (stamped with the
   sender's `fromSession` as a reply handle) and reports corral's ack (accepted
   / approval_needed / recipient_not_found / directory_not_known); a connect failure is
-  surfaced as "corrald not running" (fail loud, no silent queue). Install:
+  surfaced as "corrald not running" (fail loud, no silent queue). It also
+  registers `list_corral_agents` (no args), a read-only roster query
+  (`{"op":"list"}` over the same socket) returning the capability picture:
+  full per-session entries (kind, description, cwd, sessionId, live,
+  `canMessage`) for reachable directories, anonymous kind-only entries folding
+  the rest, never a session title or activity. The record now carries a
+  one-line adapter-authored `description` of the harness kind (CONVENTION §1),
+  surfaced in that roster. Install:
   symlink into
   `~/.pi/agent/extensions/`.
 
@@ -386,8 +402,9 @@ ratatui / iced, the daemon keeps ksni).
   (multi-session multiplexing is deferred) and, lacking a plugin-unload hook,
   clears the record's socket and unlinks on process exit/SIGINT/SIGTERM;
   best-effort, since corral's dead-socket sweep makes a missed teardown dormant
-  anyway. It registers the same `corral_message_agent` tool via opencode's
-  `tool` hook. Untypechecked in this repo (no opencode toolchain here), so the
+  anyway. It registers the same `corral_message_agent` (with the `hidden` param)
+  and `list_corral_agents` tools via opencode's
+  `tool` hook, and writes the same `description` record field. Untypechecked in this repo (no opencode toolchain here), so the
   plugin API shapes are probed defensively at runtime and flagged UNVERIFIED
   in-file. Install: symlink into `~/.config/opencode/plugin/` (global) or
   `.opencode/plugin/` (project).
@@ -528,6 +545,33 @@ Authorization is always keyed on the `(sender-dir -> target-dir)` pair (a
 session target resolves to its cwd), since directories are the stable, human-
 meaningful unit. Fire-and-forget: no reply is auto-routed; the receiver sends a
 new message back using the reply handle.
+
+A spawn defaults **hidden**: the `hidden` param on `corral_message_agent`
+(default true) governs a spawn/resume the message triggers, so an uninvited
+agent never pops a window. `hidden: false` requests a visible window and always
+requires operator approval, whitelisted or not — a visible window is a stronger
+action than a message, so `classify` forces the approval gate on it regardless
+of the whitelist. A freshly spawned agent's first prompt is prefixed with a
+**charter** (ported from the subagents extension, adapted to corral's two
+verbs): confirm the task before working, communicate only through
+`corral_message_agent`, escalate uncertainty up, stay event-driven. A resume
+gets no charter (its transcript already carries context).
+
+Before messaging, an agent can survey the board with **`list_corral_agents`**, a
+read-only, ungated roster query (`{"op":"list","fromCwd":..}` over the control
+socket, served synchronously by `corrald` from `whitelist ∩ registry`). It
+returns the capability picture without leaking: a reachable directory (the
+caller's own, or a whitelisted pair) yields full per-session entries (kind,
+description, cwd, sessionId, liveness, `canMessage`) the caller can address by
+`target_session`; every unreachable directory folds, by harness kind, into one
+anonymous entry (kind + description only), so the caller learns which kinds
+exist without learning who runs where. A roster never carries a session title
+or activity — messaging is not reading. The `description` is a one-line,
+adapter-authored string in the record (CONVENTION §1; latest-seen per label
+wins), so a caller can pick a kind (GUI review → a GUI agent, terminal coding →
+pi/opencode) before spawning. Kill of a peer is deferred: the settled rule
+limits it to a session `corrald` observed the caller spawn, but the operator is
+the governor and kills any agent from the board (`d`).
 
 ## ACP Conformance
 
