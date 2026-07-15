@@ -89,6 +89,19 @@ Cursor versions. If messaging does not open a chat, set
   cannot carry a prompt. A future generic `messageUriTemplate` (prompt deeplink)
   could pre-fill it.
 
+## TODO / Future
+
+- **Agent-initiated messaging (send side) is not implemented.** This adapter only
+  receives (corral -> Cursor). Unlike `corral-pi` / `corral-opencode` /
+  `corral-claude`, it does not yet register a `corral_message_agent` tool
+  (Appendix A) letting the Cursor agent message other agents. Two candidate
+  routes when picked up: an MCP stdio server auto-registered in
+  `~/.cursor/mcp.json` (the robust, Cursor-documented path), or a small
+  `corral-msg` CLI plus a Cursor rule that invokes it via the agent's shell tool
+  (no MCP, but no clean global rule-install and prose-driven invocation). The
+  `vscode.lm.registerTool` API is not a route — Cursor's Composer does not
+  consume VS Code LM tools.
+
 ## Status: UNVERIFIED
 
 No Cursor runtime is available in this repo, so the Cursor-specific pieces are

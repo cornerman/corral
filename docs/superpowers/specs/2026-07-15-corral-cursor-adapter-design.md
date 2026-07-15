@@ -255,6 +255,15 @@ back, not silently patched.
 
 ## Future
 
+- **Agent-initiated messaging (`corral_message_agent`, Appendix A) — TODO.** v1
+  is receive-only (corral -> Cursor); the Cursor agent cannot yet message other
+  agents as pi/opencode/claude can. Routes when picked up: an MCP stdio server
+  auto-registered in `~/.cursor/mcp.json` (robust, Cursor-documented), or a
+  `corral-msg` CLI + a Cursor rule invoking it via the agent's shell tool (no
+  MCP, but no clean global rule-install and prose-driven invocation).
+  `vscode.lm.registerTool` is not a route (Cursor's Composer ignores VS Code LM
+  tools). Left out of v1 by choice.
+
 - When the `cursor-agent` CLI is in play, a second, cleaner adapter can serve
   the convention over `cursor-agent acp` (native ACP), with real injection and
   a terminal window to focus — the terminal-agent shape (twin of the other CLI
