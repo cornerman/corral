@@ -395,6 +395,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				title: activeTitle,
 				// Agent kind, so corral can label a dormant card (no socket to parse).
 				label: "opencode",
+				// One-line kind description for the list_corral_agents roster.
+				// Adapter-authored, not model output.
+				description: "opencode: terminal coding agent",
 				socket: socketPath ?? null,
 				spawnCommand: ["opencode"],
 				resumeCommand: ["opencode", "--session", activeSessionId],
@@ -593,6 +596,14 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 							'(e.g. "pi", "opencode"). Defaults to the kind already used in that directory; ' +
 							'leave empty ("") to use the default.',
 					},
+					hidden: {
+						type: "boolean",
+						description:
+							"Whether a newly spawned agent runs hidden (alive and working, but no window). " +
+							"Defaults true, so an agent you summon never pops a window on the operator; they " +
+							"reveal it from the board. Set false to request a visible window, which the operator " +
+							"must approve. Ignored when the target agent is already running.",
+					},
 				},
 				async execute(args: {
 					target_dir?: string;
@@ -600,6 +611,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					message: string;
 					force_new?: boolean;
 					label?: string;
+					hidden?: boolean;
 				}) {
 					const home = process.env.HOME;
 					const controlSocket =
@@ -625,6 +637,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					else record.targetSession = args.target_session;
 					// Optional: which agent kind to spawn if target_dir has no live agent.
 					if (args.label) record.label = args.label;
+					// Spawn visibility (default hidden); a visible spawn is operator-gated.
+					if (typeof args.hidden === "boolean") record.hidden = args.hidden;
 					const dest = hasDir ? args.target_dir : `session ${args.target_session}`;
 					// A connect failure means corral is not running: fail loud rather
 					// than silently queue undelivered.
@@ -637,16 +651,42 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					return describeAck(status, String(dest));
 				},
 			},
+			// list_corral_agents: read-only capability roster. Ungated; corral
+			// withholds every unreachable directory's identity (kind-only anonymous
+			// entries), and never a session's title or activity.
+			list_corral_agents: {
+				description:
+					"List the coding-agent sessions corral knows about, so you can choose whom to message " +
+					"or which kind to spawn. Returns a full entry (kind, description, cwd, sessionId, live, " +
+					"canMessage:true) for each agent in a directory you may reach, and an anonymous kind " +
+					"entry (kind + description only) folding every directory you may not reach. Use a full " +
+					"entry's sessionId as target_session for corral_message_agent. Never reveals a session's " +
+					"title or activity.",
+				args: {},
+				async execute() {
+					const home = process.env.HOME;
+					const controlSocket =
+						process.env.CORRAL_CONTROL_SOCKET ??
+						(home ? path.join(home, ".corral", "corrald.sock") : undefined);
+					if (!controlSocket) return "corral: no HOME; cannot list agents";
+					try {
+						return await submitRawToCorral(controlSocket, { op: "list", fromCwd: activeCwd });
+					} catch {
+						return `corral is not running (cannot reach ${controlSocket}).`;
+					}
+				},
+			},
 		},
 	};
 };
 
 export default CorralOpencode;
 
-// Submit a message record over corral's control socket and resolve with the
-// one-word ack status corral returns. Rejects on connect failure (corral down)
-// or if no ack arrives within a short window (so the tool never hangs).
-function submitToCorral(socketPath: string, record: Record<string, unknown>): Promise<string> {
+// Submit a record over corral's control socket and resolve with the raw first
+// reply line (a JSON document). Rejects on connect failure (corral down) or if
+// no reply arrives within a short window (so the tool never hangs). The message
+// tool and the roster query share it; each parses the line it expects.
+function submitRawToCorral(socketPath: string, record: Record<string, unknown>): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const conn = net.createConnection(socketPath);
 		let buf = "";
@@ -663,15 +703,23 @@ function submitToCorral(socketPath: string, record: Record<string, unknown>): Pr
 			buf += chunk.toString("utf8");
 			const nl = buf.indexOf("\n");
 			if (nl < 0) return;
-			let status = "unknown";
-			try {
-				status = String((JSON.parse(buf.slice(0, nl)) as { status?: unknown }).status ?? "unknown");
-			} catch {}
-			finish(() => resolve(status));
+			const line = buf.slice(0, nl);
+			finish(() => resolve(line));
 		});
 		conn.on("error", (e) => finish(() => reject(e)));
 		conn.on("close", () => finish(() => reject(new Error("closed before ack"))));
 	});
+}
+
+// Submit a message record and resolve with the one-word ack status corral
+// returns (parsed from the raw reply line).
+async function submitToCorral(socketPath: string, record: Record<string, unknown>): Promise<string> {
+	const line = await submitRawToCorral(socketPath, record);
+	try {
+		return String((JSON.parse(line) as { status?: unknown }).status ?? "unknown");
+	} catch {
+		return "unknown";
+	}
 }
 
 // Turn corral's ack status into a message for the sending agent.
