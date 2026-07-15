@@ -447,7 +447,10 @@ mod tests {
         let launcher = StubLauncher::default();
         deliver(&msg, &entries, &launcher);
         assert_eq!(launcher.spawns.get(), 1);
-        assert!(!launcher.last_hidden.get(), "visible request must not be hidden");
+        assert!(
+            !launcher.last_hidden.get(),
+            "visible request must not be hidden"
+        );
     }
 
     #[test]

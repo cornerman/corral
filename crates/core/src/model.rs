@@ -416,7 +416,10 @@ mod tests {
         b.sync_registry(&[rec], &HashSet::new());
         let live = b.in_state(State::Running);
         assert_eq!(live.len(), 1);
-        assert!(live[0].hidden, "live agent must inherit hidden from its record");
+        assert!(
+            live[0].hidden,
+            "live agent must inherit hidden from its record"
+        );
         assert_eq!(
             live[0].resume_command.as_deref().unwrap(),
             ["pi", "--session", "sess-1"],

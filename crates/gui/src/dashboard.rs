@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use corral_core::focus::{self, WindowFocuser};
-use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::model::{Agent, Column, Origin, State};
+use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::{engine::Engine, nav, palette::basename, palette::color_index, paths, prompt};
 
 use iced::widget::{
@@ -498,11 +498,11 @@ impl Board {
     /// mirroring the TUI.
     fn act_toggle_hidden(&mut self) -> Task<Message> {
         if let Some(a) = self.selected_agent().cloned() {
-            self.status = match apply_placement(&a, self.focuser.as_ref(), &self.launcher, &kill_pid)
-            {
-                Ok(()) => "toggling".into(),
-                Err(e) => e,
-            };
+            self.status =
+                match apply_placement(&a, self.focuser.as_ref(), &self.launcher, &kill_pid) {
+                    Ok(()) => "toggling".into(),
+                    Err(e) => e,
+                };
         }
         Task::none()
     }
@@ -830,28 +830,29 @@ impl Board {
         let cap_bg = s.base[2];
         // A keycap pill (` key ` on a subtle fill) beside a dim label, matching
         // the TUI footer. Keys are plain ASCII so they render everywhere.
-        let hint = |key: &'static str, desc: &'static str, msg: Option<Message>| -> Element<'_, Message> {
-            let cap = container(text(key).size(13).color(fg))
-                .padding([1, 6])
-                .style(move |_t| container::Style {
-                    background: Some(cap_bg.into()),
-                    border: iced::Border {
-                        radius: 4.0.into(),
+        let hint =
+            |key: &'static str, desc: &'static str, msg: Option<Message>| -> Element<'_, Message> {
+                let cap = container(text(key).size(13).color(fg))
+                    .padding([1, 6])
+                    .style(move |_t| container::Style {
+                        background: Some(cap_bg.into()),
+                        border: iced::Border {
+                            radius: 4.0.into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
-                });
-            let item = row![cap, text(desc).size(13).color(dim)]
-                .spacing(5)
-                .align_y(Alignment::Center);
-            match msg {
-                Some(msg) => mouse_area(item)
-                    .on_press(msg)
-                    .interaction(mouse::Interaction::Pointer)
-                    .into(),
-                None => item.into(),
-            }
-        };
+                    });
+                let item = row![cap, text(desc).size(13).color(dim)]
+                    .spacing(5)
+                    .align_y(Alignment::Center);
+                match msg {
+                    Some(msg) => mouse_area(item)
+                        .on_press(msg)
+                        .interaction(mouse::Interaction::Pointer)
+                        .into(),
+                    None => item.into(),
+                }
+            };
         // Same keys, order and keycap styling as the TUI footer (ui.rs
         // footer_items / footer_layout).
         row![

@@ -62,7 +62,9 @@ pub fn apply_placement(
         Placement::Hide => {
             // Visible agent: close its host window (kill the window pid via the
             // focuser), then resume into a headless cage.
-            focuser.close(agent).map_err(|e| format!("hide close: {e}"))?;
+            focuser
+                .close(agent)
+                .map_err(|e| format!("hide close: {e}"))?;
             mode.hidden = true;
         }
         Placement::StartHidden => {
@@ -152,7 +154,10 @@ mod tests {
     fn placement_dispatch_is_pure() {
         assert_eq!(placement_for(Origin::Live, true), Placement::Reveal);
         assert_eq!(placement_for(Origin::Live, false), Placement::Hide);
-        assert_eq!(placement_for(Origin::Dormant, false), Placement::StartHidden);
+        assert_eq!(
+            placement_for(Origin::Dormant, false),
+            Placement::StartHidden
+        );
         assert_eq!(placement_for(Origin::Dormant, true), Placement::StartHidden);
     }
 

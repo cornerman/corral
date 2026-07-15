@@ -54,6 +54,7 @@ Fields:
 | `cwd`       | string          | Absolute working directory of the session. |
 | `title`     | string \| null  | Human-readable session title; `null` when unnamed. |
 | `label`     | string          | Agent kind (e.g. `"pi"`). Appears in the socket filename; a consumer MAY use it to identify a dormant session's kind. |
+| `description` | string \| null | Optional. A one-line, human-readable description of the agent kind (e.g. `"pi: terminal TUI coding agent"`), authored by the adapter. A consumer MAY surface it in a capability roster so a caller can pick a kind to spawn; latest-seen per `label` wins. The string is adapter code, not model output. |
 | `socket`    | string \| null  | Absolute path to the live socket, or `null` when the session is dormant (cleanly shut down, resumable). |
 | `spawnCommand`  | string[] \| null | argv a consumer runs (rooted at a chosen cwd, terminal-wrapped unless `gui`) to start a *fresh* session of this kind, e.g. `["pi"]`. `null` when the agent does not support consumer-launched spawn. |
 | `resumeCommand` | string[] \| null | argv a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "<sessionId>"]`. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
@@ -331,6 +332,7 @@ Request fields:
 | `targetSession` | string (one of)   | Deliver to this exact session id (resuming it if dormant). Exactly one of `targetDir` / `targetSession` is set. |
 | `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. |
 | `label`         | string (optional) | With `targetDir`: which agent kind to spawn (matched against a record's `label`). Omitted falls back to the directory's own kind; an unknown label fails loud. |
+| `hidden`        | boolean (optional)| Whether a spawn/resume this message triggers runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. `false` requests a visible window and always requires operator approval (a visible window is a stronger action than a message, so the whitelist alone never authorizes it). Ignored when the target is already live. |
 | `createdAt`     | string            | ISO-8601 creation time. |
 
 Ack (one line, `{"status":"…"}`), computed synchronously from the registry and
@@ -350,6 +352,25 @@ a provenance tag naming the sender directory and session. The receiver replies
 by addressing `targetSession` = the sender's `fromSession`. The ack confirms
 receipt and resolution, not delivery; an `approval_needed` message is delivered
 after approval without a further ack.
+
+### Roster query (`list`)
+
+Over the same control socket, an agent MAY send a read-only roster query
+(`{"op":"list","fromCwd":"<dir>"}`) and read one reply line
+(`{"status":"ok","agents":[…]}`). It is ungated: it exposes only what the caller
+could already reach. Each agent entry is one of two shapes:
+
+- **Visible** (the caller's own directory, or a whitelisted `(fromCwd -> dir)`
+  pair): `kind`, `description`, `cwd`, `sessionId`, `live`, `canMessage: true`.
+  The `sessionId` is a `targetSession` the caller may message.
+- **Anonymous** (every directory the caller may not reach, folded by kind):
+  `kind`, `description`, `canMessage: false`, no `cwd` / `sessionId`. So a
+  caller learns which agent kinds exist without learning who runs where.
+
+A roster entry never carries a session's `title` or activity: messaging is not
+reading. A charter prepended to a freshly spawned agent's first prompt teaches
+it these two verbs (message + list) and the swarm discipline (confirm the task,
+escalate uncertainty up, stay event-driven).
 
 ## Appendix B — Reference Implementation (non-normative)
 

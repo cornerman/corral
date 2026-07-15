@@ -217,14 +217,17 @@ pub fn build_roster(entries: &[RegistryEntry], visible: impl Fn(&str) -> bool) -
             }
         }
     }
-    roster.extend(anon.into_iter().map(|(kind, (description, _))| RosterEntry {
-        kind,
-        description,
-        cwd: None,
-        session_id: None,
-        live: false,
-        can_message: false,
-    }));
+    roster.extend(
+        anon.into_iter()
+            .map(|(kind, (description, _))| RosterEntry {
+                kind,
+                description,
+                cwd: None,
+                session_id: None,
+                live: false,
+                can_message: false,
+            }),
+    );
     roster
 }
 
@@ -365,7 +368,10 @@ mod tests {
         let dir = Target::Dir("/b".into());
         // Recipient found + hidden spawn -> whitelisted decides accepted vs approval.
         assert_eq!(classify(&sess, Some("/b"), true, true), Ack::Accepted);
-        assert_eq!(classify(&sess, Some("/b"), false, true), Ack::ApprovalNeeded);
+        assert_eq!(
+            classify(&sess, Some("/b"), false, true),
+            Ack::ApprovalNeeded
+        );
         assert_eq!(classify(&dir, Some("/b"), true, true), Ack::Accepted);
         // A visible spawn (hidden=false) always needs the operator, even whitelisted.
         assert_eq!(classify(&dir, Some("/b"), true, false), Ack::ApprovalNeeded);
@@ -410,14 +416,18 @@ mod tests {
         // Two visible per-session entries for /a (live + dormant), addressable.
         let visible: Vec<_> = roster.iter().filter(|r| r.cwd.is_some()).collect();
         assert_eq!(visible.len(), 2);
-        assert!(visible.iter().all(|r| r.can_message && r.cwd.as_deref() == Some("/a")));
+        assert!(visible
+            .iter()
+            .all(|r| r.can_message && r.cwd.as_deref() == Some("/a")));
         assert_eq!(visible[0].session_id.as_deref(), Some("s1"));
         assert!(visible[0].live && !visible[1].live);
         // /secret and /other fold to distinct anonymous kinds: pi + quine, one
         // each, no cwd/session, not messageable.
         let anon: Vec<_> = roster.iter().filter(|r| r.cwd.is_none()).collect();
         assert_eq!(anon.len(), 2, "pi and quine, folded once each");
-        assert!(anon.iter().all(|r| !r.can_message && r.session_id.is_none()));
+        assert!(anon
+            .iter()
+            .all(|r| !r.can_message && r.session_id.is_none()));
         let kinds: Vec<_> = anon.iter().map(|r| r.kind.as_str()).collect();
         assert!(kinds.contains(&"pi") && kinds.contains(&"quine"));
     }
@@ -439,7 +449,10 @@ mod tests {
             parse_list(r#"{"op":"list","fromCwd":"/a"}"#).as_deref(),
             Some("/a")
         );
-        assert_eq!(parse_list(r#"{"id":"1","fromCwd":"/a","message":"hi"}"#), None);
+        assert_eq!(
+            parse_list(r#"{"id":"1","fromCwd":"/a","message":"hi"}"#),
+            None
+        );
         assert_eq!(parse_list("nope"), None);
     }
 

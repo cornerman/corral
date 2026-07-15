@@ -74,9 +74,8 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
     // roster itself withholds every unreachable directory's identity.
     if let Some(from_cwd) = mailbox::parse_list(line.trim()) {
         let entries = discovery::scan_registry(registry_dir);
-        let visible = |cwd: &str| {
-            cwd == from_cwd || mailbox::is_whitelisted(whitelist, &from_cwd, cwd)
-        };
+        let visible =
+            |cwd: &str| cwd == from_cwd || mailbox::is_whitelisted(whitelist, &from_cwd, cwd);
         let roster = mailbox::build_roster(&entries, visible);
         let _ = writeln!(conn, "{}", mailbox::roster_json(&roster));
         return;
