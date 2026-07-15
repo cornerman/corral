@@ -175,7 +175,7 @@ fn deliver_dir(
     // A dir corral has never seen an agent in, with no label given, has no
     // known kind and cannot be spawned into. The record's launch mode (gui +
     // message flag) rides along so a GUI kind launches directly.
-    let (command, mode) = match msg.label.as_deref() {
+    let (command, mut mode) = match msg.label.as_deref() {
         Some(label) => match spawn_command_for_label(entries, label) {
             Some(c) => c,
             None => return format!("route spawn: unknown label {label}"),
@@ -185,6 +185,8 @@ fn deliver_dir(
             None => return format!("route: no known agent kind for {dir} (never announced there)"),
         },
     };
+    // Agent-initiated spawns run hidden: an uninvited window must never pop up.
+    mode.hidden = true;
     match launcher.launch(Path::new(dir), command, Some(&msg.tagged()), &mode) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
@@ -236,7 +238,10 @@ fn deliver_session(
     }
     match (&entry.cwd, &entry.resume_command) {
         (Some(cwd), Some(command)) => {
-            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), &entry.launch_mode()) {
+            let mut mode = entry.launch_mode();
+            // Agent-initiated resume runs hidden, same rationale as dir spawn.
+            mode.hidden = true;
+            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), &mode) {
                 Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
                 Err(e) => format!("route resume: {e}"),
             }
@@ -282,6 +287,7 @@ mod tests {
         resumes: Cell<usize>,
         last_msg: RefCell<Option<String>>,
         last_command: RefCell<Option<Vec<String>>>,
+        last_hidden: Cell<bool>,
     }
     impl Launcher for StubLauncher {
         fn launch(
@@ -289,7 +295,7 @@ mod tests {
             _cwd: &Path,
             command: &[String],
             message: Option<&str>,
-            _mode: &LaunchMode,
+            mode: &LaunchMode,
         ) -> Result<(), String> {
             if command.iter().any(|a| a == "--session") {
                 self.resumes.set(self.resumes.get() + 1);
@@ -298,6 +304,7 @@ mod tests {
             }
             *self.last_msg.borrow_mut() = message.map(str::to_owned);
             *self.last_command.borrow_mut() = Some(command.to_vec());
+            self.last_hidden.set(mode.hidden);
             Ok(())
         }
     }
@@ -330,6 +337,7 @@ mod tests {
             last_seen: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }
     }
 
@@ -347,6 +355,7 @@ mod tests {
             last_seen: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }
     }
 
@@ -362,7 +371,22 @@ mod tests {
             last_seen: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }
+    }
+
+    #[test]
+    fn dir_spawn_is_hidden_by_default() {
+        // A dir target with no live socket spawns a fresh agent; that spawn
+        // must be hidden so an uninvited window never pops up.
+        let entries = [dir_record("/b")];
+        let launcher = StubLauncher::default();
+        deliver(&dir_msg("1", "/a", "/b"), &entries, &launcher);
+        assert_eq!(launcher.spawns.get(), 1);
+        assert!(
+            launcher.last_hidden.get(),
+            "agent-initiated spawn must be hidden"
+        );
     }
 
     #[test]
@@ -561,6 +585,7 @@ mod tests {
             last_seen: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }];
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
