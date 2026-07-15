@@ -58,9 +58,10 @@
             mkdir -p "$out/share/corral/extensions"
             cp extensions/corral-pi.ts extensions/corral-opencode.ts \
               "$out/share/corral/extensions/"
-            # The Claude adapter is a plugin directory (plugin.json + hooks +
-            # sidecar/hook), so ship the whole tree, not a single file.
-            cp -r extensions/corral-claude "$out/share/corral/extensions/"
+            # The Claude and Cursor adapters are directories (a plugin tree and
+            # a VS Code extension), so ship the whole tree, not a single file.
+            cp -r extensions/corral-claude extensions/corral-cursor \
+              "$out/share/corral/extensions/"
           '';
         };
       });

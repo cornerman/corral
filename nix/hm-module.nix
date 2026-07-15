@@ -57,6 +57,17 @@ in
           corral-claude@skills-dir) and put node on PATH for its hooks.
         '';
       };
+      # The Cursor adapter is a VS Code extension directory loaded from
+      # ~/.cursor/extensions; its state-hook runs on node, pulled in below.
+      cursor.enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Symlink the Cursor adapter into ~/.cursor/extensions
+          (corral-cursor VS Code extension) and put node on PATH for its
+          state-hook.
+        '';
+      };
     };
   };
 
@@ -67,8 +78,13 @@ in
     # SIGTRAP-crashes under Landlock sandboxes) runs the .ts directly via its
     # native type-stripping (nodejs >= 22.18 / 24). So node is a hard
     # dependency whenever the adapter is linked.
+    # node (not bun: bun's JSC SIGTRAP-crashes under Landlock sandboxes) is a
+    # hard dependency for the Claude hooks and the Cursor state-hook, both of
+    # which run as external `node` subprocesses the harness does not provide.
     home.packages = [ cfg.package ]
-      ++ lib.optional cfg.extensions.claude.enable pkgs.nodejs;
+      ++ lib.optional
+        (cfg.extensions.claude.enable || cfg.extensions.cursor.enable)
+        pkgs.nodejs;
 
     # corrald is a singleton; the user service is its keep-alive. It reads the
     # filesystem registry and owns the control socket, so it needs no ordering
@@ -98,6 +114,9 @@ in
       })
       (lib.mkIf cfg.extensions.claude.enable {
         ".claude/skills/corral-claude".source = "${extDir}/corral-claude";
+      })
+      (lib.mkIf cfg.extensions.cursor.enable {
+        ".cursor/extensions/corral-cursor".source = "${extDir}/corral-cursor";
       })
     ];
   };
