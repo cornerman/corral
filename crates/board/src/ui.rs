@@ -181,6 +181,7 @@ pub enum FooterAction {
     Jump,
     Msg,
     Delete,
+    Toggle,
     Quit,
 }
 
@@ -199,8 +200,7 @@ fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 8] {
         (Some(FooterAction::Jump), "/", "filter"),
         (Some(FooterAction::Msg), "m", "msg"),
         (Some(FooterAction::Delete), "d", "delete"),
-        // `h` toggles hide/show (placement); not a click target, key-only.
-        (None, "h", "hide/show"),
+        (Some(FooterAction::Toggle), "h", "hide/show"),
         (Some(FooterAction::Quit), "q", "quit"),
     ]
 }
@@ -302,6 +302,18 @@ fn cwd_pill(cwd: Option<&str>, dim: bool) -> Option<Span<'static>> {
     Some(Span::styled(format!(" {} ", basename(cwd)), style))
 }
 
+/// A muted gray pill (` <text> ` padded like the cwd pill, but a fixed
+/// neutral fill rather than a hashed color), used for the kind badge and the
+/// `hidden` badge so both read as tags distinct from the plain activity text.
+/// `dim` fades it for dormant cards.
+fn tag_pill(text: &str, dim: bool) -> Span<'static> {
+    let mut style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    if dim {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    Span::styled(format!(" {text} "), style)
+}
+
 /// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
 pub fn age_label(d: Duration) -> String {
     let s = d.as_secs();
@@ -397,10 +409,6 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         Style::default()
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    // The kind badge recedes (dark gray) so the pill and activity read first.
-    let faint = Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM);
     let name = agent.title.as_deref().unwrap_or("(unnamed)");
     let age = card_age(agent, col, meta);
 
@@ -413,15 +421,15 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
         row2.push(pill);
         row2.push(Span::raw(" "));
     }
-    used += agent.label.chars().count();
-    row2.push(Span::styled(agent.label.clone(), faint));
-    // A live hidden agent shows a dim `hidden` badge: it runs in a headless
-    // cage, so Enter reveals it by resume rather than focusing a window.
+    used += agent.label.chars().count() + 2; // pill padding
+    row2.push(tag_pill(&agent.label, dormant));
+    // A live hidden agent shows a `hidden` pill: it runs in a headless cage,
+    // so Enter reveals it by resume rather than focusing a window.
     let hidden = hidden_badge(agent);
     if !hidden.is_empty() {
-        used += hidden.chars().count() + 1;
+        used += 1 + hidden.chars().count() + 2; // separating space + pill padding
         row2.push(Span::raw(" "));
-        row2.push(Span::styled(hidden, faint));
+        row2.push(tag_pill(hidden, dormant));
     }
     if let Some(a) = agent.activity.as_deref() {
         let act_w = width.saturating_sub(used + 2); // two spaces before activity

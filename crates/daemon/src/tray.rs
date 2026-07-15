@@ -88,6 +88,14 @@ impl ksni::Tray for CorralTray {
         }
     }
 
+    // Left click on the tray icon (`Activate` over DBus) — right click shows
+    // `menu()` instead. There is no pending-approval state worth surfacing
+    // here (the menu already covers that), so left click's one job is the
+    // fast path: open the board.
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.tx.send(TrayCommand::OpenBoard);
+    }
+
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{MenuItem, StandardItem};
         let mut items: Vec<MenuItem<Self>> = Vec::new();

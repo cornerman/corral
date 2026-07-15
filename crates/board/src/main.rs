@@ -403,21 +403,7 @@ fn run(
                         dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
                     }
                     KeyCode::Char('h') => {
-                        // Toggle placement: hide a visible agent, reveal a
-                        // hidden one, or start a dormant one hidden. Always
-                        // kill-and-resume (no live surface migration).
-                        status.clear();
-                        if let Some(agent) = board.selectable().get(selected).copied() {
-                            status = match apply_placement(
-                                agent,
-                                focuser.as_ref(),
-                                &launcher,
-                                &kill_pid,
-                            ) {
-                                Ok(()) => format!("toggling {}", ui::focus_label(agent)),
-                                Err(e) => e,
-                            };
-                        }
+                        toggle_selected(focuser.as_ref(), &launcher, &board, selected, &mut status);
                     }
                     KeyCode::Char('/') => {
                         // Focus the inline filter; typing narrows the cards.
@@ -471,6 +457,13 @@ fn run(
                                 ui::FooterAction::Delete => dismiss_selected(
                                     dir,
                                     focuser.as_ref(),
+                                    &board,
+                                    selected,
+                                    &mut status,
+                                ),
+                                ui::FooterAction::Toggle => toggle_selected(
+                                    focuser.as_ref(),
+                                    &launcher,
                                     &board,
                                     selected,
                                     &mut status,
@@ -544,6 +537,26 @@ fn activate_selected(
             *status = e;
             false
         }
+    }
+}
+
+/// `h`/footer click on the selected agent: toggle placement (hide a visible
+/// agent, reveal a hidden one, or start a dormant one hidden). Always
+/// kill-and-resume (no live surface migration). Shared by the key and the
+/// clickable footer hint.
+fn toggle_selected(
+    focuser: &dyn WindowFocuser,
+    launcher: &dyn Launcher,
+    board: &Board,
+    selected: usize,
+    status: &mut String,
+) {
+    status.clear();
+    if let Some(agent) = board.selectable().get(selected).copied() {
+        *status = match apply_placement(agent, focuser, launcher, &kill_pid) {
+            Ok(()) => format!("toggling {}", ui::focus_label(agent)),
+            Err(e) => e,
+        };
     }
 }
 

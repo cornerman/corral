@@ -73,6 +73,7 @@ pub enum Message {
     Focused(bool),
     OpenCompose,
     Dismiss,
+    ToggleHidden,
     Quit,
     ComposeInput(String),
     ComposeSend,
@@ -268,6 +269,7 @@ impl Board {
                     self.status = self.dismiss(&a);
                 }
             }
+            Message::ToggleHidden => return self.act_toggle_hidden(),
             Message::Quit => return iced::exit(),
             Message::ComposeInput(s) => {
                 if let Some(c) = &mut self.compose {
@@ -362,7 +364,7 @@ impl Board {
             keyboard::Key::Character(c) => match c.as_str() {
                 "m" => return self.update(Message::OpenCompose),
                 "d" => return self.update(Message::Dismiss),
-                "h" => return self.act_toggle_hidden(),
+                "h" => return self.update(Message::ToggleHidden),
                 "q" => std::process::exit(0),
                 "/" => {
                     self.filtering = true;
@@ -727,11 +729,11 @@ impl Board {
             });
             meta_row = meta_row.push(pill);
         }
-        meta_row = meta_row.push(text(&agent.label).size(11).color(dim));
-        // A live hidden agent shows a dim `hidden` badge: it runs in a headless
+        meta_row = meta_row.push(tag_pill(&agent.label, s));
+        // A live hidden agent shows a `hidden` pill: it runs in a headless
         // cage, so going to it reveals it by resume rather than focusing.
         if agent.origin == Origin::Live && agent.hidden {
-            meta_row = meta_row.push(text("hidden").size(11).color(dim));
+            meta_row = meta_row.push(tag_pill("hidden", s));
         }
         if let Some(info) = agent.activity.as_deref().filter(|s| !s.is_empty()) {
             meta_row = meta_row.push(
@@ -819,7 +821,7 @@ impl Board {
             hint("/", "filter", Some(Message::FocusFilter)),
             hint("m", "msg", Some(Message::OpenCompose)),
             hint("d", "delete", Some(Message::Dismiss)),
-            hint("h", "hide/show", None),
+            hint("h", "hide/show", Some(Message::ToggleHidden)),
             hint("q", "quit", Some(Message::Quit)),
             Space::new(Length::Fill, 0.0),
             canvas(Mark { color: dim })
@@ -1093,6 +1095,24 @@ fn cwd_pill_colors(cwd: &str, s: &Base16, dormant: bool) -> (Color, Color) {
     }
     let text = if luma(bg) > 0.5 { s.base[0] } else { s.base[7] };
     (bg, text)
+}
+
+/// A muted gray pill (matching the footer's keycap fill) for a plain tag —
+/// the kind badge and the `hidden` badge — so both read as tags distinct from
+/// the colored cwd pill and the plain activity text.
+fn tag_pill<'a>(text_str: &'a str, s: &Base16) -> Element<'a, Message> {
+    let (bg, fg) = (s.base[2], s.base[4]);
+    container(text(text_str).size(11).color(fg))
+        .padding([1, 6])
+        .style(move |_t| container::Style {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                radius: 6.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// Replace a leading `$HOME` with `~` for a compact path.
