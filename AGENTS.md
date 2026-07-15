@@ -3,6 +3,13 @@
 This file and README.md MUST always be kept up to date when the setup,
 architecture, or interfaces change.
 
+README.md is deliberately short and developer-facing: the logo (the `∴` pen
+mark), one-line statement of what corral is, a copy-paste Quick Start, the key
+table, and links out. Inverted pyramid, most important first. Keep it that way
+— do not grow it into a manual; depth belongs here in AGENTS.md, in
+CONVENTION.md, and under docs/. When an interface changes, update the Quick
+Start or key table, not the shape.
+
 ## TUI/GUI Parity (Hard Rule)
 
 The TUI (`corral`) and GUI (`corral-gui`) are two parallel viewers of the same
