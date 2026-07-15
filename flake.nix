@@ -64,6 +64,60 @@
               "$out/share/corral/extensions/"
           '';
         };
+
+        # The Cursor adapter packaged as an installable VS Code extension (.vsix).
+        # Cursor does not load a bare folder dropped in ~/.cursor/extensions; it
+        # only loads what is registered in extensions.json. So the home-manager
+        # module installs this .vsix with `cursor --install-extension`, which uses
+        # Cursor's own registration. A .vsix is a zip in the standard VSIX 2.0.0
+        # layout (extension.vsixmanifest + [Content_Types].xml at the root, files
+        # under extension/); built by hand with zip so there is no vsce/node build
+        # dependency, matching the adapter's no-build ethos.
+        corral-cursor-vsix = pkgs.stdenv.mkDerivation {
+          pname = "corral-cursor-vsix";
+          version = "0.1.0";
+          src = ./extensions/corral-cursor;
+          nativeBuildInputs = [ pkgs.zip ];
+          dontConfigure = true;
+          # The two VSIX metadata files are generated via writeText (not shell
+          # heredocs, which nix's indentation stripping would break) and copied
+          # in beside the extension/ payload before zipping.
+          buildPhase = ''
+            mkdir -p pkg/extension
+            cp -r "$src"/. pkg/extension/
+            cp ${pkgs.writeText "extension.vsixmanifest" ''
+              <?xml version="1.0" encoding="utf-8"?>
+              <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+                <Metadata>
+                  <Identity Language="en-US" Id="corral-cursor" Version="0.1.0" Publisher="corral"/>
+                  <DisplayName>corral for Cursor</DisplayName>
+                  <Description>Announce this Cursor window to a corral board.</Description>
+                </Metadata>
+                <Installation>
+                  <InstallationTarget Id="Microsoft.VisualStudio.Code"/>
+                </Installation>
+                <Dependencies/>
+                <Assets>
+                  <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true"/>
+                </Assets>
+              </PackageManifest>
+            ''} pkg/extension.vsixmanifest
+            cp ${pkgs.writeText "content-types.xml" ''
+              <?xml version="1.0" encoding="utf-8"?>
+              <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                <Default Extension="json" ContentType="application/json"/>
+                <Default Extension="js" ContentType="application/javascript"/>
+                <Default Extension="md" ContentType="text/markdown"/>
+                <Default Extension="vsixmanifest" ContentType="text/xml"/>
+              </Types>
+            ''} 'pkg/[Content_Types].xml'
+          '';
+          installPhase = ''
+            mkdir -p "$out"
+            ( cd pkg && zip -r -X "$out/corral-cursor.vsix" \
+                extension.vsixmanifest '[Content_Types].xml' extension >/dev/null )
+          '';
+        };
       });
 
       # Home Manager module: `programs.corral.enable = true;` installs the
