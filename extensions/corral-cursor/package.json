@@ -1,0 +1,22 @@
+{
+  "name": "corral-cursor",
+  "displayName": "corral for Cursor",
+  "description": "Announce this Cursor window to a corral board (discover, focus, resume, message).",
+  "version": "0.1.0",
+  "publisher": "corral",
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "configuration": {
+      "title": "corral",
+      "properties": {
+        "corral.cursor.injectCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Override the Cursor command id corral uses to open a pre-filled Composer chat when delivering a message. Leave empty to try built-in candidates."
+        }
+      }
+    }
+  }
+}

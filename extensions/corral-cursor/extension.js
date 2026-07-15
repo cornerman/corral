@@ -190,8 +190,25 @@ function clearSocketInRegistry() {
   } catch {}
 }
 
-// Placeholder; Task 8 implements the ~/.cursor/hooks.json auto-merge.
-function mergeHooksFile(_context) {}
+// Register our state-hook in ~/.cursor/hooks.json additively and idempotently,
+// so there is no manual hooks setup. Absolute path from extensionPath; node must
+// be on PATH (documented). Stage passed as argv fallback for state-hook.js.
+function mergeHooksFile(context) {
+  try {
+    const home = process.env.HOME;
+    if (!home) return;
+    const hooksFile = path.join(home, ".cursor", "hooks.json");
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(hooksFile, "utf8")); } catch {}
+    const script = path.join(context.extensionPath, "state-hook.js");
+    let merged = lib.mergeHooks(existing, { command: "node", args: [script, "beforeSubmitPrompt"] });
+    merged = lib.mergeHooks(merged, { command: "node", args: [script, "stop"] });
+    fs.mkdirSync(path.dirname(hooksFile), { recursive: true });
+    const tmp = `${hooksFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    fs.renameSync(tmp, hooksFile);
+  } catch {}
+}
 
 function shutdown(acpPath, ctlPath) {
   clearSocketInRegistry();

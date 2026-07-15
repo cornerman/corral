@@ -1,0 +1,12 @@
+{
+  "//": "Reference only. The extension writes the real ~/.cursor/hooks.json on activation, substituting <ABSOLUTE> with its own extensionPath/state-hook.js and merging additively (never clobbering existing hooks). node must be on PATH.",
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      { "hooks": [{ "type": "command", "command": "node", "args": ["<ABSOLUTE>/state-hook.js", "beforeSubmitPrompt"] }] }
+    ],
+    "stop": [
+      { "hooks": [{ "type": "command", "command": "node", "args": ["<ABSOLUTE>/state-hook.js", "stop"] }] }
+    ]
+  }
+}
