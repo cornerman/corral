@@ -30,6 +30,9 @@ fn main() -> iced::Result {
     iced::application("corral", Board::update, Board::view)
         .subscription(Board::subscription)
         .theme(Board::theme)
+        // MSAA for the tessellated canvas mark and its dots; text (glyph atlas)
+        // and quad borders (shader SDF) are already crisp and unaffected.
+        .antialiasing(true)
         .window(window)
         .run_with(move || Board::new(launcher))
 }
