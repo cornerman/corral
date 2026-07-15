@@ -125,8 +125,33 @@ function broadcast(update) {
   for (const c of clients) { try { c.write(l); } catch {} }
 }
 
-// Stub; Task 7 replaces this with the real injection.
-async function tryInject(_text) { return false; }
+// Open a NEW Composer chat pre-filled with `text`. A prompt must land in a chat
+// (no window-level prompt); a fresh chat avoids intruding on the open one and
+// mirrors Cursor's prompt-deeplink behavior. UNVERIFIED: the Composer command
+// ID(s) are undocumented, so try a config override, then a candidate list, then
+// the prompt deeplink. Returns true on the first path that does not throw.
+async function tryInject(text) {
+  if (!vscode) return false;
+  const cfg = (() => { try { return vscode.workspace.getConfiguration("corral.cursor"); } catch { return null; } })();
+  const override = cfg && cfg.get ? cfg.get("injectCommand") : null;
+  // Each candidate: a command that opens/focuses Composer and submits text. The
+  // exact arg shape is unknown; pass text as a plain string and as {text}.
+  const commandCandidates = [override, "composer.newAgentChat", "aichat.newchat", "composer.startComposerPrompt", "workbench.action.chat.open"].filter(Boolean);
+  for (const cmd of commandCandidates) {
+    if (await runCommand(cmd, text)) return true;
+    if (await runCommand(cmd, { text, query: text })) return true;
+  }
+  // Fallback: the prompt deeplink pre-fills a chat for the user to confirm.
+  try {
+    const uri = vscode.Uri.parse(`cursor://anysphere.cursor-deeplink/prompt?text=${encodeURIComponent(text)}`);
+    if (await vscode.env.openExternal(uri)) return true;
+  } catch {}
+  return false;
+}
+
+async function runCommand(cmd, arg) {
+  try { await vscode.commands.executeCommand(cmd, arg); return true; } catch { return false; }
+}
 
 function writeRegistry(acpPath) {
   try {
