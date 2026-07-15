@@ -1,12 +1,12 @@
 {
-  "//": "Reference only. The extension writes the real ~/.cursor/hooks.json on activation, substituting <ABSOLUTE> with its own extensionPath/state-hook.js and merging additively (never clobbering existing hooks). node must be on PATH.",
+  "//": "Reference only. The extension writes the real ~/.cursor/hooks.json on activation (merging additively, never clobbering existing hooks), substituting <NODE> with node's absolute path and <ABSOLUTE> with its own extensionPath/state-hook.js. Cursor's schema: each stage is a flat array of { command: \"<one whitespace-tokenized string>\" } (no type/args/nested hooks).",
   "version": 1,
   "hooks": {
     "beforeSubmitPrompt": [
-      { "hooks": [{ "type": "command", "command": "node", "args": ["<ABSOLUTE>/state-hook.js", "beforeSubmitPrompt"] }] }
+      { "command": "<NODE> <ABSOLUTE>/state-hook.js beforeSubmitPrompt" }
     ],
     "stop": [
-      { "hooks": [{ "type": "command", "command": "node", "args": ["<ABSOLUTE>/state-hook.js", "stop"] }] }
+      { "command": "<NODE> <ABSOLUTE>/state-hook.js stop" }
     ]
   }
 }

@@ -95,20 +95,23 @@ function resolveWindowPid(startPid, readProc) {
   return best;
 }
 
-// Additively register our state-hook for beforeSubmitPrompt + stop, keyed on the
-// full args array so re-activation never duplicates and never drops a user's own
-// hooks. Both stages share the script path (args[0]) but differ in the stage arg,
-// so de-dupe compares the whole args array. Pure: caller reads/writes the file.
-function mergeHooks(existing, hookCommand) {
-  const sameArgs = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
+// Cursor's hooks.json maps each stage to a flat array of { command: "<string>" }
+// entries. `command` is ONE whitespace-tokenized string; there is no type/args
+// field and no nested { hooks: [...] } wrapper (that is Claude Code's shape,
+// which Cursor rejects with "Hook script command must be a string"). Additive and
+// idempotent: drop any prior corral entry (matched by the state-hook.js path, so a
+// changed node/store path self-heals instead of duplicating) then re-add it,
+// preserving the user's own hooks. Pure: caller reads/writes the file.
+function mergeHooks(existing, stage, commandString) {
   const out = { version: 1, hooks: {} };
   const src = (existing && existing.hooks) || {};
   for (const k of Object.keys(src)) out.hooks[k] = Array.isArray(src[k]) ? src[k].slice() : src[k];
-  const stage = hookCommand.args && hookCommand.args[1] === "beforeSubmitPrompt" ? "beforeSubmitPrompt" : "stop";
-  const group = { hooks: [{ type: "command", command: hookCommand.command, args: hookCommand.args.slice() }] };
-  const arr = Array.isArray(out.hooks[stage]) ? out.hooks[stage].slice() : [];
-  const present = arr.some((g) => (g.hooks || []).some((h) => sameArgs(h.args, hookCommand.args)));
-  if (!present) arr.push(group);
+  // Drop any prior corral entry in ANY shape (a flat {command} or a stale
+  // nested Claude-style {hooks:[{args:[…state-hook.js…]}]}) by matching the
+  // script name anywhere in the serialized entry, so upgrades self-heal.
+  const arr = (Array.isArray(out.hooks[stage]) ? out.hooks[stage] : [])
+    .filter((h) => !JSON.stringify(h).includes("state-hook.js"));
+  arr.push({ command: commandString });
   out.hooks[stage] = arr;
   return out;
 }

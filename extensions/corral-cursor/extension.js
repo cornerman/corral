@@ -125,23 +125,18 @@ function broadcast(update) {
   for (const c of clients) { try { c.write(l); } catch {} }
 }
 
-// Open a NEW Composer chat pre-filled with `text`. A prompt must land in a chat
-// (no window-level prompt); a fresh chat avoids intruding on the open one and
-// mirrors Cursor's prompt-deeplink behavior. UNVERIFIED: the Composer command
-// ID(s) are undocumented, so try a config override, then a candidate list, then
-// the prompt deeplink. Returns true on the first path that does not throw.
+// Open a NEW Composer chat pre-filled with `text` (a prompt must land in a chat;
+// a fresh one avoids intruding). `deeplink.prompt.prefill` is Cursor's own
+// prompt-deeplink command, `(accessor, { text, mode }) => …`, which opens a new
+// chat pre-filled with the text for the user to confirm — found in the Cursor app
+// bundle. Try a config override first, then that command, then the external
+// deeplink URI. Returns true on the first path that does not throw.
 async function tryInject(text) {
   if (!vscode) return false;
   const cfg = (() => { try { return vscode.workspace.getConfiguration("corral.cursor"); } catch { return null; } })();
-  const override = cfg && cfg.get ? cfg.get("injectCommand") : null;
-  // Each candidate: a command that opens/focuses Composer and submits text. The
-  // exact arg shape is unknown; pass text as a plain string and as {text}.
-  const commandCandidates = [override, "composer.newAgentChat", "aichat.newchat", "composer.startComposerPrompt", "workbench.action.chat.open"].filter(Boolean);
-  for (const cmd of commandCandidates) {
-    if (await runCommand(cmd, text)) return true;
-    if (await runCommand(cmd, { text, query: text })) return true;
-  }
-  // Fallback: the prompt deeplink pre-fills a chat for the user to confirm.
+  const override = cfg && cfg.get ? cfg.get("injectCommand") : "";
+  if (override && await runCommand(override, { text, mode: "agent" })) return true;
+  if (await runCommand("deeplink.prompt.prefill", { text, mode: "agent" })) return true;
   try {
     const uri = vscode.Uri.parse(`cursor://anysphere.cursor-deeplink/prompt?text=${encodeURIComponent(text)}`);
     if (await vscode.env.openExternal(uri)) return true;
@@ -200,14 +195,28 @@ function mergeHooksFile(context) {
     const hooksFile = path.join(home, ".cursor", "hooks.json");
     let existing = {};
     try { existing = JSON.parse(fs.readFileSync(hooksFile, "utf8")); } catch {}
+    const node = resolveNode();
     const script = path.join(context.extensionPath, "state-hook.js");
-    let merged = lib.mergeHooks(existing, { command: "node", args: [script, "beforeSubmitPrompt"] });
-    merged = lib.mergeHooks(merged, { command: "node", args: [script, "stop"] });
+    // Cursor hook `command` is one whitespace-tokenized string. Bake node's
+    // absolute path so the hook does not depend on node being on Cursor's PATH.
+    let merged = lib.mergeHooks(existing, "beforeSubmitPrompt", `${node} ${script} beforeSubmitPrompt`);
+    merged = lib.mergeHooks(merged, "stop", `${node} ${script} stop`);
     fs.mkdirSync(path.dirname(hooksFile), { recursive: true });
     const tmp = `${hooksFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
     fs.renameSync(tmp, hooksFile);
   } catch {}
+}
+
+// Resolve node's absolute path from PATH so the baked hook command does not rely
+// on Cursor's hook-runner PATH including node; fall back to bare "node".
+function resolveNode() {
+  for (const d of (process.env.PATH || "").split(":")) {
+    if (!d) continue;
+    const p = path.join(d, "node");
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch {}
+  }
+  return "node";
 }
 
 function shutdown(acpPath, ctlPath) {

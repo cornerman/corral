@@ -87,22 +87,21 @@ test("resolveWindowPid stops safely on a cycle / missing entry", () => {
   assert.equal(lib.resolveWindowPid(5, () => null), 5);
 });
 
-test("mergeHooks adds our beforeSubmitPrompt+stop (stage args) and preserves others", () => {
-  const existing = { version: 1, hooks: { stop: [{ hooks: [{ command: "other", args: ["/x"] }] }] } };
-  let out = lib.mergeHooks(existing, { command: "node", args: ["/abs/state-hook.js", "beforeSubmitPrompt"] });
-  out = lib.mergeHooks(out, { command: "node", args: ["/abs/state-hook.js", "stop"] });
-  assert.ok(out.hooks.stop.some((g) => g.hooks.some((h) => h.command === "other")));
-  assert.ok(out.hooks.stop.some((g) => g.hooks.some((h) => h.args && h.args[1] === "stop")));
-  assert.ok(out.hooks.beforeSubmitPrompt.some((g) => g.hooks.some((h) => h.args && h.args[1] === "beforeSubmitPrompt")));
+test("mergeHooks writes flat {command} entries per stage and preserves others", () => {
+  const existing = { version: 1, hooks: { stop: [{ command: "other-hook" }] } };
+  let out = lib.mergeHooks(existing, "beforeSubmitPrompt", "node /abs/state-hook.js beforeSubmitPrompt");
+  out = lib.mergeHooks(out, "stop", "node /abs/state-hook.js stop");
+  assert.ok(out.hooks.stop.some((h) => h.command === "other-hook"));
+  assert.ok(out.hooks.stop.some((h) => h.command === "node /abs/state-hook.js stop"));
+  assert.ok(out.hooks.beforeSubmitPrompt.some((h) => h.command === "node /abs/state-hook.js beforeSubmitPrompt"));
 });
 
-test("mergeHooks is idempotent per full args", () => {
-  let once = lib.mergeHooks({}, { command: "node", args: ["/abs/state-hook.js", "stop"] });
-  once = lib.mergeHooks(once, { command: "node", args: ["/abs/state-hook.js", "beforeSubmitPrompt"] });
-  let twice = lib.mergeHooks(once, { command: "node", args: ["/abs/state-hook.js", "stop"] });
-  twice = lib.mergeHooks(twice, { command: "node", args: ["/abs/state-hook.js", "beforeSubmitPrompt"] });
-  const count = twice.hooks.stop.filter((g) => g.hooks.some((h) => h.args && h.args[1] === "stop")).length;
-  assert.equal(count, 1);
+test("mergeHooks is idempotent and self-heals a changed path", () => {
+  let out = lib.mergeHooks({}, "stop", "/old/node /a/state-hook.js stop");
+  out = lib.mergeHooks(out, "stop", "/new/node /a/state-hook.js stop");
+  const ours = out.hooks.stop.filter((h) => h.command.includes("state-hook.js"));
+  assert.equal(ours.length, 1);
+  assert.equal(ours[0].command, "/new/node /a/state-hook.js stop");
 });
 
 test("hookEventToState maps the two observed stages", () => {
