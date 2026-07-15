@@ -315,6 +315,7 @@ mod tests {
             last_seen: None,
             gui: false,
             message_flag: None,
+            hidden: false,
             group: group.map(String::from),
             name: None,
         }
