@@ -21,6 +21,7 @@ use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
 use corral_core::menu::MenuAction;
 use corral_core::model::{Agent, Column, Origin, State};
 use corral_core::placement::{apply_placement, kill_pid};
+use corral_core::transition::{self, MoveAction};
 use corral_core::{engine::Engine, nav, palette::basename, palette::color_index, paths, prompt};
 
 use iced::widget::{
@@ -48,6 +49,10 @@ const MENU_ROW_H: f32 = 26.0;
 fn menu_h() -> f32 {
     MenuAction::ALL.len() as f32 * MENU_ROW_H + 8.0
 }
+
+/// A committed card move expires this long after firing if the agent never
+/// reaches the target column (fail-quiet; the action was fire-and-forget).
+const PENDING_TTL: Duration = Duration::from_secs(5);
 
 /// A column's scrollable id (for programmatic scroll-into-view).
 fn col_scroll_id(c: usize) -> scrollable::Id {
@@ -98,6 +103,10 @@ pub enum Message {
     ComposeInput(String),
     ComposeSend,
     ComposeCancel,
+    /// A key was released (shift-release commits an in-progress card move).
+    KeyReleased(keyboard::Key),
+    /// The left mouse button was released (drops an in-progress drag).
+    MouseReleased,
 }
 
 /// An operator message being composed (opened with `m`).
@@ -147,6 +156,17 @@ pub struct Board {
     /// Latest cursor position and window size, for menu placement + clamping.
     cursor: Point,
     window: Size,
+    /// The in-progress card move (shift+arrow, or a mouse drag): the source
+    /// column and the ghost target being chosen. The moving agent is the
+    /// current `selected`. `None` when not moving.
+    move_mode: Option<(Column, Column)>,
+    /// Source column of a started mouse drag (set on card press), used to begin
+    /// a move once the cursor crosses into another column.
+    drag_source: Option<Column>,
+    /// Committed-but-unconfirmed moves keyed by `Agent::move_key`: the target
+    /// column and when fired. Rendered as an in-flight badge; cleared when the
+    /// agent reaches the target or after `PENDING_TTL`.
+    pending: HashMap<String, (Column, Instant)>,
     // Snapshot rebuilt each tick / filter change; view and actions read it.
     columns: Vec<Vec<Agent>>,
     in_state: HashMap<PathBuf, String>,
@@ -177,6 +197,9 @@ impl Board {
             compose: None,
             clicks: ClickTracker::default(),
             menu: None,
+            move_mode: None,
+            drag_source: None,
+            pending: HashMap::new(),
             cursor: Point::ORIGIN,
             window: Size::new(1024.0, 768.0),
             columns: vec![Vec::new(); Column::ALL.len()],
@@ -231,6 +254,80 @@ impl Board {
         if self.selected >= total {
             self.selected = total.saturating_sub(1);
         }
+        // Reconcile pending moves: a move confirms when the agent reaches its
+        // target column (the board never fakes the move), else it expires.
+        let by_key: HashMap<String, Column> = self
+            .columns
+            .iter()
+            .flatten()
+            .map(|a| (a.move_key(), a.column()))
+            .collect();
+        self.pending
+            .retain(|k, (target, since)| by_key.get(k) != Some(target) && since.elapsed() <= PENDING_TTL);
+    }
+
+    /// The destination column index under a cursor x (points), from the board
+    /// layout (12pt content padding, 14pt row spacing, three 1pt separators,
+    /// four equal columns). Snaps gaps to the nearest column so a drop between
+    /// columns still targets one. Used for mouse drag/drop.
+    fn column_at_x(&self, x: f32) -> Option<usize> {
+        let inner = self.window.width - 24.0; // content padding L+R
+        let colw = (inner - 3.0 - 6.0 * 14.0) / 4.0; // minus 3 seps + 6 gaps
+        if colw <= 0.0 {
+            return None;
+        }
+        let stride = colw + 29.0; // one column + (gap + sep + gap) to the next
+        let i = ((x - 12.0) / stride).floor() as i32;
+        Some(i.clamp(0, 3) as usize)
+    }
+
+    /// Fire the real agent action a card move triggers (see `core::transition`)
+    /// and record it pending until confirmed. Shared by the keyboard and mouse
+    /// commit paths.
+    fn commit_move(&mut self, source: Column, target: Column) {
+        let Some(agent) = self.selected_agent().cloned() else {
+            return;
+        };
+        let key = agent.move_key();
+        let label = agent.title.clone().unwrap_or_else(|| "agent".into());
+        let result: Result<(), String> = match transition::action_for(source, target) {
+            MoveAction::Cancel => {
+                prompt::send_cancel(&agent.socket_path).map_err(|e| format!("cancel: {e}"))
+            }
+            MoveAction::Nudge => prompt::send_prompt(&agent.socket_path, "continue")
+                .map_err(|e| format!("nudge: {e}")),
+            MoveAction::Kill => {
+                let close = if agent.hidden {
+                    kill_pid(agent.pid)
+                } else {
+                    self.focuser.close(&agent)
+                };
+                close.map_err(|e| format!("close: {e}"))
+            }
+            MoveAction::Resume | MoveAction::ResumeAndNudge => {
+                match (&agent.cwd, &agent.resume_command) {
+                    (Some(cwd), Some(cmd)) => {
+                        let msg = matches!(
+                            transition::action_for(source, target),
+                            MoveAction::ResumeAndNudge
+                        )
+                        .then_some("continue");
+                        self.launcher
+                            .launch(Path::new(cwd), cmd, msg, &agent.launch_mode())
+                            .map_err(|e| format!("resume: {e}"))
+                    }
+                    _ => Err("resume: dormant record missing cwd/command".into()),
+                }
+            }
+            MoveAction::NoOp => return,
+        };
+        match result {
+            Ok(()) => {
+                self.status = format!("moving {label} → {}", target.title());
+                self.pending.insert(key, (target, Instant::now()));
+            }
+            Err(e) => self.status = e,
+        }
     }
 
     fn counts(&self) -> [usize; 4] {
@@ -277,6 +374,11 @@ impl Board {
                 // A click blurs the filter field, so leave filter mode too.
                 self.filtering = false;
                 self.selected = idx;
+                // Arm a possible drag from this card's column; a drag into
+                // another column begins a move (see CursorMoved), a plain
+                // release is just the click below.
+                self.drag_source =
+                    self.columns.iter().flatten().nth(idx).map(|a| a.column());
                 // Single click selects; a double click on the same card goes
                 // (focus/reveal/resume).
                 match self.clicks.press(idx, Instant::now()) {
@@ -291,8 +393,36 @@ impl Board {
                 self.menu = Some(self.clamp_menu(self.cursor));
                 return self.scroll_to_selection();
             }
-            Message::CursorMoved(p) => self.cursor = p,
+            Message::CursorMoved(p) => {
+                self.cursor = p;
+                // While a card drag is armed, moving into another valid
+                // destination column begins/retargets the move (the drop-boxes
+                // then show where it will land).
+                if let Some(source) = self.drag_source {
+                    if let Some(c) = self.column_at_x(p.x).map(|i| Column::ALL[i]) {
+                        if c != source && transition::DESTINATIONS.contains(&c) {
+                            self.move_mode = Some((source, c));
+                        }
+                    }
+                }
+            }
             Message::Resized(sz) => self.window = sz,
+            Message::KeyReleased(key) => {
+                // Shift-release drops an in-progress keyboard move.
+                if matches!(key, keyboard::Key::Named(keyboard::key::Named::Shift)) {
+                    if let Some((source, target)) = self.move_mode.take() {
+                        self.commit_move(source, target);
+                    }
+                }
+            }
+            Message::MouseReleased => {
+                // A drop commits an in-progress drag; a release with no move was
+                // just a click.
+                if let Some((source, target)) = self.move_mode.take() {
+                    self.commit_move(source, target);
+                }
+                self.drag_source = None;
+            }
             Message::MenuPick(action) => {
                 self.menu = None;
                 return match action {
@@ -369,6 +499,14 @@ impl Board {
     ///          index stays in range once the full board returns);
     ///       4. otherwise -> nothing.
     fn escape(&mut self) -> Task<Message> {
+        // A card move in progress cancels first (before the launcher exit), so
+        // Esc backs out of a move without dropping it.
+        if self.move_mode.is_some() {
+            self.move_mode = None;
+            self.drag_source = None;
+            self.status.clear();
+            return Task::none();
+        }
         if self.launcher_mode {
             return iced::exit();
         }
@@ -414,6 +552,25 @@ impl Board {
             }
             return Task::none();
         }
+        // A card move in progress captures the keyboard: Left/Right slide the
+        // ghost target, Enter commits (shift-release also commits, via the
+        // release listener), Esc cancels (via `escape()`).
+        if let Some((source, target)) = self.move_mode {
+            match key {
+                keyboard::Key::Named(Named::ArrowLeft) => {
+                    self.move_mode = Some((source, transition::slide_target(target, false)));
+                }
+                keyboard::Key::Named(Named::ArrowRight) => {
+                    self.move_mode = Some((source, transition::slide_target(target, true)));
+                }
+                keyboard::Key::Named(Named::Enter) => {
+                    self.move_mode = None;
+                    self.commit_move(source, target);
+                }
+                _ => {}
+            }
+            return Task::none();
+        }
         match key {
             // The filter input rings with the board vertically: while it is
             // focused, Down/Up step off it into the board (Down -> the column's
@@ -431,11 +588,26 @@ impl Board {
             // Left/Right (caret) and letters (typing), so `on_key_press` never
             // delivers them here while focused; when the field is unfocused,
             // they are commands regardless of any applied filter.
+            // Shift+Left/Right grab the selected card into move mode (drive its
+            // state by moving it between columns); plain Left/Right switch the
+            // selected column.
             keyboard::Key::Named(Named::ArrowRight) => {
-                self.selected = nav::move_col(self.selected, &counts, true);
+                if mods.shift() {
+                    if let Some(src) = self.selected_agent().map(|a| a.column()) {
+                        self.move_mode = Some((src, transition::initial_target(src, true)));
+                    }
+                } else {
+                    self.selected = nav::move_col(self.selected, &counts, true);
+                }
             }
             keyboard::Key::Named(Named::ArrowLeft) => {
-                self.selected = nav::move_col(self.selected, &counts, false);
+                if mods.shift() {
+                    if let Some(src) = self.selected_agent().map(|a| a.column()) {
+                        self.move_mode = Some((src, transition::initial_target(src, false)));
+                    }
+                } else {
+                    self.selected = nav::move_col(self.selected, &counts, false);
+                }
             }
             keyboard::Key::Named(Named::Enter) => {
                 return if mods.shift() {
@@ -629,6 +801,8 @@ impl Board {
         Subscription::batch([
             iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
             keyboard::on_key_press(|key, mods| Some(Message::Key(key, mods))),
+            // Shift-release commits an in-progress keyboard move.
+            keyboard::on_key_release(|key, _mods| Some(Message::KeyReleased(key))),
             // A focused TextInput captures Escape (to blur itself), so
             // `on_key_press` never sees it; listen at any status for Escape.
             iced::event::listen_with(|event, _status, _window| match event {
@@ -647,6 +821,10 @@ impl Board {
                 }
                 iced::Event::Window(iced::window::Event::Resized(size)) => {
                     Some(Message::Resized(size))
+                }
+                // A left-button release drops an in-progress card drag.
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    Some(Message::MouseReleased)
                 }
                 _ => None,
             }),
@@ -776,9 +954,16 @@ impl Board {
             }
         }
 
+        // In move mode the columns become labeled drop-boxes (cards hidden),
+        // the target highlighted, Requires Action greyed as a non-destination.
+        let mid: Element<'_, Message> = match self.move_mode {
+            Some((_src, target)) => self.move_columns(s, target),
+            None => cols.into(),
+        };
+
         let footer = self.footer(s);
 
-        let content = column![top, cols, footer].spacing(14).padding(12);
+        let content = column![top, mid, footer].spacing(14).padding(12);
         let bg0 = s.base[0];
         container(content)
             .width(Length::Fill)
@@ -788,6 +973,53 @@ impl Board {
                 ..container::Style::default()
             })
             .into()
+    }
+
+    /// The four columns rendered as drop-boxes for move mode: each a bordered
+    /// box titled with the column name, the `target` box highlighted with the
+    /// moving card's label, Requires Action greyed as a non-destination.
+    /// Mirrors the TUI's `render_move`.
+    fn move_columns(&self, s: &Base16, target: Column) -> Element<'_, Message> {
+        let label = self
+            .selected_agent()
+            .and_then(|a| a.title.clone())
+            .unwrap_or_else(|| "agent".into());
+        let mut cols = row![].spacing(14).height(Length::Fill);
+        for col in Column::ALL {
+            let is_target = col == target;
+            let is_dest = transition::DESTINATIONS.contains(&col);
+            let (border_col, fg) = if is_target {
+                (s.accent[Base16::GREEN], s.base[5])
+            } else if is_dest {
+                (s.base[2], s.base[4])
+            } else {
+                (s.base[1], s.base[3]) // Requires Action: never a destination
+            };
+            let title = if is_dest {
+                col.title().to_string()
+            } else {
+                format!("{} (not a target)", col.title())
+            };
+            let mut body = column![text(title).size(15).color(fg).font(semibold())].spacing(10);
+            if is_target {
+                body = body.push(text(label.clone()).size(14).color(fg).font(semibold()));
+            }
+            let bw = if is_target { 2.0 } else { 1.0 };
+            let boxed = container(body)
+                .padding(12)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_t| container::Style {
+                    border: Border {
+                        color: border_col,
+                        width: bw,
+                        radius: 6.0.into(),
+                    },
+                    ..container::Style::default()
+                });
+            cols = cols.push(boxed);
+        }
+        cols.into()
     }
 
     fn card<'a>(
@@ -866,7 +1098,17 @@ impl Board {
         if agent.origin == Origin::Live && agent.hidden {
             meta_row = meta_row.push(tag_pill("hidden", s));
         }
-        if let Some(info) = agent.activity.as_deref().filter(|s| !s.is_empty()) {
+        // A pending card-move shows a bright in-flight badge, taking precedence
+        // over the activity hint (it is the operator's own pending action). The
+        // card has not moved yet: it waits for the agent's real state.
+        if let Some((target, _)) = self.pending.get(&agent.move_key()) {
+            meta_row = meta_row.push(
+                text(format!("→ {} ⋯", target.title()))
+                    .size(12)
+                    .color(fg)
+                    .font(semibold()),
+            );
+        } else if let Some(info) = agent.activity.as_deref().filter(|s| !s.is_empty()) {
             meta_row = meta_row.push(
                 container(
                     text(info.to_string())

@@ -444,14 +444,11 @@ pub struct CardMeta<'a> {
     pub pending: &'a HashMap<String, String>,
 }
 
-/// The stable id a card-move is keyed on: the session id if known, else the
-/// socket path. Shared by the shell (recording a pending move) and the card
-/// renderer (showing the badge) so both agree on the key.
+/// The stable id a card-move is keyed on (delegates to `Agent::move_key`, the
+/// single cross-shell definition). Shared by the shell (recording a pending
+/// move) and the card renderer (showing the badge).
 pub fn agent_key(agent: &Agent) -> String {
-    agent
-        .session_id
-        .clone()
-        .unwrap_or_else(|| agent.socket_path.to_string_lossy().into_owned())
+    agent.move_key()
 }
 
 /// The column-specific age shown at the card's top-right. It differs per column

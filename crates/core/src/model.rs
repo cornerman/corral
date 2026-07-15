@@ -119,6 +119,16 @@ impl Agent {
         }
     }
 
+    /// The stable id a card-move is keyed on: the session id if known, else the
+    /// socket path. A resume gives the agent a new socket but keeps its session
+    /// id, so keying on the session id lets a pending resume confirm once the
+    /// resumed agent reappears. Both shells use this so they agree on the key.
+    pub fn move_key(&self) -> String {
+        self.session_id
+            .clone()
+            .unwrap_or_else(|| self.socket_path.to_string_lossy().into_owned())
+    }
+
     /// The column this agent currently belongs to, derived from its liveness
     /// and state. The single mapping both the board grouping and the card-move
     /// confirmation check share.
