@@ -204,6 +204,13 @@ One per-session file drives discovery, isolation, and resume.
       the last state transition, restarted on each `SetState`.
 - [x] `f` fuzzy-focus: picker over live agents (filter by title/cwd), Enter
       focuses the chosen window. Reuses the Picker via `selected_original`.
+- [ ] Hidden-agent icon: a live hidden card now shows a plain-text `hidden`
+      pill in both shells (`ui::hidden_badge`, `dashboard.rs`), replacing the
+      🫥 U+1FAE5 emoji that rendered as tofu/blank on terminals without that
+      2021 glyph. A crossed-out-eye icon reads better but has no basic-Unicode
+      codepoint that renders everywhere; the reliable eye-slash `` (U+F070)
+      needs a Nerd Font. Revisit if the maintainer's terminals standardize on
+      a Nerd Font.
 
 ## Extension (corral-pi)
 
