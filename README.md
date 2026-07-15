@@ -67,8 +67,10 @@ goes through `corrald`, which asks you to approve each new sender→recipient pa
 The approval arrives as a desktop notification, and mirrors to the `corrald`
 tray, which also shows the daemon's status:
 
-![message approval](docs/screenshot-message-approval.png)
-![corrald tray](docs/screenshot-tray.png)
+<p>
+  <img src="docs/screenshot-message-approval.png" alt="message approval" width="300">
+  <img src="docs/screenshot-tray.png" alt="corrald tray" width="300">
+</p>
 
 ## Learn More
 
