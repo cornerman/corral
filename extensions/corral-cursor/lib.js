@@ -113,4 +113,13 @@ function mergeHooks(existing, hookCommand) {
   return out;
 }
 
-module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks };
+// The two hook stages Cursor exposes that map to triage state. Others (shell,
+// file-edit) carry no state signal. No requires_action: Cursor has no permission
+// hook.
+function hookEventToState(eventName) {
+  if (eventName === "beforeSubmitPrompt") return "running";
+  if (eventName === "stop") return "idle";
+  return null;
+}
+
+module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState };

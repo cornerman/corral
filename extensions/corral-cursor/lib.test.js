@@ -104,3 +104,9 @@ test("mergeHooks is idempotent per full args", () => {
   const count = twice.hooks.stop.filter((g) => g.hooks.some((h) => h.args && h.args[1] === "stop")).length;
   assert.equal(count, 1);
 });
+
+test("hookEventToState maps the two observed stages", () => {
+  assert.equal(lib.hookEventToState("beforeSubmitPrompt"), "running");
+  assert.equal(lib.hookEventToState("stop"), "idle");
+  assert.equal(lib.hookEventToState("afterFileEdit"), null);
+});
