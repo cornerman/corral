@@ -193,6 +193,7 @@ mod tests {
             activity: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }
     }
 

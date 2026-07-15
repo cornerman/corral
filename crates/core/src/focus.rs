@@ -525,6 +525,7 @@ mod tests {
             activity: None,
             gui,
             message_flag: None,
+            hidden: false,
         };
         let me = std::process::id();
         // GUI: strictly its own pid, never climbing to a parent window.

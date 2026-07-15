@@ -102,6 +102,10 @@ pub struct Agent {
     /// `messageFlag`, e.g. `"--message"`). `None` means the message is passed
     /// positionally. Stamped from the record like `gui`.
     pub message_flag: Option<String>,
+    /// Whether this session runs hidden (headless cage). Stamped from the
+    /// record on both live and dormant agents; the board shows a `hidden`
+    /// badge on a live hidden card and reveals it by resume instead of focus.
+    pub hidden: bool,
 }
 
 impl Agent {
@@ -111,7 +115,7 @@ impl Agent {
         crate::launch::LaunchMode {
             gui: self.gui,
             message_flag: self.message_flag.clone(),
-            hidden: false,
+            hidden: self.hidden,
         }
     }
 
@@ -263,6 +267,7 @@ impl Board {
                 activity: None,
                 gui: e.gui,
                 message_flag: e.message_flag.clone(),
+                hidden: e.hidden,
             })
             .collect();
 
@@ -273,8 +278,12 @@ impl Board {
             if let Some(sid) = a.session_id.as_deref() {
                 if let Some(e) = entries.iter().find(|e| e.session_id == sid) {
                     a.spawn_command = e.spawn_command.clone();
+                    // Reveal/hide relaunch a live agent from its record, so a
+                    // live card needs the resume argv too, not only spawn.
+                    a.resume_command = e.resume_command.clone();
                     a.gui = e.gui;
                     a.message_flag = e.message_flag.clone();
+                    a.hidden = e.hidden;
                 }
             }
         }
@@ -381,7 +390,38 @@ mod tests {
             activity: None,
             gui: false,
             message_flag: None,
+            hidden: false,
         }
+    }
+
+    #[test]
+    fn live_agent_gets_hidden_and_resume_from_record() {
+        let mut b = Board::default();
+        // A live agent keyed by socket; session id links it to a record.
+        b.apply(Update::Upsert(agent("sess-1", State::Running)));
+        let rec = RegistryEntry {
+            session_id: "sess-1".into(),
+            cwd: Some("/tmp/p".into()),
+            title: None,
+            socket: Some(PathBuf::from("/tmp/p/.corral/pi-9.sock")),
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), "sess-1".into()]),
+            label: Some("pi".into()),
+            last_seen: None,
+            gui: false,
+            message_flag: None,
+            hidden: true,
+        };
+        b.sync_registry(&[rec], &HashSet::new());
+        let live = b.in_state(State::Running);
+        assert_eq!(live.len(), 1);
+        assert!(live[0].hidden, "live agent must inherit hidden from its record");
+        assert_eq!(
+            live[0].resume_command.as_deref().unwrap(),
+            ["pi", "--session", "sess-1"],
+            "live agent must carry resume_command for reveal/hide"
+        );
+        assert!(live[0].launch_mode().hidden);
     }
 
     fn dormant_record(id: &str, cwd: &str, last_seen: &str) -> RegistryEntry {

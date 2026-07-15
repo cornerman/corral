@@ -182,6 +182,7 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 // sync_registry stamps the real value from the record each scan.
                 gui: false,
                 message_flag: None,
+                hidden: false,
             }));
             seeded = true;
             continue;
