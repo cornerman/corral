@@ -401,14 +401,20 @@ impl Board {
                 if let Some(source) = self.drag_source {
                     if let Some(c) = self.column_at_x(p.x).map(|i| Column::ALL[i]) {
                         match self.move_mode {
-                            // Once moving, retarget to any column under the
-                            // cursor, including back onto the source (a no-op =
-                            // drop to cancel).
-                            Some((src, _)) => self.move_mode = Some((src, c)),
-                            // Crossing into a different column begins the move;
-                            // intra-column jitter does not (a plain click stays
-                            // a click).
-                            None if c != source => self.move_mode = Some((source, c)),
+                            // Once moving, retarget to a valid stop under the
+                            // cursor (a destination, or the source = drop to
+                            // cancel); an invalid column (Requires Action) is
+                            // ignored, keeping the last target.
+                            Some((src, _)) if transition::stops(src).contains(&c) => {
+                                self.move_mode = Some((src, c));
+                            }
+                            Some(_) => {}
+                            // Crossing into a different valid destination begins
+                            // the move; jitter or an invalid column does not (a
+                            // plain click stays a click).
+                            None if c != source && transition::DESTINATIONS.contains(&c) => {
+                                self.move_mode = Some((source, c));
+                            }
                             None => {}
                         }
                     }

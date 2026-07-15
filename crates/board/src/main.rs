@@ -491,14 +491,18 @@ fn run(
                         _ => {}
                     },
                     Event::Mouse(m) => match m.kind {
-                        // Drag retargets to the column under the cursor,
-                        // including back onto the source column (a no-op = drop
-                        // to cancel).
+                        // Drag retargets to the column under the cursor when it
+                        // is a valid stop (a destination, or the source itself =
+                        // drop to cancel); an invalid column (Requires Action
+                        // that is not the source) is ignored, keeping the last
+                        // target.
                         MouseEventKind::Drag(MouseButton::Left) => {
                             let s = terminal.size()?;
                             let area = Rect::new(0, 0, s.width, s.height);
                             if let Some(c) = ui::column_at(area, m.column) {
-                                target = c;
+                                if transition::stops(source).contains(&c) {
+                                    target = c;
+                                }
                             }
                         }
                         MouseEventKind::Up(MouseButton::Left) => commit = true,
@@ -839,11 +843,12 @@ fn run(
                         if let Some(source) = drag_source {
                             let s = terminal.size()?;
                             let area = Rect::new(0, 0, s.width, s.height);
-                            // Crossing into a different column begins the move;
-                            // intra-column jitter does not (so a plain click is
-                            // never a move).
+                            // Crossing into a different valid destination begins
+                            // the move; intra-column jitter or a drag onto an
+                            // invalid column (Requires Action) does not (so a
+                            // plain click is never a move).
                             if let Some(c) = ui::column_at(area, m.column) {
-                                if c != source {
+                                if c != source && transition::DESTINATIONS.contains(&c) {
                                     move_mode = Some((source, c));
                                 }
                             }
