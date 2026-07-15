@@ -170,7 +170,7 @@ function writeRegistry(acpPath) {
     if (!dir) return;
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     registryFile = path.join(dir, `${ctx.sessionId}.json`);
-    const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString() });
+    const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1" });
     const tmp = `${registryFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, registryFile);

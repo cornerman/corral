@@ -20,7 +20,7 @@ function controlSocketPath(cwd, sessionId, env) {
 // The gui:true record corral runs verbatim. resume == spawn: for a GUI editor
 // "resume" is just reopening the workspace folder. No messageFlag: cursor <dir>
 // cannot carry prompt text (see spec Messaging/Future).
-function buildRecord({ sessionId, cwd, title, socket, nowIso }) {
+function buildRecord({ sessionId, cwd, title, socket, nowIso, hidden }) {
   return {
     sessionId,
     cwd,
@@ -30,6 +30,10 @@ function buildRecord({ sessionId, cwd, title, socket, nowIso }) {
     gui: true,
     spawnCommand: ["cursor", cwd],
     resumeCommand: ["cursor", cwd],
+    // A hidden spawn runs inside a headless cage; corral sets CORRAL_HIDDEN=1
+    // there. Recorded so the board reveals by resume. Passed in (not read from
+    // env) to keep this record builder pure.
+    hidden: Boolean(hidden),
     lastSeen: nowIso,
   };
 }

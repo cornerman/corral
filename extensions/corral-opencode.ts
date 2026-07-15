@@ -398,6 +398,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				socket: socketPath ?? null,
 				spawnCommand: ["opencode"],
 				resumeCommand: ["opencode", "--session", activeSessionId],
+				// A hidden spawn runs inside a headless cage; corral sets
+				// CORRAL_HIDDEN=1 there. Record it so the board reveals by resume.
+				hidden: process.env.CORRAL_HIDDEN === "1",
 				lastSeen: new Date().toISOString(),
 			};
 			const tmp = `${registryFile}.${process.pid}.tmp`;

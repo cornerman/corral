@@ -25,6 +25,13 @@ test("buildRecord fixes label/gui/commands and omits messageFlag", () => {
   assert.equal(r.sessionId, "sid");
   assert.equal(r.socket, "/w/.corral/cursor-42.sock");
   assert.equal(r.lastSeen, "2026-07-15T00:00:00.000Z");
+  // Absent hidden defaults to false; a normal (visible) spawn.
+  assert.equal(r.hidden, false);
+});
+
+test("buildRecord carries hidden when passed", () => {
+  const r = lib.buildRecord({ sessionId: "sid", cwd: "/w", title: "t", socket: "/w/.corral/cursor-42.sock", nowIso: "2026-07-15T00:00:00.000Z", hidden: true });
+  assert.equal(r.hidden, true);
 });
 
 test("acpReply: initialize returns cursor identity", () => {
