@@ -66,3 +66,23 @@ test("acpUpdate wraps an update in the session/update envelope", () => {
   assert.equal(u.params.sessionId, "s");
   assert.equal(u.params.update.state, "running");
 });
+
+test("resolveWindowPid climbs to the outermost cursor/electron ancestor", () => {
+  const table = {
+    100: { ppid: 90, comm: "node" },
+    90: { ppid: 50, comm: "Cursor Helper (Plugin)" },
+    50: { ppid: 1, comm: "cursor" },
+    1: { ppid: 0, comm: "systemd" },
+  };
+  const read = (pid) => table[pid] || null;
+  assert.equal(lib.resolveWindowPid(100, read), 50);
+});
+
+test("resolveWindowPid falls back to start when no ancestor matches", () => {
+  const table = { 7: { ppid: 1, comm: "node" }, 1: { ppid: 0, comm: "systemd" } };
+  assert.equal(lib.resolveWindowPid(7, (p) => table[p] || null), 7);
+});
+
+test("resolveWindowPid stops safely on a cycle / missing entry", () => {
+  assert.equal(lib.resolveWindowPid(5, () => null), 5);
+});

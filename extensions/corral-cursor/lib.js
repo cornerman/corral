@@ -70,4 +70,29 @@ function acpReply(msg, ctx) {
   }
 }
 
-module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate };
+// Walk up the process tree to the outermost Cursor/Electron ancestor: its pid is
+// what the WM reports as _NET_WM_PID for the window, so naming the socket with it
+// lets corral's gui focus (strict socket-pid match) raise the real window.
+// UNVERIFIED: that the extension host's ancestor chain reaches the main process
+// and that _NET_WM_PID equals it. readProc is injected for testing.
+function resolveWindowPid(startPid, readProc) {
+  const isCursor = (comm) => {
+    const c = String(comm || "").toLowerCase();
+    return c.includes("cursor") || c === "electron";
+  };
+  let best = startPid;
+  let pid = startPid;
+  const seen = new Set();
+  for (let i = 0; i < 32; i++) {
+    if (seen.has(pid)) break;
+    seen.add(pid);
+    const info = readProc(pid);
+    if (!info) break;
+    if (isCursor(info.comm)) best = pid; // keep climbing to the OUTERMOST match
+    if (!info.ppid || info.ppid <= 1) break;
+    pid = info.ppid;
+  }
+  return best;
+}
+
+module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid };
