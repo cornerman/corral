@@ -23,7 +23,7 @@ use corral_core::discovery::RegistryEntry;
 use corral_core::launch::{LaunchMode, Launcher};
 use corral_core::prompt;
 
-use crate::mailbox::{is_whitelisted, same_group, whitelist_add, Message, Target};
+use crate::mailbox::{is_whitelisted, whitelist_add, Message, Target};
 
 /// An operator decision on a pending approval, produced by the tray or the
 /// desktop notification and applied to the router.
@@ -98,10 +98,7 @@ impl Router {
                 status = Some("route: unknown target".into());
                 continue;
             };
-            // Same-group membership authorizes intra-swarm traffic without the
-            // whitelist/approval gate (the spawn act already authorized it).
             let ok = self.approved.contains(&msg.id)
-                || same_group(&msg, entries)
                 || is_whitelisted(&self.whitelist, &msg.from_cwd, &target_cwd);
             if !ok {
                 self.pending = Some(Pending { msg, target_cwd });
@@ -613,44 +610,5 @@ mod tests {
         handle.join().unwrap();
         assert_eq!(launcher.spawns.get(), 0, "live session needs no spawn");
         assert_eq!(launcher.resumes.get(), 0, "live socket needs no resume");
-    }
-
-    #[test]
-    fn same_group_session_routes_without_whitelist_or_approval() {
-        let tmp = tempfile::tempdir().unwrap();
-        // Target: live session "tgt" in group "g1".
-        let sock = tmp.path().join("pi-1.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
-        let handle = std::thread::spawn(move || {
-            if let Ok((mut c, _)) = listener.accept() {
-                let _ = c.write_all(b"{\"seed\":true}\n");
-                let mut buf = [0u8; 512];
-                let _ = c.read(&mut buf);
-            }
-        });
-        let mut tgt = dormant("tgt", "/b", "/s/tgt.jsonl");
-        tgt.socket = Some(sock.clone());
-        tgt.group = Some("g1".into());
-        // Sender: another member of the same group (looked up by from_session).
-        let mut snd = dormant("snd", "/a", "/s/snd.jsonl");
-        snd.group = Some("g1".into());
-        let entries = [tgt, snd];
-        // No whitelist file at all: same-group must authorize on its own.
-        let whitelist = tmp.path().join("whitelist");
-        let mut r = Router::new(whitelist);
-        r.enqueue(
-            mailbox::parse_message(
-                r#"{"id":"1","fromCwd":"/a","fromSession":"snd","targetSession":"tgt","message":"hi"}"#,
-            )
-            .unwrap(),
-        );
-        let launcher = StubLauncher::default();
-
-        let status = r.poll(&entries, &launcher);
-        handle.join().unwrap();
-        assert!(status.unwrap().contains("routed"), "same-group delivers");
-        assert!(r.pending().is_none(), "same-group needs no approval");
-        assert_eq!(launcher.spawns.get(), 0);
-        assert_eq!(launcher.resumes.get(), 0);
     }
 }

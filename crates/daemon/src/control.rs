@@ -73,32 +73,27 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         let _ = ack(&mut conn, "malformed");
         return;
     };
-    // One registry scan serves both recipient resolution and group lookup.
-    let entries = discovery::scan_registry(registry_dir);
-    let target_cwd = resolve(&msg.target, &entries);
-    // Same-group membership authorizes as strongly as the whitelist, so the
-    // accept-time ack matches what the router will actually do at delivery.
-    let authorized = mailbox::same_group(&msg, &entries)
-        || target_cwd
-            .as_deref()
-            .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
-    let verdict = mailbox::classify(&msg.target, target_cwd.as_deref(), authorized);
+    let target_cwd = resolve(&msg.target, registry_dir);
+    let whitelisted = target_cwd
+        .as_deref()
+        .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
+    let verdict = mailbox::classify(&msg.target, target_cwd.as_deref(), whitelisted);
     let _ = ack(&mut conn, verdict.wire());
     if verdict.routable() {
         let _ = tx.send(msg);
     }
 }
 
-/// Resolve the recipient's directory from an already-scanned registry: a
-/// session's cwd, or an existing target directory. `None` means "no recipient
-/// found" (the ack then reports why, per target kind).
-fn resolve(target: &Target, entries: &[discovery::RegistryEntry]) -> Option<String> {
+/// Resolve the recipient's directory: a session's cwd from the registry, or an
+/// existing target directory. `None` means "no recipient found" (the ack then
+/// reports why, per target kind).
+fn resolve(target: &Target, registry_dir: &Path) -> Option<String> {
     match target {
         Target::Dir(d) => Path::new(d).is_dir().then(|| d.clone()),
-        Target::Session(sid) => entries
-            .iter()
+        Target::Session(sid) => discovery::scan_registry(registry_dir)
+            .into_iter()
             .find(|e| &e.session_id == sid)
-            .and_then(|e| e.cwd.clone()),
+            .and_then(|e| e.cwd),
     }
 }
 
@@ -153,33 +148,6 @@ mod tests {
         );
         assert_eq!(ack, r#"{"status":"accepted"}"#);
         assert_eq!(rx.recv().unwrap().id, "1", "routable -> enqueued");
-    }
-
-    fn write_registry_group(dir: &Path, sid: &str, cwd: &str, group: &str) {
-        std::fs::write(
-            dir.join(format!("{sid}.json")),
-            format!(r#"{{"sessionId":"{sid}","cwd":"{cwd}","label":"pi","group":"{group}"}}"#),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn same_group_session_is_accepted_without_whitelist() {
-        let (tmp, socket, registry, whitelist) = setup();
-        let cwd = tmp.path().to_str().unwrap();
-        // Sender and target both in group g1; no whitelist entry at all.
-        write_registry_group(&registry, "snd", cwd, "g1");
-        write_registry_group(&registry, "tgt", cwd, "g1");
-        let (tx, rx) = mpsc::channel();
-        serve(socket.clone(), registry, whitelist, tx).unwrap();
-        while UnixStream::connect(&socket).is_err() {}
-
-        let ack = submit(
-            &socket,
-            r#"{"id":"1","fromCwd":"/a","fromSession":"snd","targetSession":"tgt","message":"hi"}"#,
-        );
-        assert_eq!(ack, r#"{"status":"accepted"}"#, "same group authorizes");
-        assert_eq!(rx.recv().unwrap().id, "1");
     }
 
     #[test]
