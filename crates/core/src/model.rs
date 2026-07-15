@@ -119,6 +119,20 @@ impl Agent {
         }
     }
 
+    /// The column this agent currently belongs to, derived from its liveness
+    /// and state. The single mapping both the board grouping and the card-move
+    /// confirmation check share.
+    pub fn column(&self) -> Column {
+        match self.origin {
+            Origin::Dormant => Column::Dormant,
+            Origin::Live => match self.state {
+                State::RequiresAction => Column::RequiresAction,
+                State::Running => Column::Running,
+                State::Idle => Column::Idle,
+            },
+        }
+    }
+
     /// Whether this agent's card content fuzzily matches a filter query: every
     /// whitespace-separated term must appear (case-insensitive) as an in-order
     /// subsequence of the title, cwd, activity, state word, or harness label.

@@ -17,4 +17,5 @@ pub mod paths;
 pub mod picker;
 pub mod placement;
 pub mod prompt;
+pub mod transition;
 pub mod watch;

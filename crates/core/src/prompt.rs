@@ -39,6 +39,27 @@ pub fn send_prompt(socket: &Path, text: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Cancel the agent's current turn by opening a one-shot connection to its
+/// socket and writing a `session/cancel` notification (no id, per ACP). Used by
+/// the card-move feature to move a Running or Requires-Action agent to Idle
+/// (aborting also unblocks a pending `question`). Fire-and-forget like
+/// `send_prompt`, including the same drain grace so the agent's connect-time
+/// seed write does not EPIPE and drop our notification unread.
+pub fn send_cancel(socket: &Path) -> std::io::Result<()> {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": {},
+    });
+    let mut stream = UnixStream::connect(socket)?;
+    stream.write_all((req.to_string() + "\n").as_bytes())?;
+    stream.flush()?;
+    stream.set_read_timeout(Some(DRAIN_GRACE))?;
+    let mut buf = [0u8; 256];
+    let _ = stream.read(&mut buf);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +85,24 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["method"], "session/prompt");
         assert_eq!(v["params"]["prompt"][0]["text"], "hello there");
+    }
+
+    #[test]
+    fn send_cancel_writes_session_cancel_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("pi-1.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let s = sock.clone();
+        let h = std::thread::spawn(move || send_cancel(&s).unwrap());
+        let (conn, _) = listener.accept().unwrap();
+        let mut w = conn.try_clone().unwrap();
+        w.write_all(b"{\"seed\":true}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(conn).read_line(&mut line).unwrap();
+        h.join().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["method"], "session/cancel");
+        // A notification carries no id per ACP.
+        assert!(v.get("id").is_none());
     }
 }
