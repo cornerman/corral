@@ -15,6 +15,11 @@
           "type": "string",
           "default": "",
           "description": "Override the Cursor command id corral uses to open a pre-filled Composer chat when delivering a message. Leave empty to try built-in candidates."
+        },
+        "corral.cursor.autoSubmit": {
+          "type": "boolean",
+          "default": true,
+          "description": "After opening a pre-filled Composer chat for a delivered message, auto-submit it. Disable to leave the message pre-filled for you to review and send with Enter."
         }
       }
     }

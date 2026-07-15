@@ -125,17 +125,31 @@ function broadcast(update) {
   for (const c of clients) { try { c.write(l); } catch {} }
 }
 
-// Open a NEW Composer chat pre-filled with `text` (a prompt must land in a chat;
-// a fresh one avoids intruding). `deeplink.prompt.prefill` is Cursor's own
-// prompt-deeplink command, `(accessor, { text, mode }) => …`, which opens a new
-// chat pre-filled with the text for the user to confirm — found in the Cursor app
-// bundle. Try a config override first, then that command, then the external
-// deeplink URI. Returns true on the first path that does not throw.
+// Open a NEW Composer chat pre-filled with `text` and, if possible, auto-send it.
+// A prompt must land in a chat; a fresh one avoids intruding. Ladder (first that
+// works wins), all command ids discovered from the Cursor app bundle and guarded:
+//   1. corral.cursor.injectCommand override, if configured.
+//   2. workbench.action.chat.open { query } -> createComposer({text, openInNewTab})
+//      opens a new chat pre-filled, with NO deeplink confirm popup; then
+//      composer.submit / composer.sendToAgent sends it. If submit fails the chat
+//      is still pre-filled (user presses Enter) — already better than the popup.
+//   3. deeplink.prompt.prefill { text, mode } — Cursor's deeplink handler: shows
+//      the external-prompt confirm and pre-fills (no auto-send). Safe fallback.
+//   4. the external cursor:// deeplink URI.
+// UNVERIFIED and version-fragile (undocumented command ids); never throws.
 async function tryInject(text) {
   if (!vscode) return false;
   const cfg = (() => { try { return vscode.workspace.getConfiguration("corral.cursor"); } catch { return null; } })();
   const override = cfg && cfg.get ? cfg.get("injectCommand") : "";
-  if (override && await runCommand(override, { text, mode: "agent" })) return true;
+  const autoSubmit = cfg && cfg.get ? cfg.get("autoSubmit") !== false : true;
+  if (override && await runCommand(override, { text, query: text, mode: "agent" })) return true;
+  if (await runCommand("workbench.action.chat.open", { query: text })) {
+    if (autoSubmit) {
+      await delay(400); // let the composer mount + take the forced text before submit
+      if (!(await runCommand("composer.submit"))) await runCommand("composer.sendToAgent");
+    }
+    return true;
+  }
   if (await runCommand("deeplink.prompt.prefill", { text, mode: "agent" })) return true;
   try {
     const uri = vscode.Uri.parse(`cursor://anysphere.cursor-deeplink/prompt?text=${encodeURIComponent(text)}`);
@@ -143,6 +157,8 @@ async function tryInject(text) {
   } catch {}
   return false;
 }
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runCommand(cmd, arg) {
   try { await vscode.commands.executeCommand(cmd, arg); return true; } catch { return false; }
