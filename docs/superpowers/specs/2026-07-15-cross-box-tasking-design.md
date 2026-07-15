@@ -73,13 +73,18 @@ declared label must never grant reach. Swarm identity, if the operator wants to
 see it on the board, is a session-name convention (a derived prefix), not a
 registry field.
 
-Capability tiers, stated plainly:
+Capability tiers, stated plainly. Each more-intrusive step is its own gate;
+none is implied by a lesser one (a message permission never confers a window
+pop or a kill).
 
 | capability | who has it |
 |---|---|
 | harness **kind catalog** (anonymous: "pi/opencode/quine exist and are running") | any agent, ungated |
 | **roster** of a directory (session id, kind, live/dormant) | only directories you are whitelisted to message |
-| **messaging** (inject a prompt) | whitelisted `(from → to)` dir pairs, directional, plus a one-shot reply to whoever just messaged you |
+| **message** an existing agent (inject a prompt) | whitelisted `(from → to)` dir pairs, directional, plus a one-shot reply to whoever just messaged you |
+| **spawn hidden** (background, no window) | whitelisted dir pair, or approval for a new dir |
+| **spawn visible** (`hidden: false`, pops a window) | always operator approval, even for a whitelisted pair |
+| **kill** (close a window → dormant) | only spawn parentage `corrald` itself observed |
 | **transcript** (another session's conversation content) | nobody, ever |
 
 - **Messaging is not reading.** A whitelist entry `A → B` authorizes A to
@@ -96,6 +101,21 @@ Capability tiers, stated plainly:
   authorized paths reveals nothing new. The session name/title is authored by
   the *other* occupant and can describe work A was never told about, so it is
   never shown.
+- **Spawn visibility is its own gate.** Agent-initiated spawns default hidden
+  (alive, working, no window on the host) so an uninvited agent never pops a
+  window. `hidden: false` is a *request*, not a right: popping a window is more
+  intrusive than messaging, so it always passes the operator approval popup
+  ("spawn a visible agent in /foo?"), even for a whitelisted pair. The agent
+  states why it wants visibility; the operator decides.
+- **Kill is bounded by observed parentage, not the whitelist.** Being
+  whitelisted to *message* a directory must not confer the power to *terminate*
+  what is there. An agent may kill only a session `corrald` itself spawned on
+  its behalf — a fact `corrald` observed at spawn time (an ephemeral in-memory
+  `spawned-by` map), never a self-declared label (this is the crucial
+  difference from the rejected `group`: parentage cannot be forged because only
+  `corrald` writes it). Killing closes the window and leaves the session
+  dormant/resumable, so it is resource hygiene over one's own fan-out, not
+  destruction; the only cost is un-persisted mid-turn state.
 
 ## New Tool: `list_corral_agents`
 
@@ -103,20 +123,34 @@ A read-only discovery tool so a source agent can *choose* a harness and *reuse*
 an existing agent instead of blindly spawning a duplicate. It takes no target
 and needs no approval (it names no directory to reach). It submits to `corrald`
 (the sandboxed agent must not read the global registry directly); `corrald`
-computes the answer from `whitelist ∩ registry` and returns a two-tier roster of
-the running agents:
+computes the answer from `whitelist ∩ registry` and returns a capability picture,
+not just a listing — each entry annotated with what *this caller* may do with
+it, so the agent decides without bouncing off the gate:
 
-- **Every entry, always (anonymous):** the harness kind, with a static one-line
-  description from a new `label → description` table in `corral-core`. For
-  directories the caller is *not* whitelisted to, entries collapse to distinct
-  kinds only (so the total count / scale of unrelated work does not leak).
+- **Every entry, always (anonymous):** the harness kind, with its adapter-
+  authored one-line `description` (see below). For directories the caller is
+  *not* whitelisted to, entries collapse to distinct kinds only (so the total
+  count / scale of unrelated work does not leak).
 - **Whitelisted directories only:** additionally the directory, the session id,
   and live/dormant state. Never the session name/title or activity.
+- **Per-entry affordances:** `can_message` (the caller is whitelisted to this
+  dir, so a message lands without an approval popup) and `can_kill` (`corrald`
+  observed the caller spawn this one). These leak nothing new — they only report
+  what the caller itself may do, which it would discover by trying anyway.
+
+**The `description` is adapter-authored, in the record.** Each adapter writes a
+one-line description of its harness kind into a new `description` field on the
+registry record (`CONVENTION.md §1`): `corral-pi` → "terminal TUI coding agent",
+quine → "GUI coding app, self-windowing", etc. This keeps corral harness-
+agnostic (a new kind self-describes on announce, no `corral-core` edit) and the
+trust cost is nil: the string is adapter code, not LLM output, and strictly less
+dangerous than `spawnCommand`, which corral already runs verbatim. Per-label
+conflicts are only possible across adapter versions; latest-seen wins.
 
 Decision flow it enables: an empty target directory, the caller picks a kind
 matched to the task (GUI review → `quine`, terminal coding → `pi`/`opencode`)
-and spawns; an authorized directory with a reusable live agent, the caller
-delegates to it by `target_session`. (`corral_message_agent(target_dir=…)`
+and spawns; an authorized directory with a reusable `can_message` live agent,
+the caller delegates to it by `target_session`. (`corral_message_agent(target_dir=…)`
 already reuses-or-spawns; the roster only lets the caller *decide* before
 acting.)
 
@@ -129,8 +163,15 @@ reply path) or `target_dir` (reach whoever works there, spawning if none);
 to spawn. Sender identity (`fromCwd`, `fromSession` reply handle) is stamped
 automatically. Fire-and-forget: it returns an ack (`accepted` /
 `approval_needed` / `recipient_not_found` / `directory_not_known`, or a loud
-"corral is not running"); no reply is auto-routed. Agent-initiated spawns run
-hidden (already on `main`), so an uninvited agent never pops a window.
+"corral is not running"); no reply is auto-routed.
+
+One new parameter: **`hidden` (boolean, default `true`)**, documented in the
+tool description. Agent-initiated spawns default hidden (alive, working, no
+window), so an uninvited agent never pops a window and the safe behavior is the
+default. `hidden: false` requests a visible window and always passes the
+operator approval popup (see the spawn-visibility gate above). The description
+tells the agent its spawn is hidden by default and that the operator reveals it
+with `h`/Enter.
 
 The charter wording ported verbatim from subagents (task-confirmation
 handshake, comms-only-via-tool, reporting guidance, uncertainty-flows-up, event-
@@ -140,6 +181,12 @@ verbs.
 
 ## Deferred (YAGNI, stated as decisions not omissions)
 
+- **Kill (agent-initiated).** The rule is settled — an agent may kill only a
+  session `corrald` observed it spawn (an in-memory `spawned-by` map) — but the
+  implementation waits until real fan-out swarms exist and self-cleanup matters.
+  Until then the operator kills any agent from the board (`d`) and idle hidden
+  agents sit dormant at near-zero cost. Recorded so it drops in without touching
+  the message gate.
 - **Model selection at spawn.** No `model` field exists in the registry and not
   every harness takes a model flag. Add a `model` field (adapter-written, shown
   in the catalog) and a `modelFlag` launch mechanism (mirroring the existing
@@ -153,10 +200,17 @@ verbs.
 
 1. Revert branch commits `8f9d0e7` (same-group auth) and `8e28e70`
    (`group`/`name` fields, env transport, `CONVENTION.md` §2b).
-2. Add a `label → description` table to `corral-core` and a `list` query served
-   by `corrald` from `whitelist ∩ registry`.
-3. Add the `list_corral_agents` tool and the charter preamble to all four
-   adapters (pi/opencode/claude/cursor), keeping the agent tool surface in
-   parity as board features are.
+2. Add a `description` field to the registry record (`CONVENTION.md §1`),
+   adapter-authored, and a `list` query served by `corrald` from
+   `whitelist ∩ registry` that returns the capability picture (kind +
+   description always; dir/session/liveness for whitelisted dirs; `can_message`
+   / `can_kill` affordances per entry).
+3. Add the `list_corral_agents` tool, the `hidden` parameter (default true,
+   visible spawn gated) on `corral_message_agent`, and the charter preamble to
+   all four adapters (pi/opencode/claude/cursor), keeping the agent tool surface
+   in parity as board features are.
+4. Gate a visible agent-initiated spawn (`hidden: false`) through the operator
+   approval popup in `corrald`.
 
-One deletion, one read-only addition. The trust model is exactly today's.
+Kill (observed-parentage) and model selection are recorded but deferred. The
+trust model stays exactly today's: one gate, no bypass, no cross-session reads.
