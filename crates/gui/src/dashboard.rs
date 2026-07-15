@@ -689,11 +689,9 @@ impl Board {
         // the full cwd, so same-directory cards read in the same color.
         let mut meta_row = row![].spacing(6).align_y(Alignment::Center);
         if let Some(cwd) = &agent.cwd {
-            let pc = Color {
-                a,
-                ..cwd_color(cwd, s)
-            };
-            let ptext = Color { a, ..s.base[0] };
+            // The pill stays fully opaque even when dormant (alpha-fading it
+            // muddied the chip against the card); dormancy mutes it instead.
+            let (pc, ptext) = cwd_pill_colors(cwd, s, matches!(col, Column::Dormant));
             let pill = container(
                 text(basename(cwd).to_string())
                     .size(11)
@@ -1034,6 +1032,35 @@ fn state_color(agent: &Agent, s: &Base16) -> Color {
 /// across the board and the eye groups cards by color.
 fn cwd_color(cwd: &str, s: &Base16) -> Color {
     s.accent[color_index(cwd, s.accent.len())]
+}
+
+/// Rec. 601 luma, used to pick a contrasting text color for a pill.
+fn luma(c: Color) -> f32 {
+    0.299 * c.r + 0.587 * c.g + 0.114 * c.b
+}
+
+/// True when the theme's background is darker than its foreground: a dark
+/// scheme, where pills get brightened for punch (a light theme is left alone).
+fn is_dark(s: &Base16) -> bool {
+    luma(s.base[0]) < luma(s.base[5])
+}
+
+/// A cwd pill's (background, text) colors. The background is the directory's
+/// stable accent, brightened toward white on a dark theme so the chip reads as
+/// a bright, saturated tag against the dark card (Solarized's mid-tone accents
+/// look dull raw). The text is near-black or near-white by the pill's own luma,
+/// so it stays legible whatever accent lands. A dormant card mutes the chip
+/// toward the card surface — opaque, not translucent, which looked washed out.
+fn cwd_pill_colors(cwd: &str, s: &Base16, dormant: bool) -> (Color, Color) {
+    let mut bg = cwd_color(cwd, s);
+    if is_dark(s) {
+        bg = mix(bg, Color::WHITE, 0.22);
+    }
+    if dormant {
+        bg = mix(bg, s.base[1], 0.5);
+    }
+    let text = if luma(bg) > 0.5 { s.base[0] } else { s.base[7] };
+    (bg, text)
 }
 
 /// Replace a leading `$HOME` with `~` for a compact path.
