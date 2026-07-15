@@ -224,16 +224,22 @@ One per-session file drives discovery, isolation, and resume.
       `corral_message_agent` tool). Single active session per window;
       multi-session multiplexing deferred. Teardown clears the socket and
       unlinks on process exit/SIGINT/SIGTERM (no plugin-unload hook).
-- [ ] Untypechecked in-repo: no opencode toolchain or `@opencode-ai/plugin`
-      types here, so the plugin API shapes (client methods, event payload
-      fields, the `tool` registration helper) are probed defensively and
-      flagged UNVERIFIED in-file. Verify against installed types on deploy;
-      confirm the message-activity payload extraction and the `session.get`
-      title shape end-to-end.
-- [ ] End-to-end verify the opencode plugin actually works: install it in a
-      real opencode, confirm the card appears/updates on the board, `m`
-      delivers, tool/message activity renders, and clean teardown makes the
-      record dormant. Not yet run anywhere.
+- [x] Static verification against `@opencode-ai/plugin@1.16.2` (the installed
+      opencode's version): the `Plugin` signature, `client.session.list/prompt/
+      abort` calls, the `tool()` helper, and every `event.type` string all
+      typecheck against the real SDK. FOUND + FIXED a bug: tool activity is
+      delivered as the dedicated `tool.execute.before/after` plugin HOOKS, not
+      as event-bus events (no `tool.*` in the `Event` union), so the old
+      event-switch cases never fired and opencode cards showed no tool activity.
+      Now registered as real hooks. Permission handling was already correct
+      (`permission.updated`/`permission.replied` are real events).
+- [ ] End-to-end verify at RUNTIME (blocked in the dev sandbox: opencode is a
+      Bun-compiled binary that SIGTRAPs under Landlock, so it cannot run here).
+      Outside the sandbox: install the plugin, confirm the card appears/updates
+      on the board, `m` delivers, tool + message activity render, and clean
+      teardown makes the record dormant. Confirm the runtime event payload
+      field paths (`properties.sessionID`, message-part text) and the
+      `session.list()` title shape, which types cannot pin down.
 
 ## Extension (corral-claude)
 

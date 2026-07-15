@@ -34,12 +34,17 @@
  * with $CORRAL_CONTROL_SOCKET) for corral to route; the agent never reaches
  * another session directly. Mirrors pi's tool exactly.
  *
- * UNVERIFIED: no @opencode-ai/plugin types or opencode binary are available in
- * the build sandbox, so the plugin API shapes (client method args, event
- * payload fields, the `tool` registration helper) are coded from opencode's
- * docs and probed defensively at runtime, not typechecked. Every field access
- * on an event payload is guarded, and all bridge work is wrapped so the plugin
- * never throws into opencode.
+ * VERIFICATION: the plugin API surface is typechecked against
+ * @opencode-ai/plugin@1.16.2 (matching the installed opencode) — the `Plugin`
+ * signature, the `client.session.list/prompt/abort` calls, the `tool()` helper,
+ * and every `event.type` string against the SDK `Event` union. That check found
+ * tool activity arrives as the dedicated `tool.execute.before/after` plugin
+ * hooks (there is no `tool.*` event), so it is handled as hooks here, not in the
+ * `event` switch. Still UNVERIFIED at runtime: opencode is a Bun-compiled
+ * binary that SIGTRAPs under the Landlock sandbox, so a live load test (Bun
+ * socket bind, real event payload field paths, message-part text extraction)
+ * must run outside the sandbox. Every event field access stays guarded and all
+ * bridge work is wrapped so the plugin never throws into opencode.
  *
  * Install: symlink into ~/.config/opencode/plugin/ (global) or
  * .opencode/plugin/ (project).
@@ -408,14 +413,6 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		return p.sessionID ?? p.session_id ?? p.info?.sessionID ?? p.info?.id ?? ev?.sessionID ?? ev?.session_id;
 	}
 
-	// tool.execute.before/after payload fields are unverified; probe defensively.
-	function toolId(p: Record<string, unknown>): string {
-		return String(p.callID ?? p.toolCallId ?? p.id ?? "tool");
-	}
-	function toolName(p: Record<string, unknown>): string {
-		return String(p.tool ?? p.toolName ?? p.name ?? "tool");
-	}
-
 	// Best-effort message text from a message.part.updated event. UNVERIFIED
 	// payload shape: extract a text part and a role if present, skip otherwise.
 	function broadcastMessageActivity(p: {
@@ -471,23 +468,6 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						markRunning();
 						broadcastMessageActivity(props as never);
 						break;
-					case "tool.execute.before":
-						markRunning();
-						broadcast({
-							sessionUpdate: "tool_call",
-							toolCallId: toolId(props),
-							title: toolName(props),
-							status: "in_progress",
-							rawInput: props.args ?? props.input,
-						});
-						break;
-					case "tool.execute.after":
-						broadcast({
-							sessionUpdate: "tool_call_update",
-							toolCallId: toolId(props),
-							status: props.error ? "failed" : "completed",
-						});
-						break;
 					case "permission.updated":
 						// A permission prompt is open: the session is blocked on the user.
 						currentState = "requires_action";
@@ -504,6 +484,41 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			} catch {
 				// Never throw into opencode from the event bus.
 			}
+		},
+
+		// Tool activity is delivered by opencode as dedicated plugin hooks, NOT as
+		// event-bus events (there is no `tool.*` entry in the SDK `Event` union),
+		// so it is caught here, not in the `event` switch. `before` fires when a
+		// tool call starts (name + callID + args), `after` when it finishes.
+		"tool.execute.before": async (
+			input: { tool: string; sessionID: string; callID: string },
+			output: { args: unknown },
+		) => {
+			try {
+				if (input.sessionID && input.sessionID !== activeSessionId) {
+					activeSessionId = input.sessionID;
+					writeRegistry();
+					void refreshTitle();
+				}
+				markRunning();
+				broadcast({
+					sessionUpdate: "tool_call",
+					toolCallId: input.callID,
+					title: input.tool,
+					status: "in_progress",
+					rawInput: output.args,
+				});
+			} catch {}
+		},
+		"tool.execute.after": async (
+			input: { tool: string; sessionID: string; callID: string },
+			_output: { title: string; output: string; metadata: unknown },
+		) => {
+			// The after hook exposes no error flag (output is title/output/metadata),
+			// so completion is reported without a failed variant.
+			try {
+				broadcast({ sessionUpdate: "tool_call_update", toolCallId: input.callID, status: "completed" });
+			} catch {}
 		},
 
 		// corral_message_agent: hand a message to another session. It only submits
