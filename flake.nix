@@ -85,6 +85,11 @@
           buildPhase = ''
             mkdir -p pkg/extension
             cp -r "$src"/. pkg/extension/
+            # Files copied from the store are read-only (444). Cursor rewrites
+            # the extracted package.json to inject install metadata, so the
+            # zipped files MUST be writable or `--install-extension` fails with
+            # EACCES on that rewrite (and exits 0, hiding it).
+            chmod -R u+w pkg
             cp ${pkgs.writeText "extension.vsixmanifest" ''
               <?xml version="1.0" encoding="utf-8"?>
               <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
