@@ -511,6 +511,10 @@ export default function (pi: ExtensionAPI) {
 		// error can be read. An unpersisted (empty) session is not resumable.
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		const resumable = sessionFile != null && fs.existsSync(sessionFile);
+		// A hidden spawn runs the agent inside a headless cage; corral sets
+		// CORRAL_HIDDEN=1 in that environment. Record it so the board reveals
+		// this session by resume instead of focusing a (non-existent) window.
+		const hidden = process.env.CORRAL_HIDDEN === "1";
 		const record = {
 			sessionId,
 			cwd: ctx.cwd,
@@ -520,6 +524,7 @@ export default function (pi: ExtensionAPI) {
 			socket,
 			spawnCommand: ["pi"],
 			resumeCommand: resumable ? ["pi", "--session", sessionId] : null,
+			hidden,
 			lastSeen: new Date().toISOString(),
 		};
 		const tmp = `${registryFile}.${process.pid}.tmp`;
