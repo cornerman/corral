@@ -41,6 +41,7 @@ automatically. That is the whole loop.
 |-----|--------|
 | `Enter` | Go to the selected agent (focus its window, or resume a dormant one) |
 | `Shift+Enter` | Spawn a new agent in that directory |
+| `Shift+←/→` or drag | Move a card between columns to drive the agent's state (stop, continue, kill, resume) |
 | `/` | Filter cards |
 | `m` | Send a message to an agent |
 | `d` | Close a live agent / forget a dormant one |

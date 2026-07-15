@@ -155,7 +155,18 @@ ratatui / iced, the daemon keeps ksni).
   - `src/prompt.rs` — `send_prompt`: deliver a user message to a live agent by
     opening a one-shot connection to its socket and writing a `session/prompt`
     request (fire-and-forget). Used by the board (operator `m`) and the daemon
-    (agent delivery to a live target). Unit-tested against a throwaway listener.
+    (agent delivery to a live target). `send_cancel` does the same with a
+    `session/cancel` notification (stop the turn / unblock a question), used by
+    the card-move feature. Unit-tested against a throwaway listener.
+  - `src/transition.rs` — the pure card-move table (`action_for(from, to)`):
+    moving a card between columns triggers a real agent action — cancel turn
+    (Running/RequiresAction → Idle), nudge `"continue"` (Idle → Running), kill
+    (any live → Dormant), resume / resume+nudge (Dormant → Idle / Running).
+    Requires Action is never a destination (corral cannot open a question).
+    `slide_target`/`initial_target` step the ghost across the valid
+    destinations; `confirms` says a move landed once the agent reaches the
+    target column (the board never fakes state). The single source both shells
+    consume, unit-tested exhaustively.
   - `src/paths.rs` — the well-known on-disk locations (`registry_dir`,
     `control_socket`, `whitelist_file`), each the `env` override or a fixed name
     under `~/.corral`. Shared so all binaries agree on where things live.
@@ -171,7 +182,12 @@ ratatui / iced, the daemon keeps ksni).
     revealed/hidden by resume. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per live socket: seeds from
     `initialize` + `session/list`, then streams `state_update`, `tool_call`
-    (summarized to a card activity string), and title updates; EOF = gone.
+    (summarized to a card activity string), and title updates; EOF = gone. The
+    extension's connect-time `state_update` seed arrives before the
+    `session/list` reply, so the watcher stashes it and stamps it onto the
+    seeding `Upsert` (a `SetState` for a not-yet-present agent would be
+    dropped); without this a Running/blocked agent showed Idle until its next
+    transition. A stateless agent still defaults to Idle.
   - `src/engine.rs` — the shared registry-reflect loop: on a ~1s cadence
     scan + prune the registry, spawn a watcher per live socket, fold updates
     into the `Board`, and track per-agent age timers. A shell calls `tick`
@@ -252,7 +268,14 @@ ratatui / iced, the daemon keeps ksni).
     `core::placement`), `q` quit; a single left click selects a card, a double
     click goes, a right click opens a context menu of the five footer actions
     (`core::menu`; `core::click` classifies the double click), plus a clickable
-    footer. Enter on a live hidden card reveals it (resume) rather
+    footer. Shift+Left/Right (or a mouse drag) enters **move mode**: the columns
+    become drop-boxes (cards hidden), the ghost slides across the valid
+    destinations, and shift-release / Enter / a mouse drop commits the
+    `core::transition` action (Esc cancels). The committed card stays in its
+    real column with a `→ <target> ⋯` in-flight badge until the agent's own
+    state confirms the move (pending map, ~5s TTL). Move mode scopes extra kitty
+    keyboard flags (report-all-keys + event-types) via push/pop so it can see
+    the shift-key release. Enter on a live hidden card reveals it (resume) rather
     than focusing a non-existent window; Shift+Enter beside a hidden card
     spawns the new agent hidden too (placement follows the selected card).
     A live hidden card shows the 🫥 hidden icon (a bare glyph; the GUI adds a
@@ -274,7 +297,10 @@ ratatui / iced, the daemon keeps ksni).
   card, double-click goes, right-click opens a context menu of the footer
   actions, Shift+Enter spawns the selected card's kind in
   its dir, a bottom key-hint footer with the canvas-drawn corral mark, the same
-  keys as the TUI. Each card is two rows: the title with the column age at the
+  keys as the TUI — including **move mode** (Shift+Left/Right or a mouse drag →
+  drop-boxes, shift-release / Enter / drop commits the `core::transition`
+  action, the `→ <target> ⋯` pending badge; drag targets by `column_at_x` from
+  the window width, shift-release via iced's `on_key_release`). Each card is two rows: the title with the column age at the
   top-right, then a hash-colored cwd basename pill (`core::palette`, same color
   per directory) beside the dim kind badge and the activity hint; the Dormant
   column is faded. `src/theme.rs` is the base16 theming
@@ -601,7 +627,11 @@ message/tool updates) is ACP v1.
   columns; Enter or double-click goes to the selected agent (focus a
   live window, resume a dormant session by running its `resumeCommand`);
   Shift+Enter spawns a fresh agent of the selected card's kind (its
-  `spawnCommand`) in the selected agent's cwd; `/` focuses a prominent
+  `spawnCommand`) in the selected agent's cwd; Shift+Left/Right (or a mouse
+  drag) moves the selected card between columns to drive the agent's state —
+  Running/RequiresAction → Idle cancels the turn, Idle → Running nudges
+  `"continue"`, any live → Dormant kills it, Dormant → Idle/Running resumes
+  (Requires Action is never a drop target); `/` focuses a prominent
   centered filter box that fuzzily narrows the cards by their content (title /
   cwd / activity / state / harness label), cards grouped by cwd with the
   most-used directories first; while filtering, Enter goes and Shift+Enter spawns
@@ -655,6 +685,12 @@ message/tool updates) is ACP v1.
 
 ## Known Limitations (v1, deliberate)
 
+- Card-move state actions degrade per harness: `session/cancel` is a no-op on
+  the Claude and Cursor adapters, so Running/RequiresAction → Idle moves do
+  nothing there (nudge / kill / resume still work). Whether pi's `ctx.abort()`
+  actually unblocks a pending `question` is UNVERIFIED (coded from the state
+  machine: question-tool-ends → briefly running → turn-end → idle); if it does
+  not, corral-pi must cancel the question explicitly on `session/cancel`.
 - `requires_action` is emitted today only for the interactive `question` tool
   (the one user-input gate an extension can observe). pi's built-in
   tool-approval prompt is not surfaced to extensions, so an approval-blocked
