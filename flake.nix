@@ -51,7 +51,14 @@
           # they are not in a standard path, so put them on the GUI binary's
           # library path. Harmless no-op on the TUI/daemon binaries.
           postInstall = ''
+            # cage renders hidden agents into a headless compositor; corral,
+            # corral-gui and corrald exec it (with xwayland, so it hosts X11
+            # agents too), so it must be on their runtime PATH.
+            cageBin="${pkgs.lib.makeBinPath [ pkgs.cage pkgs.xwayland ]}"
+            wrapProgram "$out/bin/corral"  --prefix PATH : "$cageBin"
+            wrapProgram "$out/bin/corrald" --prefix PATH : "$cageBin"
             wrapProgram "$out/bin/corral-gui" \
+              --prefix PATH : "$cageBin" \
               --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (guiLibsFor pkgs)}"
             # Ship the harness adapters beside the binaries so the home-manager
             # module symlinks from one artifact, not the flake source tree.
@@ -139,6 +146,10 @@
             pkgs.just
             pkgs.cargo-watch
             pkgs.pkg-config
+            # Headless compositor for hidden agents (+ xwayland for X11 agents),
+            # so `cargo run` finds cage the way the wrapped binaries do.
+            pkgs.cage
+            pkgs.xwayland
           ];
           buildInputs = guiLibsFor pkgs;
           # So `cargo run -p corral-gui` finds libGL / wayland / X11 at runtime.
