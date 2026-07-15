@@ -124,8 +124,12 @@ Decisions:
   editor "resume" is just reopening the workspace folder. There is no distinct
   fresh-vs-resume launch; both open the folder. Cursor's own
   single-instance behavior then focuses/opens that window.
-- **No `messageFlag`** — `cursor <dir>` cannot carry a prompt into Composer, so
-  dormant launch-with-message delivers no text (see Messaging).
+- **No `messageFlag`** — a prompt-carry mechanism does exist (Cursor prompt
+  deeplinks, `cursor://…/prompt?text=<urlencoded>`, which pre-fill a chat for
+  the user to confirm), but it needs the message URL-encoded *inside a URI*,
+  which neither a trailing positional nor `messageFlag`'s plain-text value fits,
+  and corral builds no agent-specific launch strings. So dormant
+  launch-with-message delivers no text in v1 (see Messaging and Future).
 
 ## ACP Surface
 
@@ -135,10 +139,14 @@ JSON-RPC 2.0, multi-client, seed state on connect):
 - **`initialize`** — `agentInfo.name = "cursor"`, `agentCapabilities:
   { loadSession: false }`, `authMethods: []`.
 - **`session/list`** — one session: `{ sessionId, title, cwd }`.
-- **`session/prompt`** — attempt live injection into Composer via
-  `vscode.commands.executeCommand`. **UNVERIFIED** (see below). On success,
-  respond `{ stopReason: "end_turn" }`; on failure, JSON-RPC error so the board
-  surfaces "delivery not available" rather than silently dropping.
+- **`session/prompt`** — open a **new** Composer chat pre-filled with the
+  message text (via `vscode.commands.executeCommand` or the prompt deeplink),
+  rather than intruding on whatever chat is currently open. A prompt must land
+  in a chat (there is no window-level prompt), and starting a fresh chat removes
+  the "which chat?" ambiguity and matches Cursor's own deeplink behavior.
+  **UNVERIFIED** (see below). On success, respond `{ stopReason: "end_turn" }`;
+  on failure, JSON-RPC error so the board surfaces "delivery not available"
+  rather than silently dropping.
 - **`session/cancel`** — best-effort no-op (no external turn-abort exposed),
   answered as a notification, documented.
 - Any other method — JSON-RPC `-32601`.
@@ -168,16 +176,17 @@ Broadcasts:
 
 Two best-effort paths, both accepted as UNVERIFIED / half-measures:
 
-1. **Live injection (primary).** The extension's `session/prompt` handler calls
-   `vscode.commands.executeCommand` with a Composer prompt-submit command. The
-   exact command ID is undocumented; the extension tries a small candidate list
-   and honors a `corral.cursor.injectCommand` setting to override. If none
-   succeed, `session/prompt` fails loud (JSON-RPC error). Heavily flagged
-   UNVERIFIED; may break on Cursor updates.
+1. **Live injection (primary).** The extension's `session/prompt` handler opens
+   a new Composer chat pre-filled with the text, via
+   `vscode.commands.executeCommand` with a Composer command or the prompt
+   deeplink. The exact command ID is undocumented; the extension tries a small
+   candidate list and honors a `corral.cursor.injectCommand` setting to
+   override. If none succeed, `session/prompt` fails loud (JSON-RPC error).
+   Heavily flagged UNVERIFIED; may break on Cursor updates.
 2. **Dormant delivery (fallback).** Reopening via `cursor <dir>` raises the
-   window but cannot carry the message text into Composer. So a dormant Cursor
-   card's message reopens the window without the text — a documented
-   half-measure (the operator then types it).
+   window but does not carry the message text in v1 (see the `messageFlag`
+   decision and Future). So a dormant Cursor card's message reopens the window
+   without the text — a documented half-measure (the operator then types it).
 
 This mirrors how `corral-claude` treats its own unverified injection: coded
 defensively, guarded, never crashing the host, and clearly marked in-file.
@@ -228,8 +237,15 @@ back, not silently patched.
   same for all of them; focus raises one Cursor window, not guaranteed the
   exact one. Precise per-window focus needs title/class matching in `focus.rs`
   (a core change), deferred.
-- **One card per window (workspace)**, not per Composer chat — a chat tab is
-  neither observable nor focusable through the available surface.
+- **One card per window (workspace)**, not per Composer chat. Not because chats
+  are invisible (hook payloads likely carry a conversation id) but because they
+  are **not actionable**: corral's focus raises an OS window and its resume
+  reopens a folder, so a chat can be neither focused nor resumed independently
+  of its window. The convention's `session/list` is plural, but corral is
+  one-session-per-socket today (`watch.rs` indexes `sessions[0]`; a card is keyed
+  by socket path), so per-chat cards would need a cross-cutting core change and
+  would still all focus/resume the same window/folder. Per-chat state, if the
+  hooks expose it, enriches the window card as activity lines. See Future.
 - **State is coarse** (`running`/`idle` only, no `requires_action`), bounded by
   the hook lifecycle Cursor exposes.
 - **Messaging is best-effort and UNVERIFIED**; it may not work at all against a
@@ -245,3 +261,15 @@ back, not silently patched.
   adapters).
 - Title/class-based focus in `focus.rs` to disambiguate multiple Electron
   windows of the same app (benefits any GUI editor adapter, not just Cursor).
+- Multi-session-per-socket in core: finish the plural-`sessions` affordance by
+  re-keying a card from socket path to `(socket, session_id)` and fanning the
+  `session/list` array into multiple cards. Cross-cutting (touches
+  `watch.rs`/`model.rs`/`nav.rs`/`focus.rs`) and also unlocks opencode's
+  deferred multi-session. Deferred; for Cursor it gains per-chat state only,
+  since focus/resume stay window/folder-scoped.
+- A generic `messageUriTemplate` record field: an agent declares a prompt-URI
+  template (e.g. `cursor://…/prompt?text={msg}`), and corral URL-encodes the
+  message into it and launches it (via `cursor --open-url` / `xdg-open`), giving
+  dormant Cursor delivery a pre-filled prompt (user confirms). Generic across
+  any agent with a prompt-URI scheme; a `CONVENTION.md` + `launch.rs` change,
+  deferred out of v1.
