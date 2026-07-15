@@ -111,6 +111,7 @@ impl Agent {
         crate::launch::LaunchMode {
             gui: self.gui,
             message_flag: self.message_flag.clone(),
+            hidden: false,
         }
     }
 

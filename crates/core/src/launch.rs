@@ -18,6 +18,10 @@ pub struct LaunchMode {
     /// CLI flag that carries an initial launch message (e.g. `"--message"`).
     /// `None` passes the message as a trailing positional argument.
     pub message_flag: Option<String>,
+    /// Run inside a headless `cage` so the window never maps on the host
+    /// compositor. Set by a background ("hidden") spawn; the agent runs and
+    /// announces normally, revealed later by resume in a real window.
+    pub hidden: bool,
 }
 
 pub trait Launcher {
@@ -51,12 +55,30 @@ fn setsid_args(
     message: Option<&str>,
 ) -> Vec<String> {
     let tail = with_message(command, message, mode.message_flag.as_deref());
-    if mode.gui {
+    let mut inner = if mode.gui {
         tail
     } else {
         let mut args = terminal.to_vec();
         args.extend(tail);
         args
+    };
+    if mode.hidden {
+        // WLR_BACKENDS=headless is load-bearing: without it wlroots picks its
+        // X11 backend on an X11 host and opens a visible nested window, the
+        // exact blink hidden mode avoids. cage brings XWayland, so terminal
+        // and GUI agents alike render into its headless output. CORRAL_HIDDEN
+        // signals the adapter to record `hidden` on the session.
+        let mut wrapped = vec![
+            "env".to_string(),
+            "WLR_BACKENDS=headless".to_string(),
+            "CORRAL_HIDDEN=1".to_string(),
+            "cage".to_string(),
+            "--".to_string(),
+        ];
+        wrapped.append(&mut inner);
+        wrapped
+    } else {
+        inner
     }
 }
 
@@ -326,6 +348,7 @@ mod tests {
         let gui = LaunchMode {
             gui: true,
             message_flag: None,
+            hidden: false,
         };
         let term_mode = LaunchMode::default();
         // GUI: run the command directly, no terminal prefix.
@@ -346,6 +369,63 @@ mod tests {
         assert_eq!(
             setsid_args(&gui, &term, &cmd, Some("hi")),
             vec!["quine".to_string(), "--corral".to_string(), "hi".to_string()]
+        );
+    }
+
+    #[test]
+    fn hidden_wraps_argv_in_headless_cage() {
+        let term = vec!["xdg-terminal-exec".to_string()];
+        let cmd = vec!["pi".to_string()];
+        // Hidden terminal agent: cage wraps the terminal+command.
+        let hidden = LaunchMode {
+            gui: false,
+            message_flag: None,
+            hidden: true,
+        };
+        assert_eq!(
+            setsid_args(&hidden, &term, &cmd, None),
+            vec![
+                "env",
+                "WLR_BACKENDS=headless",
+                "CORRAL_HIDDEN=1",
+                "cage",
+                "--",
+                "xdg-terminal-exec",
+                "pi",
+            ]
+        );
+        // Hidden GUI agent: cage wraps the command directly (no terminal).
+        let hidden_gui = LaunchMode {
+            gui: true,
+            message_flag: None,
+            hidden: true,
+        };
+        let gui_cmd = vec!["quine".to_string(), "--corral".to_string()];
+        assert_eq!(
+            setsid_args(&hidden_gui, &term, &gui_cmd, None),
+            vec![
+                "env",
+                "WLR_BACKENDS=headless",
+                "CORRAL_HIDDEN=1",
+                "cage",
+                "--",
+                "quine",
+                "--corral",
+            ]
+        );
+        // A launch message still appends inside the wrapped argv.
+        assert_eq!(
+            setsid_args(&hidden, &term, &cmd, Some("hi")),
+            vec![
+                "env",
+                "WLR_BACKENDS=headless",
+                "CORRAL_HIDDEN=1",
+                "cage",
+                "--",
+                "xdg-terminal-exec",
+                "pi",
+                "hi",
+            ]
         );
     }
 
