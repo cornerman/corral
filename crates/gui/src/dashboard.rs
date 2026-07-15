@@ -672,6 +672,10 @@ impl Board {
                 .wrapping(text::Wrapping::None),
         )
         .width(Length::Fill)
+        // Pin the title to one line: a fixed-height card must always leave the
+        // second row for the cwd pill + badge, so a long title clips instead of
+        // wrapping and stealing that row (belt-and-braces with Wrapping::None).
+        .height(Length::Fixed(18.0))
         .clip(true);
         let mut title_row = row![title].spacing(6).align_y(Alignment::Center);
         if !age.is_empty() {
