@@ -151,6 +151,13 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     let mut seeded = false;
+    // The extension writes its connect-time state_update seed BEFORE the
+    // session/list reply, so that state line is read before the agent exists
+    // in the board. A SetState for an absent socket is dropped, so we stash the
+    // latest pre-seed state here and stamp it onto the Upsert instead of
+    // DEFAULT_STATE; without this the card is stuck Idle until the next real
+    // transition. A stateless agent keeps DEFAULT_STATE.
+    let mut seed_state = DEFAULT_STATE;
 
     loop {
         line.clear();
@@ -172,7 +179,7 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 session_id,
                 title,
                 cwd,
-                state: DEFAULT_STATE,
+                state: seed_state,
                 origin: Origin::Live,
                 // The socket cannot report launch commands; Board::sync_registry
                 // stamps spawn_command from the matching record each scan.
@@ -188,9 +195,16 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
             continue;
         }
 
-        // Live state transitions.
+        // Live state transitions. Before the Upsert (session/list reply) the
+        // agent is not in the board yet, so stash the state for the seed rather
+        // than emitting a SetState that would be dropped.
         if let Some(state) = parse_state_notification(&line) {
-            let _ = tx.send(Update::SetState(entry.path.clone(), state));
+            if seeded {
+                let _ = tx.send(Update::SetState(entry.path.clone(), state));
+            } else {
+                seed_state = state;
+            }
+            continue;
         }
         // Rename: keep the displayed title current without a reconnect.
         if let Some(title) = parse_title_notification(&line) {
@@ -260,6 +274,39 @@ mod tests {
         // Not a tool_call.
         let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
         assert_eq!(parse_tool_call(state), None);
+    }
+
+    #[test]
+    fn preseed_state_lands_on_upsert() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc::channel;
+        // A live agent that is Running when the board connects: the extension
+        // seeds state_update BEFORE the session/list reply. The Upsert must
+        // carry Running, not the Idle default (the ordering-race regression).
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("pi-1.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (tx, rx) = channel();
+        let entry = SocketEntry {
+            path: sock.clone(),
+            pid: 1,
+            label: "pi".into(),
+        };
+        let h = spawn(entry, tx);
+        let (mut conn, _) = listener.accept().unwrap();
+        // Seed state first, then the session/list reply (id 1) — the real order.
+        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"state_update\",\"state\":\"running\"}}}\n").unwrap();
+        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"sessions\":[{\"sessionId\":\"s\",\"title\":\"t\",\"cwd\":\"/tmp\"}]}}\n").unwrap();
+        let upsert = loop {
+            match rx.recv().unwrap() {
+                Update::Upsert(a) => break a,
+                _ => continue,
+            }
+        };
+        assert_eq!(upsert.state, State::Running);
+        drop(conn);
+        let _ = h.join();
     }
 
     #[test]
