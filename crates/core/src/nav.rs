@@ -34,6 +34,35 @@ pub fn move_row(index: usize, counts: &[usize; 4], down: bool) -> usize {
     flat(c, r, counts)
 }
 
+/// True if a vertical move (`down`) from `index` would leave its column — it
+/// already sits at the far edge (top for up, bottom for down). The hook a shell
+/// uses to hand focus back to the filter input: the input sits as one node
+/// above the first row and below the last, so navigation rings through it.
+pub fn at_vertical_edge(index: usize, counts: &[usize; 4], down: bool) -> bool {
+    let (c, r) = locate(index, counts);
+    if counts[c] == 0 {
+        return true;
+    }
+    if down {
+        r + 1 >= counts[c]
+    } else {
+        r == 0
+    }
+}
+
+/// Landing index when entering the board from the filter input: the first row
+/// (`down`) or the last row (up) of the column holding `index`. The inverse of
+/// `at_vertical_edge` — stepping off the input into the board. Empty column or
+/// empty board leaves `index` unchanged.
+pub fn column_entry(index: usize, counts: &[usize; 4], down: bool) -> usize {
+    let (c, _) = locate(index, counts);
+    if counts[c] == 0 {
+        return index;
+    }
+    let r = if down { 0 } else { counts[c] - 1 };
+    flat(c, r, counts)
+}
+
 /// Jump to the nearest non-empty column in a direction (Left/Right), keeping
 /// the row where possible.
 pub fn move_col(index: usize, counts: &[usize; 4], right: bool) -> usize {
@@ -71,5 +100,23 @@ mod tests {
         assert_eq!(move_col(2, &counts, false), 0);
         // Right from the last column stays put.
         assert_eq!(move_col(2, &counts, true), 2);
+    }
+
+    #[test]
+    fn vertical_edges_ring_through_the_input() {
+        // RA=2, Idle=0, Running=1, Dormant=0. flat: RA0=0, RA1=1, Run0=2.
+        let counts = [2usize, 0, 1, 0];
+        // Top of a column (row 0) is an up-edge; not a down-edge.
+        assert!(at_vertical_edge(0, &counts, false));
+        assert!(!at_vertical_edge(0, &counts, true));
+        // Bottom of the RA column (RA1) is a down-edge; not an up-edge.
+        assert!(at_vertical_edge(1, &counts, true));
+        assert!(!at_vertical_edge(1, &counts, false));
+        // A single-row column (Running) is both edges at once.
+        assert!(at_vertical_edge(2, &counts, true));
+        assert!(at_vertical_edge(2, &counts, false));
+        // Entering from the input: Down -> that column's first row, Up -> last.
+        assert_eq!(column_entry(1, &counts, true), 0);
+        assert_eq!(column_entry(0, &counts, false), 1);
     }
 }

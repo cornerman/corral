@@ -178,7 +178,10 @@ ratatui / iced, the daemon keeps ksni).
     then renders `board()` + the age maps. (The TUI still runs an equivalent
     loop inline; converging it onto the engine, or retiring it, is a TODO.)
   - `src/nav.rs` — pure selection math: move within a column or across columns
-    over the per-column counts. Unit-tested.
+    over the per-column counts. `at_vertical_edge` / `column_entry` ring the
+    filter input into the vertical cycle (the input sits above the first row
+    and below the last), so a shell hands focus to the input at a column edge
+    and steps back onto the first/last row when leaving it. Unit-tested.
   - `src/palette.rs` — `color_index`: a stable FNV-1a hash of a cwd path into a
     palette bucket, so both shells color a directory's basename pill the same
     way (same color per path, keyed on the full path). Pure, unit-tested; each
@@ -234,7 +237,11 @@ ratatui / iced, the daemon keeps ksni).
     age formatting; `column_layout` and `hit_test` share one geometry (top rows
     reserved for the filter).
   - `src/main.rs` — the imperative shell: scan/prune/watch/draw/dispatch. `/`
-    focuses the inline filter (narrows cards by whole content); while filtering
+    focuses the inline filter (narrows cards by whole content). The filter
+    input rings with the board vertically (`core::nav`): Down/Up off the input
+    step into the selected column's first/last row (blurring the field, so
+    m/d/h act as commands there), and Down/Up at a column's bottom/top edge ring
+    back to the input. While filtering
     Enter goes / Shift+Enter spawns directly, arrows navigate. Command keys:
     Up/Down, Left/Right, Enter go, Shift+Enter spawn, `m` message
     (compose overlay), `d` dismiss, `h` toggle hidden (hide a visible session,

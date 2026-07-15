@@ -344,11 +344,17 @@ impl Board {
             return Task::none();
         }
         match key {
+            // The filter input rings with the board vertically: while it is
+            // focused, Down/Up step off it into the board (Down -> the column's
+            // first row, Up -> its last), blurring the field so m/d/h act as
+            // commands; while a card is selected, Down at the bottom edge and Up
+            // at the top edge ring back to the filter input; otherwise move
+            // within the column.
             keyboard::Key::Named(Named::ArrowDown) => {
-                self.selected = nav::move_row(self.selected, &counts, true);
+                return self.ring_vertical(&counts, true);
             }
             keyboard::Key::Named(Named::ArrowUp) => {
-                self.selected = nav::move_row(self.selected, &counts, false);
+                return self.ring_vertical(&counts, false);
             }
             // No `filtering` guard on these: a focused filter field captures
             // Left/Right (caret) and letters (typing), so `on_key_press` never
@@ -381,6 +387,31 @@ impl Board {
             _ => {}
         }
         // Any nav arm falls through to here; keep the selection visible.
+        self.scroll_to_selection()
+    }
+
+    /// One vertical step of the input<->board ring (see `on_key`). Returns the
+    /// focus/scroll task so the filter field gains or loses focus as the
+    /// selection crosses the input node. No-op direction on an empty board.
+    fn ring_vertical(&mut self, counts: &[usize; 4], down: bool) -> Task<Message> {
+        if self.filtering {
+            if counts.iter().sum::<usize>() == 0 {
+                return Task::none();
+            }
+            // Step off the input into the board and blur the field.
+            self.filtering = false;
+            self.selected = nav::column_entry(self.selected, counts, down);
+            return Task::batch([
+                text_input::focus(text_input::Id::new("corral-blur")),
+                self.scroll_to_selection(),
+            ]);
+        }
+        if nav::at_vertical_edge(self.selected, counts, down) {
+            // Ring back to the filter input.
+            self.filtering = true;
+            return text_input::focus(filter_id());
+        }
+        self.selected = nav::move_row(self.selected, counts, down);
         self.scroll_to_selection()
     }
 

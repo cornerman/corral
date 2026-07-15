@@ -344,8 +344,19 @@ fn run(
                             KeyCode::Backspace => {
                                 filter.pop();
                             }
-                            KeyCode::Down => selected = nav::move_row(selected, &counts, true),
-                            KeyCode::Up => selected = nav::move_row(selected, &counts, false),
+                            // Down/Up step off the input into the board (the
+                            // input is a nav node above the first row and below
+                            // the last): Down lands on the column's first row,
+                            // Up on its last. Leaving edit mode makes m/d/h
+                            // reachable as commands. No-op on an empty board.
+                            KeyCode::Down if counts.iter().sum::<usize>() > 0 => {
+                                filtering = false;
+                                selected = nav::column_entry(selected, &counts, true);
+                            }
+                            KeyCode::Up if counts.iter().sum::<usize>() > 0 => {
+                                filtering = false;
+                                selected = nav::column_entry(selected, &counts, false);
+                            }
                             KeyCode::Left => selected = nav::move_col(selected, &counts, false),
                             KeyCode::Right => selected = nav::move_col(selected, &counts, true),
                             KeyCode::Char(c) => filter.push(c),
@@ -374,11 +385,21 @@ fn run(
                     KeyCode::Esc => {
                         filter.clear();
                     }
+                    // At a column's bottom (Down) or top (Up) edge, ring back
+                    // to the filter input; otherwise move within the column.
                     KeyCode::Down => {
-                        selected = nav::move_row(selected, &counts, true);
+                        if nav::at_vertical_edge(selected, &counts, true) {
+                            filtering = true;
+                        } else {
+                            selected = nav::move_row(selected, &counts, true);
+                        }
                     }
                     KeyCode::Up => {
-                        selected = nav::move_row(selected, &counts, false);
+                        if nav::at_vertical_edge(selected, &counts, false) {
+                            filtering = true;
+                        } else {
+                            selected = nav::move_row(selected, &counts, false);
+                        }
                     }
                     KeyCode::Left => {
                         selected = nav::move_col(selected, &counts, false);
