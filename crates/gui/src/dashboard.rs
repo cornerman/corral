@@ -949,7 +949,10 @@ impl canvas::Program<Message> for Mark {
 
 /// Build a compose target for an agent, or `None` if it cannot be messaged.
 fn compose_for(agent: &Agent) -> Option<Compose> {
-    let label = agent.title.clone().unwrap_or_else(|| "agent".into());
+    // Title + cwd basename, matching the TUI's compose label (ui::focus_label).
+    let title = agent.title.as_deref().unwrap_or("(unnamed)");
+    let cwd = agent.cwd.as_deref().unwrap_or("?");
+    let label = format!("{title} · {}", basename(cwd));
     let target = match agent.origin {
         Origin::Live => ComposeTarget::Live(agent.socket_path.clone()),
         Origin::Dormant => ComposeTarget::Dormant {

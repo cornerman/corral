@@ -29,17 +29,6 @@ use std::time::Duration;
 use corral_core::model::{Agent, Board, Column, Origin};
 use corral_core::palette::{basename, color_index};
 
-/// The heading shown above each column. Bound to the column identity (not a
-/// parallel array), so it cannot drift from `Column::ALL`.
-fn heading(column: Column) -> &'static str {
-    match column {
-        Column::RequiresAction => "Requires Action",
-        Column::Idle => "Idle",
-        Column::Running => "Running",
-        Column::Dormant => "Dormant",
-    }
-}
-
 /// The four equal column rects, reserving the bottom two rows (a blank spacer
 /// above the footer). Shared by `render` and `hit_test` so their geometry
 /// cannot drift. Columns are separated by gutters (layout spacing), not borders.
@@ -466,7 +455,9 @@ fn column(
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(heading(col).to_uppercase(), name_style),
+            // Column name from the shared `Column::title()` (one source for
+            // both shells), uppercased as this shell's rendering idiom.
+            Span::styled(col.title().to_uppercase(), name_style),
             Span::styled(format!("  {}", agents.len()), count_style),
         ])),
         rows[0],
