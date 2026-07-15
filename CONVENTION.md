@@ -60,6 +60,7 @@ Fields:
 | `lastSeen`  | string          | ISO-8601 timestamp, refreshed while the session runs. Lets a consumer age out stale dormant records. |
 | `gui`       | boolean         | Optional; default `false`. `true` when the agent draws its own window (a GUI app like quine), so the consumer launches `spawnCommand`/`resumeCommand` **directly** rather than wrapping them in a terminal. Absent or `false` means terminal-wrapped, so every existing terminal agent keeps its behavior unchanged. |
 | `messageFlag` | string \| null | Optional CLI flag that carries the initial launch message (see §2a), e.g. `"--message"` for quine. When set, the consumer passes the message as this flag's value (`… --message "<text>"`); absent/null means the message is a trailing positional argument. Lets a flag-based agent take a launch message without accepting a positional. |
+| `hidden`    | boolean         | Optional; default `false`. `true` when the session runs **hidden**: inside a headless compositor, so its window never maps on the host. A consumer reveals a hidden session by resume (see §2b) rather than by focusing a window, and MAY show it as hidden. The agent SHOULD set this from the `CORRAL_HIDDEN=1` environment variable a consumer exports when it launches a hidden session (see §2b). Absent/false is a normal, visible session. |
 
 The consumer runs `spawnCommand` / `resumeCommand` **verbatim and never parses
 them**, so it stays agent-neutral: pi's `--session` grammar, opencode's, and any
@@ -110,6 +111,25 @@ arg parser does not read it as a flag or a file. If the record sets
 (`… <messageFlag> "<text>"`), bound to the flag, so no guard is needed. Either
 way an agent that accepts an initial message gets atomic launch-with-delivery;
 one that does not simply ignores it.
+
+### 2b. Hidden launch (background session)
+
+A consumer MAY launch a session **hidden**, so it runs and announces normally
+but never maps a window on the host. It does this by running the same
+`spawnCommand`/`resumeCommand` inside a headless compositor and exporting
+`CORRAL_HIDDEN=1` into the launched environment. The reference consumer wraps
+the argv as `env WLR_BACKENDS=headless CORRAL_HIDDEN=1 cage -- <argv…>`
+(`cage` is a single-app headless compositor; `WLR_BACKENDS=headless` keeps it
+off the host display server, and its bundled XWayland hosts X11 agents). The
+wrapping is a consumer detail; the contract on the agent is only: **if
+`CORRAL_HIDDEN=1` is set, write `"hidden": true` in the record** (see §2).
+
+Because a live window cannot migrate between compositors, revealing a hidden
+session is a **resume**, not a live move: the consumer kills the running
+instance (the record then goes dormant) and relaunches it visibly via
+`resumeCommand`. Hiding a visible session is the mirror (close its window, then
+relaunch hidden). An agent needs no code for reveal/hide beyond the normal
+clean-shutdown and resume behavior it already implements.
 
 ## 3. Workdir-Local Socket (MUST)
 

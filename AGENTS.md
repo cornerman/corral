@@ -113,11 +113,17 @@ ratatui / iced, the daemon keeps ksni).
   - `src/discovery.rs` — scan the registry dir, parse each `<sessionId>.json`
     record, and resolve a live record to its socket (parsing the
     `<label>-<pid>.sock` filename). Liveness is read straight from the record
-    (`socket` set = live, cleared = dormant). Pure, unit-tested.
+    (`socket` set = live, cleared = dormant); the optional `hidden` field marks
+    a session running headless. Pure, unit-tested.
   - `src/launch.rs` — `Launcher` seam. `TerminalLauncher::launch(cwd, command,
-    message, mode)` takes a `LaunchMode { gui, message_flag }` bundling the
-    record-derived launch options (built by callers via `Agent::launch_mode` /
-    `RegistryEntry::launch_mode`, keeping this crate model-free). It runs
+    message, mode)` takes a `LaunchMode { gui, message_flag, hidden }` bundling
+    the record-derived launch options (built by callers via `Agent::launch_mode`
+    / `RegistryEntry::launch_mode`, keeping this crate model-free). A `hidden`
+    launch wraps the argv as `env WLR_BACKENDS=headless CORRAL_HIDDEN=1 cage --
+    <argv…>`: `cage` is a headless compositor so the window never maps on the
+    host (the `WLR_BACKENDS=headless` env is load-bearing — else wlroots opens
+    an X11 window on an X11 host), and `CORRAL_HIDDEN` tells the adapter to
+    record `hidden`; covers terminal and `gui` agents alike (XWayland). It runs
     `setsid --fork <terminal…> <command…>` rooted at `cwd`
     via the child's working directory (no terminal-specific `--directory`
     flag), where `command` is the argv the registry record carried
@@ -159,7 +165,10 @@ ratatui / iced, the daemon keeps ksni).
     filter (a fuzzy subsequence match over title / cwd / activity / state /
     harness label), applied inside `column`, which also groups cards by cwd
     with the most-used directories first, so counts, selection, rendering and
-    hit-testing all narrow and order together. Pure, unit-tested.
+    hit-testing all narrow and order together. `Agent`/`RegistryEntry` carry a
+    `hidden` flag (from the record); `sync_registry` stamps it — and the
+    `resume_command` — onto live agents too, so a live hidden card can be
+    revealed/hidden by resume. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per live socket: seeds from
     `initialize` + `session/list`, then streams `state_update`, `tool_call`
     (summarized to a card activity string), and title updates; EOF = gone.
@@ -203,6 +212,15 @@ ratatui / iced, the daemon keeps ksni).
   - `src/picker.rs` — a directory-grouped fuzzy picker (library module,
     unit-tested). No longer wired to a shell now that both filter inline; kept
     for reuse.
+  - `src/placement.rs` — hidden-agent placement: `placement_for(origin, hidden)`
+    decides the `h`-toggle (`Reveal` a live hidden agent, `Hide` a visible one,
+    `StartHidden` a dormant one), and `apply_placement` executes it as
+    kill-and-resume (a live surface cannot migrate between compositors, so
+    every transition stops the instance and relaunches on the other side:
+    reveal kills the pid then resumes visible, hide closes the window via the
+    focuser then resumes hidden, start-hidden just resumes hidden). `kill_pid`
+    is the real kill the shells pass; the pure decision and the executor (with
+    a stubbed kill) are unit-tested.
 
 - `crates/board` — the TUI attention board (binary name `corral`), a pure
   viewer of the registry plus the operator's own actions. Holds no messaging
@@ -219,8 +237,13 @@ ratatui / iced, the daemon keeps ksni).
     focuses the inline filter (narrows cards by whole content); while filtering
     Enter goes / Shift+Enter spawns directly, arrows navigate. Command keys:
     Up/Down, Left/Right, Enter go, Shift+Enter spawn, `m` message
-    (compose overlay), `d` dismiss, `q` quit; a two-stage left click and a
-    clickable footer. Esc peels one layer per press and quits at the last
+    (compose overlay), `d` dismiss, `h` toggle hidden (hide a visible session,
+    reveal a hidden one, start a dormant one hidden — all via
+    `core::placement`), `q` quit; a two-stage left click and a
+    clickable footer. Enter on a live hidden card reveals it (resume) rather
+    than focusing a non-existent window; Shift+Enter beside a hidden card
+    spawns the new agent hidden too (placement follows the selected card).
+    A live hidden card shows a dim `hidden` badge. Esc peels one layer per press and quits at the last
     (edit-mode blur -> clear filter -> exit), matching the GUI. `--launcher`
     opens the TUI as an ephemeral popup: filter focused at boot, a successful
     go/spawn exits the process (m/d keep it open), mirroring the GUI launcher.
@@ -275,7 +298,9 @@ ratatui / iced, the daemon keeps ksni).
     record. A live socket that fails to connect (crashed session) falls back to
     spawn/resume — the daemon needs no dead-socket tracking. Delivery to a
     not-yet-live target carries the message as the new session's first prompt
-    (launch-with-message), atomic with no wait-for-announce. Holds an in-memory
+    (launch-with-message), atomic with no wait-for-announce; a spawn or resume
+    it triggers runs **hidden** (agent-initiated windows must never pop up).
+    Holds an in-memory
     queue (no file spool), the authorization decisions, and the one message
     awaiting operator approval; owns `ApprovalAction` and `apply`. Unit-tested
     (gating, spawn-with-message, live + dormant session delivery, allow/deny,
@@ -421,6 +446,32 @@ ratatui / iced, the daemon keeps ksni).
   Requires `node` on PATH. Install: `cursor --install-extension`, copy into
   `~/.cursor/extensions/`, or `--extensionDevelopmentPath`. corral needed no
   change. See `extensions/corral-cursor/README.md`.
+
+## Hidden Agents
+
+A session can run **hidden**: fully alive (socket bound, announcing, doing
+background work, driving `state_update`) but with no window on the host. corral
+launches it inside a per-agent headless `cage` (`env WLR_BACKENDS=headless
+CORRAL_HIDDEN=1 cage -- <argv…>`, see `core::launch`), which never touches the
+host display server and hosts terminal and `gui:true` agents alike via
+XWayland. The `CORRAL_HIDDEN=1` env makes the adapter record `hidden: true`, the
+signal the board reads (`core::discovery`) to render a `hidden` badge and to
+reveal by resume.
+
+Reveal/hide is never a live move: a Wayland/X surface cannot migrate between
+compositors, so `core::placement` does kill-and-resume in every direction —
+reveal kills the hidden instance and resumes it visibly, hide closes the visible
+window and resumes it into a cage, start-hidden resumes a dormant record hidden.
+`h` in either shell toggles placement; Enter (go) reveals a live hidden card;
+Shift+Enter beside a hidden card spawns hidden too; `m` delivers to a hidden
+agent without unhiding it. The one physics cost: reveal/hide loses any
+un-persisted mid-turn state (the transcript survives). `cage` ships via the
+flake; a hidden spawn with cage absent fails loud.
+
+The original driver: `corral_message_agent` `force_new` and dir-spawns route
+through corrald, which spawns the new agent **hidden by default**, so an
+uninvited agent never pops a window — it shows as a hidden card the operator
+reveals on demand.
 
 ## Inter-Agent Messaging
 
@@ -628,7 +679,9 @@ message/tool updates) is ACP v1.
   (TUI board bin), `corral-gui` (desktop board bin), `corral-daemon` (`corrald`
   bin). The flake's devShell + package carry the GUI graphics libs (`libGL`,
   `libxkbcommon`, `wayland`, X11) and `wrapProgram` the `corral-gui` binary with
-  the driver library path for NixOS. `just` commands: `test`, `lint`, `board`,
+  the driver library path for NixOS. It also ships `cage` (+ `xwayland`) on the
+  runtime PATH of all three binaries (and in the devShell), the headless
+  compositor hidden agents run inside. `just` commands: `test`, `lint`, `board`,
   `gui`, `daemon`, `watch` (cargo-watch tests), and `watch-board` / `watch-gui`
   / `watch-daemon` (rebuild + rerun on change), `nix-build`. GUI builds need the
   devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`.
