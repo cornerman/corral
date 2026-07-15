@@ -95,4 +95,22 @@ function resolveWindowPid(startPid, readProc) {
   return best;
 }
 
-module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid };
+// Additively register our state-hook for beforeSubmitPrompt + stop, keyed on the
+// full args array so re-activation never duplicates and never drops a user's own
+// hooks. Both stages share the script path (args[0]) but differ in the stage arg,
+// so de-dupe compares the whole args array. Pure: caller reads/writes the file.
+function mergeHooks(existing, hookCommand) {
+  const sameArgs = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
+  const out = { version: 1, hooks: {} };
+  const src = (existing && existing.hooks) || {};
+  for (const k of Object.keys(src)) out.hooks[k] = Array.isArray(src[k]) ? src[k].slice() : src[k];
+  const stage = hookCommand.args && hookCommand.args[1] === "beforeSubmitPrompt" ? "beforeSubmitPrompt" : "stop";
+  const group = { hooks: [{ type: "command", command: hookCommand.command, args: hookCommand.args.slice() }] };
+  const arr = Array.isArray(out.hooks[stage]) ? out.hooks[stage].slice() : [];
+  const present = arr.some((g) => (g.hooks || []).some((h) => sameArgs(h.args, hookCommand.args)));
+  if (!present) arr.push(group);
+  out.hooks[stage] = arr;
+  return out;
+}
+
+module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks };

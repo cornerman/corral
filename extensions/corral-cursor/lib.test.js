@@ -86,3 +86,21 @@ test("resolveWindowPid falls back to start when no ancestor matches", () => {
 test("resolveWindowPid stops safely on a cycle / missing entry", () => {
   assert.equal(lib.resolveWindowPid(5, () => null), 5);
 });
+
+test("mergeHooks adds our beforeSubmitPrompt+stop (stage args) and preserves others", () => {
+  const existing = { version: 1, hooks: { stop: [{ hooks: [{ command: "other", args: ["/x"] }] }] } };
+  let out = lib.mergeHooks(existing, { command: "node", args: ["/abs/state-hook.js", "beforeSubmitPrompt"] });
+  out = lib.mergeHooks(out, { command: "node", args: ["/abs/state-hook.js", "stop"] });
+  assert.ok(out.hooks.stop.some((g) => g.hooks.some((h) => h.command === "other")));
+  assert.ok(out.hooks.stop.some((g) => g.hooks.some((h) => h.args && h.args[1] === "stop")));
+  assert.ok(out.hooks.beforeSubmitPrompt.some((g) => g.hooks.some((h) => h.args && h.args[1] === "beforeSubmitPrompt")));
+});
+
+test("mergeHooks is idempotent per full args", () => {
+  let once = lib.mergeHooks({}, { command: "node", args: ["/abs/state-hook.js", "stop"] });
+  once = lib.mergeHooks(once, { command: "node", args: ["/abs/state-hook.js", "beforeSubmitPrompt"] });
+  let twice = lib.mergeHooks(once, { command: "node", args: ["/abs/state-hook.js", "stop"] });
+  twice = lib.mergeHooks(twice, { command: "node", args: ["/abs/state-hook.js", "beforeSubmitPrompt"] });
+  const count = twice.hooks.stop.filter((g) => g.hooks.some((h) => h.args && h.args[1] === "stop")).length;
+  assert.equal(count, 1);
+});
