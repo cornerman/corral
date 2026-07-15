@@ -580,10 +580,21 @@ impl Board {
 
     fn dismiss(&self, agent: &Agent) -> String {
         match agent.origin {
-            Origin::Live => match self.focuser.close(agent) {
-                Ok(()) => format!("closing {}", agent.title.as_deref().unwrap_or("agent")),
-                Err(e) => format!("close: {e}"),
-            },
+            // A hidden agent has no host window; kill its pid directly (as
+            // reveal does). A visible one is closed by killing its window pid
+            // via the focuser. Either way the agent shuts down cleanly and
+            // leaves a dormant record.
+            Origin::Live => {
+                let close = if agent.hidden {
+                    kill_pid(agent.pid)
+                } else {
+                    self.focuser.close(agent)
+                };
+                match close {
+                    Ok(()) => format!("closing {}", agent.title.as_deref().unwrap_or("agent")),
+                    Err(e) => format!("close: {e}"),
+                }
+            }
             Origin::Dormant => match &agent.session_id {
                 Some(id) => match std::fs::remove_file(self.dir.join(format!("{id}.json"))) {
                     Ok(()) => "forgot dormant record".into(),

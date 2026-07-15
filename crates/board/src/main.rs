@@ -754,7 +754,8 @@ fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &m
 
 /// `d`: dismiss the selected agent. A live agent is closed by terminating its
 /// agent process (which closes its terminal window and, via the agent's clean
-/// shutdown, leaves a dormant resumable record). A dormant record is forgotten
+/// shutdown, leaves a dormant resumable record). A hidden live agent has no
+/// host window, so its pid is killed directly. A dormant record is forgotten
 /// by deleting its registry file. So `d` twice fully removes a session: close,
 /// then forget.
 fn dismiss_selected(
@@ -769,10 +770,20 @@ fn dismiss_selected(
         return;
     };
     match agent.origin {
+        // A hidden agent has no host window; kill its pid directly (as reveal
+        // does). A visible one is closed by killing its window pid via the
+        // focuser. Either way pi shuts down cleanly and leaves a dormant record.
         Origin::Live => {
-            *status = match focuser.close(agent) {
-                Ok(()) => format!("closing {}", ui::focus_label(agent)),
-                Err(e) => format!("close: {e}"),
+            *status = if agent.hidden {
+                match kill_pid(agent.pid) {
+                    Ok(()) => format!("closing {}", ui::focus_label(agent)),
+                    Err(e) => format!("close: {e}"),
+                }
+            } else {
+                match focuser.close(agent) {
+                    Ok(()) => format!("closing {}", ui::focus_label(agent)),
+                    Err(e) => format!("close: {e}"),
+                }
             };
         }
         Origin::Dormant => {
