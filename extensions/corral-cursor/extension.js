@@ -164,24 +164,32 @@ async function runCommand(cmd, arg) {
   try { await vscode.commands.executeCommand(cmd, arg); return true; } catch { return false; }
 }
 
+// Register our cwd in the dir-index file (append once, idempotent; corrald also
+// dedups on read). Best-effort.
+function appendToIndex(cwd) {
+  const file = lib.indexFile(process.env);
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    let existing = "";
+    try { existing = fs.readFileSync(file, "utf8"); } catch {}
+    if (!existing.split("\n").some((l) => l.trim() === cwd)) {
+      fs.appendFileSync(file, `${cwd}\n`);
+    }
+  } catch {}
+}
 function writeRegistry(acpPath) {
   try {
-    const dir = lib.registryDir(process.env);
-    if (!dir) return;
-    // Real record in the workdir's .corral/ (beside the socket); the registry
-    // holds only a symlink, so a consumer authenticates identity by physical
-    // location.
-    const sockDir = lib.socketDir(ctx.cwd, process.env);
-    fs.mkdirSync(sockDir, { recursive: true, mode: 0o700 });
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    recordFile = path.join(sockDir, `${ctx.sessionId}.json`);
+    // Record in this workdir's .corral/registry/; corrald authenticates by
+    // physical location, so the record carries no top-level `cwd` field.
+    const recordDir = path.join(lib.socketDir(ctx.cwd, process.env), "registry");
+    fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
+    recordFile = path.join(recordDir, `${ctx.sessionId}.json`);
     const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1" });
     const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, recordFile);
-    const link = path.join(dir, `${ctx.sessionId}.json`);
-    try { fs.rmSync(link, { force: true }); } catch {}
-    fs.symlinkSync(recordFile, link);
+    appendToIndex(ctx.cwd);
   } catch {}
 }
 let lastTouch = 0;

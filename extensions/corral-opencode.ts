@@ -9,8 +9,10 @@
  *
  * Binds an ACP socket inside this session's own workdir at
  * <cwd>/.corral/opencode-<pid>.sock (override the dir with $CORRAL_SOCKET_DIR)
- * and writes a registry record at $HOME/.corral/registry/<sessionId>.json
- * (override with $CORRAL_REGISTRY_DIR) pointing at that socket. On clean process
+ * and writes its registry record inside this workdir at
+ * <cwd>/.corral/registry/<sessionId>.json, appending this cwd to the
+ * $HOME/.corral/registry dir-index file (override $CORRAL_REGISTRY_INDEX), so
+ * corrald authenticates identity by where the record physically lives. On clean process
  * exit the socket is unlinked and the record's `socket` is cleared to null,
  * leaving a dormant, resumable record. Served surface:
  *   initialize            identity (agentInfo name "opencode")
@@ -75,8 +77,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 	let server: { stop: () => void } | undefined;
 	let socketPath: string | undefined;
 	// The REAL record file, in the session's own workdir
-	// (`<cwd>/.corral/<sessionId>.json`); the registry holds only a symlink to
-	// it, so a consumer authenticates identity by physical location.
+	// (`<cwd>/.corral/registry/<sessionId>.json`); corrald authenticates identity
+	// by the record's physical location.
 	let recordFile: string | undefined;
 	// The single active opencode session this window drives. Multi-session
 	// multiplexing is deferred (YAGNI): we track only the latest active id.
@@ -355,16 +357,37 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 
 	// --- registry store ---
 
-	// $CORRAL_REGISTRY_DIR, else $HOME/.corral/registry.
-	function registryDir(): string | undefined {
-		if (process.env.CORRAL_REGISTRY_DIR) return process.env.CORRAL_REGISTRY_DIR;
+	// The raw dir-index file ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
+	// a newline list of directories corrald scans. We append our cwd to it.
+	function indexFile(): string | undefined {
+		if (process.env.CORRAL_REGISTRY_INDEX) return process.env.CORRAL_REGISTRY_INDEX;
 		const home = process.env.HOME;
 		return home ? path.join(home, ".corral", "registry") : undefined;
 	}
 
-	// Mark the session dormant by clearing the live socket: rewrite the REAL
-	// record file (in the workdir) with `socket: null`. The registry symlink
-	// keeps pointing at it. Used by stop() on process exit. Best-effort.
+	// Register our cwd in the dir-index (append once, idempotent). Best-effort.
+	function appendToIndex(cwd: string) {
+		const file = indexFile();
+		if (!file) return;
+		try {
+			fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+			let existing = "";
+			try {
+				existing = fs.readFileSync(file, "utf8");
+			} catch {
+				// No index yet; created by the append below.
+			}
+			if (!existing.split("\n").some((l) => l.trim() === cwd)) {
+				fs.appendFileSync(file, `${cwd}\n`);
+			}
+		} catch {
+			// Index unreachable: announcing is best-effort.
+		}
+	}
+
+	// Mark the session dormant by clearing the live socket: rewrite the record
+	// file with `socket: null` (leaving a dormant, resumable entry). Used by
+	// stop() on process exit. Best-effort.
 	function clearSocketInRegistry() {
 		if (!recordFile) return;
 		try {
@@ -378,17 +401,15 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		}
 	}
 
-	// Announce: write the real record into the workdir's `.corral/`
-	// (`<cwd>/.corral/<sessionId>.json`) and point a registry symlink at it, so a
-	// consumer authenticates identity by where the record physically resolves.
-	// No-op until the active session id is known.
+	// Announce: write the record into this workdir's `.corral/registry/` and add
+	// the cwd to the dir-index. corrald authenticates by physical location, so
+	// the record carries no `cwd` field. No-op until the active session id is known.
 	function writeRegistry() {
 		try {
-			const dir = registryDir();
-			if (!dir || !activeSessionId) return;
-			const recordDir = process.env.CORRAL_SOCKET_DIR ?? path.join(activeCwd, ".corral");
+			if (!activeSessionId) return;
+			const corral = process.env.CORRAL_SOCKET_DIR ?? path.join(activeCwd, ".corral");
+			const recordDir = path.join(corral, "registry");
 			fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
-			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 			recordFile = path.join(recordDir, `${activeSessionId}.json`);
 			// Launch commands corral runs verbatim (it never parses them): the argv
 			// to spawn a fresh opencode and to resume this exact session. opencode
@@ -396,7 +417,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			// known (unlike pi, which gates on the session file existing).
 			const record = {
 				sessionId: activeSessionId,
-				cwd: activeCwd,
+				// No `cwd`: identity is the record's physical location (corrald derives it).
 				title: activeTitle,
 				// Agent kind, so corral can label a dormant card (no socket to parse).
 				label: "opencode",
@@ -418,15 +439,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			const tmp = `${recordFile}.${process.pid}.tmp`;
 			fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 			fs.renameSync(tmp, recordFile);
-			// The registry entry is a symlink to the real record; recreate it so a
-			// re-announce (same id) repoints cleanly.
-			const link = path.join(dir, `${activeSessionId}.json`);
-			try {
-				fs.rmSync(link, { force: true });
-			} catch {
-				// No prior link; the symlink below will surface any real error.
-			}
-			fs.symlinkSync(recordFile, link);
+			appendToIndex(activeCwd);
 		} catch {
 			// Announcing is best-effort and must never crash opencode.
 		}

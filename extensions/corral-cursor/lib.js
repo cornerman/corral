@@ -4,8 +4,10 @@
 "use strict";
 const path = require("node:path");
 
-function registryDir(env) {
-  if (env.CORRAL_REGISTRY_DIR) return env.CORRAL_REGISTRY_DIR;
+// The raw dir-index FILE ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
+// a newline list of directories corrald scans; the extension appends its cwd.
+function indexFile(env) {
+  if (env.CORRAL_REGISTRY_INDEX) return env.CORRAL_REGISTRY_INDEX;
   return env.HOME ? path.join(env.HOME, ".corral", "registry") : undefined;
 }
 function socketDir(cwd, env) {
@@ -19,11 +21,13 @@ function controlSocketPath(cwd, sessionId, env) {
 }
 // The gui:true record corral runs verbatim. resume == spawn: for a GUI editor
 // "resume" is just reopening the workspace folder. No messageFlag: cursor <dir>
-// cannot carry prompt text (see spec Messaging/Future).
+// cannot carry prompt text (see spec Messaging/Future). No top-level `cwd`
+// field: identity is the record's physical location (corrald derives it); the
+// workspace path still rides in the launch argv, which corrald normalizes to
+// the {cwd} placeholder.
 function buildRecord({ sessionId, cwd, title, socket, nowIso, hidden }) {
   return {
     sessionId,
-    cwd,
     title: title ?? null,
     label: "cursor",
     // One-line kind description for the list_corral_agents roster peers read.
@@ -140,4 +144,4 @@ function isControlSocketFile(name) {
   return /^\.cursor-ctl-.*\.sock$/.test(name);
 }
 
-module.exports = { registryDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };
+module.exports = { indexFile, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };

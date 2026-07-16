@@ -19,11 +19,11 @@
  *   .claude-ctl-<sessionId>.sock    control channel the hook shim (hook.ts)
  *                                   connects to once per hook event.
  *
- * Real registry record inside the workdir at <cwd>/.corral/<sessionId>.json,
- * with a symlink at $HOME/.corral/registry/<sessionId>.json (override
- * $CORRAL_REGISTRY_DIR) so a consumer authenticates identity by where the
- * record physically resolves. It points at the ACP socket; cleared to
- * socket:null on SessionEnd, leaving a dormant, resumable entry.
+ * Registry record inside the workdir at <cwd>/.corral/registry/<sessionId>.json,
+ * with this cwd appended to the $HOME/.corral/registry dir-index file (override
+ * $CORRAL_REGISTRY_INDEX) so corrald authenticates identity by where the record
+ * physically lives. It points at the ACP socket; cleared to socket:null on
+ * SessionEnd, leaving a dormant, resumable entry.
  *
  * Served ACP surface (see handleAcp):
  *   initialize      identity (agentInfo name "claude")
@@ -86,8 +86,8 @@ const controlSocketPath = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 let title: string | null = null;
 let lastTitle: string | null | undefined;
 let currentState: "running" | "idle" | "requires_action" = "idle";
-// Real record file in the workdir's .corral/; the registry holds a symlink to
-// it (physical-location identity).
+// Record file in the workdir's .corral/registry/; corrald authenticates by its
+// physical location (physical-location identity).
 let recordFile: string | undefined;
 
 // Unix-socket servers (Node net). A connection is our Sock surface.
@@ -341,24 +341,37 @@ function applyTitle(raw: unknown) {
 }
 
 // --- registry store (identical record shape to the other adapters) ---
-function registryDir(): string | undefined {
-	if (process.env.CORRAL_REGISTRY_DIR) return process.env.CORRAL_REGISTRY_DIR;
+// The raw dir-index file ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
+// a newline list of directories corrald scans. We append our cwd to it.
+function indexFile(): string | undefined {
+	if (process.env.CORRAL_REGISTRY_INDEX) return process.env.CORRAL_REGISTRY_INDEX;
 	const home = process.env.HOME;
 	return home ? path.join(home, ".corral", "registry") : undefined;
 }
+// Register our cwd in the dir-index (append once, idempotent). Best-effort.
+function appendToIndex(dir: string) {
+	const file = indexFile();
+	if (!file) return;
+	try {
+		fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+		let existing = "";
+		try {
+			existing = fs.readFileSync(file, "utf8");
+		} catch {}
+		if (!existing.split("\n").some((l) => l.trim() === dir)) {
+			fs.appendFileSync(file, `${dir}\n`);
+		}
+	} catch {}
+}
 function writeRegistry() {
 	try {
-		const dir = registryDir();
-		if (!dir) return;
-		fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-		// Real record in the workdir's .corral/ (beside the socket); the registry
-		// holds only a symlink, so a consumer authenticates identity by physical
-		// location.
-		recordFile = path.join(socketDir, `${sessionId}.json`);
+		// Record in this workdir's .corral/registry/; corrald authenticates by
+		// physical location, so no `cwd` field is written.
+		const recordDir = path.join(socketDir, "registry");
+		fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
+		recordFile = path.join(recordDir, `${sessionId}.json`);
 		const record = {
 			sessionId,
-			cwd,
 			title,
 			label: "claude",
 			// One-line kind description for the list_corral_agents roster peers read.
@@ -379,11 +392,7 @@ function writeRegistry() {
 		const tmp = `${recordFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 		fs.renameSync(tmp, recordFile);
-		const link = path.join(dir, `${sessionId}.json`);
-		try {
-			fs.rmSync(link, { force: true });
-		} catch {}
-		fs.symlinkSync(recordFile, link);
+		appendToIndex(cwd);
 	} catch {}
 }
 // Refresh lastSeen at each hook event without a full rewrite race.

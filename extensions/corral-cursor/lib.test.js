@@ -2,10 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert");
 const lib = require("./lib.js");
 
-test("registryDir honors override then HOME then undefined", () => {
-  assert.equal(lib.registryDir({ CORRAL_REGISTRY_DIR: "/x" }), "/x");
-  assert.equal(lib.registryDir({ HOME: "/home/u" }), "/home/u/.corral/registry");
-  assert.equal(lib.registryDir({}), undefined);
+test("indexFile honors override then HOME then undefined", () => {
+  assert.equal(lib.indexFile({ CORRAL_REGISTRY_INDEX: "/x" }), "/x");
+  assert.equal(lib.indexFile({ HOME: "/home/u" }), "/home/u/.corral/registry");
+  assert.equal(lib.indexFile({}), undefined);
 });
 
 test("socket and control paths use socketDir override", () => {
@@ -22,6 +22,8 @@ test("buildRecord fixes label/gui/commands and omits messageFlag", () => {
   assert.deepEqual(r.spawnCommand, ["cursor", "/w"]);
   assert.deepEqual(r.resumeCommand, ["cursor", "/w"]);
   assert.equal("messageFlag" in r, false);
+  // No top-level cwd field: identity is physical location (corrald derives it).
+  assert.equal("cwd" in r, false);
   assert.equal(r.sessionId, "sid");
   assert.equal(r.socket, "/w/.corral/cursor-42.sock");
   assert.equal(r.lastSeen, "2026-07-15T00:00:00.000Z");
