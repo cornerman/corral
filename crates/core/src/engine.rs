@@ -3,10 +3,8 @@
 //! scans and prunes the registry, spawns a watcher per live socket, and folds
 //! watcher updates into the board while tracking per-agent age timers. A shell
 //! (TUI or GUI) calls `tick` each frame and then renders `board()` plus the age
-//! maps.
-//!
-//! (The ratatui board still runs an equivalent loop inline; converging it onto
-//! this engine, or retiring it, is tracked in TODO.md.)
+//! maps. Both shells run on this engine, so scan/prune/watch behavior cannot
+//! drift between them.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -134,6 +132,12 @@ impl Engine {
 
     pub fn board(&self) -> &Board {
         &self.board
+    }
+
+    /// Set the board's inline content filter (empty shows all). A passthrough
+    /// so shells never need mutable access to the board itself.
+    pub fn set_filter(&mut self, filter: String) {
+        self.board.set_filter(filter);
     }
 
     /// Time each live agent has been in its current state (by socket path).

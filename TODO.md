@@ -163,10 +163,9 @@ One per-session file drives discovery, isolation, and resume.
       come from the shared `Column::title()` in both shells (no drift); each
       shell keeps its own rendering idiom (ratatui uppercase headings + `▍`
       selection bar vs iced title-case headings + accent-tinted card).
-- [ ] DEBT: the ratatui board still runs its own inline copy of the reflect
-      loop and `age_label`/`prune`; converge it onto `core::engine`, or retire
-      the TUI once the GUI is the daily driver. Duplication is temporary and
-      deliberate (kept the working TUI untouched during the GUI build).
+- [x] DEBT paid: the ratatui board now runs on `core::engine` like the GUI
+      (its inline reflect loop and the duplicated `age_label`/`prune` are
+      deleted), so scan/prune/watch/age behavior cannot drift between shells.
 - [x] Launcher mode (`corral-gui --launcher` and `corral --launcher`): ephemeral
       rofi-style popup, both shells at parity. Boots focused on the filter; go
       (Enter/focus) and new (Shift+Enter/spawn) exit the process on success (m/d

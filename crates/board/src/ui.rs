@@ -24,7 +24,6 @@ use ratatui::widgets::{
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use corral_core::menu::MenuAction;
 use corral_core::model::{Agent, Board, Column, Origin};
@@ -388,20 +387,6 @@ fn tag_pill(text: &str, dim: bool) -> Span<'static> {
         style = style.add_modifier(Modifier::DIM);
     }
     Span::styled(format!(" {text} "), style)
-}
-
-/// Compact age like `8s`, `5m`, `2h`, `3d` for time-in-state display.
-pub fn age_label(d: Duration) -> String {
-    let s = d.as_secs();
-    if s < 60 {
-        format!("{s}s")
-    } else if s < 3600 {
-        format!("{}m", s / 60)
-    } else if s < 86400 {
-        format!("{}h", s / 3600)
-    } else {
-        format!("{}d", s / 86400)
-    }
 }
 
 /// Label for the compose target and the `f` focus picker: the title and the
@@ -772,14 +757,6 @@ mod tests {
     use super::*;
     use corral_core::model::{State, Update};
     use std::path::PathBuf;
-
-    #[test]
-    fn age_label_scales_units() {
-        assert_eq!(age_label(Duration::from_secs(8)), "8s");
-        assert_eq!(age_label(Duration::from_secs(5 * 60)), "5m");
-        assert_eq!(age_label(Duration::from_secs(2 * 3600)), "2h");
-        assert_eq!(age_label(Duration::from_secs(3 * 86400)), "3d");
-    }
 
     fn upsert(board: &mut Board, path: &str, state: State) {
         board.apply(Update::Upsert(Agent {

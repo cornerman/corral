@@ -192,8 +192,8 @@ ratatui / iced, the daemon keeps ksni).
   - `src/engine.rs` — the shared registry-reflect loop: on a ~1s cadence
     scan + prune the registry, spawn a watcher per live socket, fold updates
     into the `Board`, and track per-agent age timers. A shell calls `tick`
-    then renders `board()` + the age maps. (The TUI still runs an equivalent
-    loop inline; converging it onto the engine, or retiring it, is a TODO.)
+    then renders `board()` + the age maps. Both shells (TUI and GUI) run on
+    this engine, so reflect behavior cannot drift between them.
   - `src/nav.rs` — pure selection math over the per-column counts. Down/Up
     (`move_selection`) flow across the flat index, crossing a column's last
     card into the next column's first; `at_board_edge` / `board_entry` ring the
@@ -256,7 +256,8 @@ ratatui / iced, the daemon keeps ksni).
     the activity hint. Owns card / heading / footer / filter-box / cwd-pill /
     age formatting; `column_layout` and `hit_test` share one geometry (top rows
     reserved for the filter).
-  - `src/main.rs` — the imperative shell: scan/prune/watch/draw/dispatch. `/`
+  - `src/main.rs` — the imperative shell: `core::engine` reflect + draw +
+    dispatch. `/`
     focuses the inline filter (narrows cards by whole content). The filter
     input rings with the board vertically (`core::nav`): Down/Up off the input
     step into the selected column's first/last row (blurring the field, so

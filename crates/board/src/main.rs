@@ -16,9 +16,8 @@
 //!
 //! Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -33,22 +32,17 @@ use ratatui::widgets::ListState;
 mod ui;
 
 use corral_core::click::{ClickKind, ClickTracker};
-use corral_core::discovery::{self, RegistryEntry};
+use corral_core::engine::Engine;
 use corral_core::menu::MenuAction;
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
-use corral_core::model::{Board, Column, Origin, Update};
+use corral_core::model::{Board, Column, Origin};
 use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::prompt;
 use corral_core::transition::{self, MoveAction};
-use corral_core::{model, nav, paths, watch};
+use corral_core::{model, nav, paths};
 
-const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(250);
-/// A dormant record untouched for this long is pruned (its session file is
-/// stale or abandoned). Measured from the registry file's mtime, which the
-/// extension refreshes on every turn and on clean shutdown.
-const DORMANT_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 fn main() {
     let Some(dir) = paths::registry_dir() else {
@@ -273,17 +267,13 @@ fn run(
     launcher_mode: bool,
     enhanced: bool,
 ) -> std::io::Result<()> {
-    let (tx, rx): (Sender<Update>, Receiver<Update>) = mpsc::channel();
     // EWMH on X11, sway on Wayland (until other Wayland focusers land).
     let focuser = focus::detect();
     let launcher = TerminalLauncher;
 
-    let mut board = Board::default();
-    let mut known: HashSet<PathBuf> = HashSet::new();
-    // Sockets whose watcher failed to connect. A record whose socket is set
-    // but dead is a crashed session: surfaced as dormant (resumable) rather
-    // than vanishing. Cleared when the socket comes alive (an Upsert).
-    let mut dead_sockets: HashSet<PathBuf> = HashSet::new();
+    // The shared registry-reflect loop (scan/prune/watch/drain/age timers),
+    // the same engine the GUI runs on, so the two shells cannot drift.
+    let mut engine = Engine::new(dir.to_path_buf());
     let mut selected: usize = 0;
     let mut status = String::new();
     // Inline content filter (`/` focuses it). When non-empty the board shows
@@ -317,90 +307,13 @@ fn run(
     // One persistent ListState per column so ratatui scrolls long columns and
     // hit_test can read each column's scroll offset.
     let mut list_states: [ListState; 4] = std::array::from_fn(|_| ListState::default());
-    // When each live agent entered its current state, keyed by socket path, so
-    // Requires Action cards can show how long it has been blocked.
-    let mut state_since: HashMap<PathBuf, Instant> = HashMap::new();
-    // When each live agent last produced a tool activity or transition, so
-    // Running cards show time-since-activity (a stuck hint) not raw run time.
-    let mut last_event: HashMap<PathBuf, Instant> = HashMap::new();
-    // Age of each dormant session's registry record (by session id), from its
-    // file mtime; refreshed each scan.
-    let mut dormant_ages: HashMap<String, String> = HashMap::new();
-    let mut last_scan = Instant::now() - SCAN_INTERVAL * 2;
 
     loop {
-        if last_scan.elapsed() >= SCAN_INTERVAL {
-            // The registry is the single store. Prune stale dormant records,
-            // watch each live socket, and hand the survivors to the board so it
-            // can rebuild the dormant column.
-            let entries = prune(dir, discovery::scan_registry(dir));
-            // Forget dead sockets for records that no longer exist, so the set
-            // cannot grow without bound.
-            dead_sockets.retain(|p| {
-                entries
-                    .iter()
-                    .any(|e| e.socket.as_deref() == Some(p.as_path()))
-            });
-            for entry in &entries {
-                if let Some(sock) = discovery::live_socket(entry) {
-                    if known.insert(sock.path.clone()) {
-                        watch::spawn(sock, tx.clone());
-                    }
-                }
-            }
-            board.sync_registry(&entries, &dead_sockets);
-            // Record age (by session id) for the dormant column, from each
-            // record's file mtime.
-            dormant_ages.clear();
-            for e in &entries {
-                let file = dir.join(format!("{}.json", e.session_id));
-                if let Some(age) = std::fs::metadata(&file)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .map(ui::age_label)
-                {
-                    dormant_ages.insert(e.session_id.clone(), age);
-                }
-            }
-            last_scan = Instant::now();
-        }
-
-        // Drain watcher updates. A Gone drops the socket from `known` so a
-        // transient failure self-heals on the next scan; a genuinely dead
-        // socket just reconnects-and-Gones cheaply once per second.
-        while let Ok(update) = rx.try_recv() {
-            match &update {
-                Update::Gone(path) => {
-                    known.remove(path);
-                    state_since.remove(path);
-                    last_event.remove(path);
-                    dead_sockets.insert(path.clone());
-                }
-                // Each SetState is a real transition (the extension only
-                // broadcasts on change): restart the state timer, and count it
-                // as activity for the stuck-hint timer.
-                Update::SetState(path, _) => {
-                    let now = Instant::now();
-                    state_since.insert(path.clone(), now);
-                    last_event.insert(path.clone(), now);
-                }
-                // A tool call is fresh activity: reset the stuck-hint timer.
-                Update::SetActivity(path, _) => {
-                    last_event.insert(path.clone(), Instant::now());
-                }
-                Update::Upsert(a) => {
-                    let now = Instant::now();
-                    state_since.entry(a.socket_path.clone()).or_insert(now);
-                    last_event.entry(a.socket_path.clone()).or_insert(now);
-                    dead_sockets.remove(&a.socket_path);
-                }
-                Update::SetTitle(..) => {}
-            }
-            board.apply(update);
-        }
-
-        board.set_filter(filter.clone());
+        // Scan/prune/watch on the engine's cadence, then drain watcher updates
+        // into the board and its age timers (shared with the GUI shell).
+        engine.tick();
+        engine.set_filter(filter.clone());
+        let board = engine.board();
         // Reconcile pending moves against the live board: a move confirms when
         // the agent reaches its target column (the board never fakes the move);
         // otherwise it expires after PENDING_TTL. Keyed by agent key so a
@@ -424,18 +337,12 @@ fn run(
             selected = count.saturating_sub(1);
         }
 
-        let in_state: HashMap<PathBuf, String> = state_since
-            .iter()
-            .map(|(p, t)| (p.clone(), ui::age_label(t.elapsed())))
-            .collect();
-        let quiet: HashMap<PathBuf, String> = last_event
-            .iter()
-            .map(|(p, t)| (p.clone(), ui::age_label(t.elapsed())))
-            .collect();
+        let in_state = engine.in_state_ages();
+        let quiet = engine.quiet_ages();
         let meta = ui::CardMeta {
             in_state: &in_state,
             quiet: &quiet,
-            dormant_age: &dormant_ages,
+            dormant_age: engine.dormant_ages(),
             pending: &pending_labels,
         };
         let move_label = move_mode.and_then(|_| {
@@ -445,7 +352,7 @@ fn run(
                 .map(|a| ui::focus_label(a))
         });
         terminal.draw(|f| {
-            ui::render(f, &board, selected, &status, &mut list_states, &meta);
+            ui::render(f, board, selected, &status, &mut list_states, &meta);
             // Move mode owns the screen (drop-boxes over the columns); the
             // filter/overlay/menu are all closed while moving.
             if let Some((src, target)) = &move_mode {
@@ -574,7 +481,7 @@ fn run(
                             if activate_selected(
                                 focuser.as_ref(),
                                 &launcher,
-                                &board,
+                                board,
                                 selected,
                                 &mut status,
                             ) && launcher_mode
@@ -583,23 +490,23 @@ fn run(
                             }
                         }
                         MenuAction::Spawn => {
-                            if spawn_new(&launcher, &board, selected, &mut status) && launcher_mode {
+                            if spawn_new(&launcher, board, selected, &mut status) && launcher_mode {
                                 break;
                             }
                         }
                         MenuAction::Message => {
                             status.clear();
-                            overlay = open_compose(&board, selected);
+                            overlay = open_compose(board, selected);
                         }
                         MenuAction::ToggleHidden => toggle_selected(
                             focuser.as_ref(),
                             &launcher,
-                            &board,
+                            board,
                             selected,
                             &mut status,
                         ),
                         MenuAction::Dismiss => {
-                            dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
+                            dismiss_selected(dir, focuser.as_ref(), board, selected, &mut status);
                         }
                     }
                 } else if keep {
@@ -620,7 +527,7 @@ fn run(
                             KeyCode::Esc if launcher_mode => break,
                             KeyCode::Esc => filtering = false,
                             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                                if spawn_new(&launcher, &board, selected, &mut status)
+                                if spawn_new(&launcher, board, selected, &mut status)
                                     && launcher_mode
                                 {
                                     break;
@@ -630,7 +537,7 @@ fn run(
                                 if activate_selected(
                                     focuser.as_ref(),
                                     &launcher,
-                                    &board,
+                                    board,
                                     selected,
                                     &mut status,
                                 ) && launcher_mode
@@ -723,7 +630,7 @@ fn run(
                         selected = nav::move_col(selected, &counts, true);
                     }
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                        if spawn_new(&launcher, &board, selected, &mut status) && launcher_mode {
+                        if spawn_new(&launcher, board, selected, &mut status) && launcher_mode {
                             break;
                         }
                     }
@@ -731,7 +638,7 @@ fn run(
                         if activate_selected(
                             focuser.as_ref(),
                             &launcher,
-                            &board,
+                            board,
                             selected,
                             &mut status,
                         ) && launcher_mode
@@ -740,10 +647,10 @@ fn run(
                         }
                     }
                     KeyCode::Char('d') => {
-                        dismiss_selected(dir, focuser.as_ref(), &board, selected, &mut status);
+                        dismiss_selected(dir, focuser.as_ref(), board, selected, &mut status);
                     }
                     KeyCode::Char('h') => {
-                        toggle_selected(focuser.as_ref(), &launcher, &board, selected, &mut status);
+                        toggle_selected(focuser.as_ref(), &launcher, board, selected, &mut status);
                     }
                     KeyCode::Char('/') => {
                         // Focus the inline filter; typing narrows the cards.
@@ -754,7 +661,7 @@ fn run(
                         // Message any agent: a live one over its socket, a
                         // dormant one by resuming it first (via the router).
                         status.clear();
-                        overlay = open_compose(&board, selected);
+                        overlay = open_compose(board, selected);
                     }
                     _ => {}
                 },
@@ -771,7 +678,7 @@ fn run(
                                     if activate_selected(
                                         focuser.as_ref(),
                                         &launcher,
-                                        &board,
+                                        board,
                                         selected,
                                         &mut status,
                                     ) && launcher_mode
@@ -780,7 +687,7 @@ fn run(
                                     }
                                 }
                                 ui::FooterAction::New => {
-                                    if spawn_new(&launcher, &board, selected, &mut status)
+                                    if spawn_new(&launcher, board, selected, &mut status)
                                         && launcher_mode
                                     {
                                         break;
@@ -792,19 +699,19 @@ fn run(
                                 }
                                 ui::FooterAction::Msg => {
                                     status.clear();
-                                    overlay = open_compose(&board, selected);
+                                    overlay = open_compose(board, selected);
                                 }
                                 ui::FooterAction::Delete => dismiss_selected(
                                     dir,
                                     focuser.as_ref(),
-                                    &board,
+                                    board,
                                     selected,
                                     &mut status,
                                 ),
                                 ui::FooterAction::Toggle => toggle_selected(
                                     focuser.as_ref(),
                                     &launcher,
-                                    &board,
+                                    board,
                                     selected,
                                     &mut status,
                                 ),
@@ -812,7 +719,7 @@ fn run(
                             }
                         } else {
                             let scroll = std::array::from_fn(|i| list_states[i].offset());
-                            if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
+                            if let Some(idx) = ui::hit_test(area, board, m.column, m.row, scroll) {
                                 // Single click selects; a double click on the
                                 // same card goes (focus/reveal/resume).
                                 selected = idx;
@@ -825,7 +732,7 @@ fn run(
                                     if activate_selected(
                                         focuser.as_ref(),
                                         &launcher,
-                                        &board,
+                                        board,
                                         selected,
                                         &mut status,
                                     ) && launcher_mode
@@ -863,7 +770,7 @@ fn run(
                         let s = terminal.size()?;
                         let area = Rect::new(0, 0, s.width, s.height);
                         let scroll = std::array::from_fn(|i| list_states[i].offset());
-                        if let Some(idx) = ui::hit_test(area, &board, m.column, m.row, scroll) {
+                        if let Some(idx) = ui::hit_test(area, board, m.column, m.row, scroll) {
                             selected = idx;
                             menu = Some(Menu {
                                 anchor: (m.column, m.row),
@@ -1038,32 +945,4 @@ fn dismiss_selected(
     }
 }
 
-/// Prune dormant records only when they have gone untouched past
-/// `DORMANT_MAX_AGE`. Deletion is deliberately conservative: a record is
-/// removed solely on age, never because it looks unresumable or fails to
-/// parse. An unreadable or unfamiliar record is ignored (skipped from the
-/// view), not deleted, so a schema change or a newer producer can never
-/// destroy history. Live records (socket set) are never pruned. Returns the
-/// surviving entries.
-fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
-    entries
-        .into_iter()
-        .filter(|e| {
-            if e.socket.is_some() {
-                return true; // live: not ours to prune
-            }
-            let file = dir.join(format!("{}.json", e.session_id));
-            let stale = std::fs::metadata(&file)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > DORMANT_MAX_AGE);
-            if stale {
-                let _ = std::fs::remove_file(&file);
-                return false;
-            }
-            true
-        })
-        .collect()
-}
 
