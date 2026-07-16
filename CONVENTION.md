@@ -408,6 +408,6 @@ has exited.
   cross-harness proof: a different harness joins the board with no change to a
   consumer, since a consumer runs the record's launch commands verbatim and
   reads its `label` generically.
-- Consumer side: `crates/board/src/discovery.rs` (registry scan and record
-  parsing) and `crates/board/src/watch.rs` (socket connect, seed, and broadcast
+- Consumer side: `crates/core/src/discovery.rs` (registry scan and record
+  parsing) and `crates/core/src/watch.rs` (socket connect, seed, and broadcast
   handling).

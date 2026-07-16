@@ -114,20 +114,18 @@ One per-session file drives discovery, isolation, and resume.
       from the caller's `label` else the global most-used default. (So
       `directory_not_known` should mean only "path does not exist", never
       "no record here yet".)
-- [ ] OPEN: expose available sessions to agents (discovery), so a caller can
-      target a precise `target_session` (label included) instead of guessing a
-      dir. LEAK GATE (decided in discussion): scope the listing by the
-      whitelist — an agent may see only sessions whose dir it is ALREADY
-      whitelisted to message (`(sender-dir -> target-dir)` in
-      `~/.corral/whitelist`). Discovery then grants nothing beyond what
-      messaging already allows = zero extra leak. Non-whitelisted sessions stay
-      INVISIBLE (do NOT prompt the operator just to enumerate: bad UX and the
-      prompt itself is a side-channel revealing existence). MECHANISM: a `list`
-      request on the control socket stamped with the sender's `fromSession`;
-      corrald resolves sender-dir, scans the registry, returns only
-      whitelisted-target entries as {sessionId, cwd, title, label, state}.
-      Reuses the existing provenance/whitelist plumbing; the board stays a pure
-      viewer (discovery lives in corrald, the trusted mediator).
+- [x] Expose available sessions to agents (discovery): `list_corral_agents`, a
+      read-only `{"op":"list"}` roster query on the control socket, served
+      synchronously by corrald (`mailbox::build_roster`). SHIPPED SHAPE (differs
+      from the earlier invisible-sessions plan): EVERY session yields a
+      per-session entry {kind, sessionId, live} addressable by
+      `target_session` (any session is messageable; the operator gates an
+      unwhitelisted pair on delivery). The whitelist scopes only the detail
+      fields: a reachable directory's entry (caller's own dir, or a whitelisted
+      `(sender-dir -> target-dir)` pair) adds `cwd` + `description`; an
+      unreachable one hides both. A roster never carries a title or activity —
+      messaging is not reading. The board stays a pure viewer (discovery lives
+      in corrald).
 
 ## Validation
 

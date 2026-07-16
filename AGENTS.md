@@ -279,8 +279,9 @@ ratatui / iced, the daemon keeps ksni).
     the shift-key release. Enter on a live hidden card reveals it (resume) rather
     than focusing a non-existent window; Shift+Enter beside a hidden card
     spawns the new agent hidden too (placement follows the selected card).
-    A live hidden card shows the 🫥 hidden icon (a bare glyph; the GUI adds a
-    `hidden` hover tooltip). Esc peels one layer per press
+    A live hidden card shows a plain-text `hidden` pill (both shells; it
+    replaced a 🫥 emoji that rendered as tofu on fonts without the glyph).
+    Esc peels one layer per press
     (edit-mode blur -> clear filter) but never exits the normal board — q is the
     sole quit, so a stray Esc cannot nuke the window; matches the GUI.
     `--launcher` opens the TUI as an ephemeral popup: filter focused at boot, a
@@ -520,9 +521,8 @@ launches it inside a per-agent headless `cage` (`env WLR_BACKENDS=headless
 CORRAL_HIDDEN=1 cage -- <argv…>`, see `core::launch`), which never touches the
 host display server and hosts terminal and `gui:true` agents alike via
 XWayland. The `CORRAL_HIDDEN=1` env makes the adapter record `hidden: true`, the
-signal the board reads (`core::discovery`) to render the 🫥 hidden icon (a bare
-glyph on the card; the GUI adds a `hidden` hover tooltip) and to reveal by
-resume.
+signal the board reads (`core::discovery`) to render the plain-text `hidden`
+pill on the card (both shells) and to reveal by resume.
 
 Reveal/hide is never a live move: a Wayland/X surface cannot migrate between
 compositors, so `core::placement` does kill-and-resume in every direction —

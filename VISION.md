@@ -165,6 +165,9 @@ or takes turns, which is really a subagent-shaped need.
   systemd user service in the graphical session spawns kitty, runs the tray,
   and sends notifications), which the old "headless buys nothing" argument had
   ruled out on the wrong axis (lifecycle survival, not the singleton conflict).
+  (Since then a third binary joined: `corral-gui`, a second pure-viewer shell
+  over the same registry — it changes nothing about this split, since viewers
+  are harmless to multiply and only `corrald` stays a singleton.)
 - **Corral owns behavior; the WM and nixos own lifecycle and visibility.**
   Keeping the process alive (systemd, `exec_always`) and showing or hiding its
   window (scratchpad) are deployment concerns in `~/nixos`, not corral code.
