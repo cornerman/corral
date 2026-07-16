@@ -332,6 +332,11 @@ impl Board {
         for a in self.live.values_mut() {
             if let Some(sid) = a.session_id.as_deref() {
                 if let Some(e) = entries.iter().find(|e| e.session_id == sid) {
+                    // The record's cwd is the authenticated one (corrald derived
+                    // it from physical location); the socket's session/list cwd
+                    // is attacker-controlled, so the vetted value overrides it —
+                    // operator spawn/reveal then act on the authenticated cwd.
+                    a.cwd = e.cwd.clone();
                     a.spawn_command = e.spawn_command.clone();
                     // Reveal/hide relaunch a live agent from its record, so a
                     // live card needs the resume argv too, not only spawn.

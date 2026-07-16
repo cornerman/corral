@@ -132,6 +132,8 @@ fn main() {
         let entries = discovery::scan_registry(&state_registry);
         if let Some(status) = router.poll(&entries, &launcher) {
             eprintln!("corrald: {status}");
+            // Deliveries, spawns, and stops go in the audit trail.
+            curator::audit(&audit_log, &status);
         }
 
         // Reflect a newly pending approval to the tray and a notification (once).
@@ -170,7 +172,9 @@ fn main() {
         // message.
         while let Ok(cmd) = tray.commands.try_recv() {
             match cmd {
-                TrayCommand::Decide(id, action) => apply_decision(&mut router, &id, action),
+                TrayCommand::Decide(id, action) => {
+                    apply_decision(&mut router, &id, action, &audit_log)
+                }
                 TrayCommand::DecideRegistration(label, approve) => {
                     if approve {
                         match registrar.approve(&label) {
@@ -201,18 +205,25 @@ fn main() {
             }
         }
         while let Ok((id, action)) = napp_rx.try_recv() {
-            apply_decision(&mut router, &id, action);
+            apply_decision(&mut router, &id, action, &audit_log);
         }
 
         std::thread::sleep(TICK);
     }
 }
 
-/// Apply an approval decision only if it still matches the pending message.
-fn apply_decision(router: &mut Router, id: &str, action: ApprovalAction) {
+/// Apply an approval decision only if it still matches the pending message,
+/// and record it in the audit trail (who -> whom, allow/deny).
+fn apply_decision(router: &mut Router, id: &str, action: ApprovalAction, audit_log: &std::path::Path) {
     if router.pending().map(|m| m.id.as_str()) == Some(id) {
+        let line = router
+            .pending()
+            .map(|m| format!("message {action:?}: {} -> {}", m.from_cwd, m.target_label()))
+            .unwrap_or_default();
         if let Err(e) = router.apply(action) {
             eprintln!("corrald: whitelist: {e}");
+        } else {
+            curator::audit(audit_log, &line);
         }
     }
 }
