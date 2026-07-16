@@ -1,6 +1,14 @@
 # The Corral Announce Convention
 
-Convention v1 — 2026-07-13
+Convention v2 — 2026-07-16
+
+> v2 changes (security hardening): records live **per-workdir** at
+> `<cwd>/.corral/registry/<sessionId>.json` with the directory listed in a
+> `~/.corral/registry` **index file** (no more one flat record dir, no
+> symlinks); the record **no longer carries a `cwd` field** (a consumer derives
+> the trusted cwd from the record's physical location); inter-agent submissions
+> ride an **outbox file** (`{"submit":path}`) so the sender's directory is
+> proven, not self-reported. See SECURITY.md for the why.
 
 This document specifies the filesystem-and-socket convention an agent harness
 follows to become discoverable, triageable, and drivable by a corral-compatible
@@ -23,36 +31,56 @@ Requirement levels use MUST / SHOULD / MAY as in RFC 2119.
 
 ## 1. Model
 
-An agent publishes two things: a **registry record** (how a consumer finds it)
-and a **workdir-local socket** (how a consumer talks to it). The registry is the
-single discovery store a consumer scans; it could never scan the scattered
-working directories directly. The socket lives inside the session's own working
-directory, which is the isolation primitive: under a per-session sandbox that
-boxes the whole agent to its workdir, only that session (and an unsandboxed
-consumer) can reach the socket. Peer authentication relies on directory
-permissions alone; there are no ports and no network exposure. A workdir-local
-path is used rather than `$XDG_RUNTIME_DIR` precisely because a sandboxed
-session cannot reach the latter.
+An agent publishes, all inside its own working directory: a **registry record**
+(how a consumer finds it) and a **workdir-local socket** (how a consumer talks
+to it). It also appends its directory to a small `~/.corral/registry` **index
+file** so the consumer knows where to look (it could never scan the scattered
+working directories otherwise).
+
+**Physical location is identity.** Under a per-session sandbox that boxes the
+whole agent to its workdir, an agent can write files only inside its own
+directory. So a record physically at `<cwd>/.corral/registry/<id>.json` *proves*
+the agent works in `<cwd>` — the consumer derives the trusted `cwd` from where
+the record physically lives and never trusts a self-reported directory. Peer
+authentication relies on directory permissions alone; there are no ports and no
+network exposure. A workdir-local path is used rather than `$XDG_RUNTIME_DIR`
+precisely because a sandboxed session cannot reach the latter.
+
+The index file is agent-appendable and low-trust: adding a directory only causes
+the consumer to discover the *genuine* records already there (a consumer
+canonicalizes each listed directory and deduplicates). A consumer SHOULD treat
+the records it finds as untrusted input, validate every field (see §2), and —
+if it drives launches — curate them into its own trusted store rather than let
+other readers touch agent-written files (corral does: see SECURITY.md).
 
 ## 2. Registry Record (MUST)
 
 Each live session writes one JSON record naming its socket and the commands a
 consumer runs to relaunch it later.
 
-- Path: `$HOME/.corral/registry/<sessionId>.json`. A consumer and agent MAY
-  override the directory with `$CORRAL_REGISTRY_DIR`.
-- The registry directory MUST be created mode `0700`; the record file SHOULD be
-  written mode `0600`.
+- Path: `<cwd>/.corral/registry/<sessionId>.json` (inside the session's own
+  workdir). An agent MAY override the workdir `.corral` directory with
+  `$CORRAL_SOCKET_DIR`.
+- The agent MUST also append its absolute working directory as a line to the
+  index file `$HOME/.corral/registry` (append-if-absent; a consumer
+  deduplicates, so a best-effort append is fine). Override with
+  `$CORRAL_REGISTRY_INDEX`.
+- The `.corral` and `registry` directories MUST be created mode `0700`; the
+  record file SHOULD be written mode `0600`.
 - The record MUST be written atomically (write a temp file, then rename over
   the target) so a scanning consumer never reads a half-written file.
+- The record MUST NOT carry a `cwd` field: the consumer derives the trusted cwd
+  from the record's physical location. A `cwd` in the content is ignored.
+- `sessionId` MUST match `[A-Za-z0-9._-]`, not lead with `-`, and equal the
+  filename (a consumer substitutes it into a launch argv, so a loose value
+  would be an argument-injection vector).
 
 Fields:
 
 | Field       | Type            | Meaning |
 |-------------|-----------------|---------|
-| `sessionId` | string          | Stable session identity. MUST match the record's filename and the `sessionId` returned by `session/list`. MUST NOT be the session-file path. |
-| `cwd`       | string          | Absolute working directory of the session. |
-| `title`     | string \| null  | Human-readable session title; `null` when unnamed. |
+| `sessionId` | string          | Stable session identity, charset `[A-Za-z0-9._-]` (no leading `-`). MUST match the record's filename and the `sessionId` returned by `session/list`. MUST NOT be the session-file path. |
+| `title`     | string \| null  | Human-readable session title; `null` when unnamed. A consumer sanitizes it for display (it is untrusted content). |
 | `label`     | string          | Agent kind (e.g. `"pi"`). Appears in the socket filename; a consumer MAY use it to identify a dormant session's kind. |
 | `description` | string \| null | Optional. A one-line, human-readable description of the agent kind (e.g. `"pi: terminal TUI coding agent"`), authored by the adapter. A consumer MAY surface it in a capability roster so a caller can pick a kind to spawn; latest-seen per `label` wins. The string is adapter code, not model output. |
 | `socket`    | string \| null  | Absolute path to the live socket, or `null` when the session is dormant (cleanly shut down, resumable). |
@@ -281,8 +309,10 @@ SHOULD and MAY items add messaging and richer cards.
 
 MUST:
 
-- [ ] Write `$HOME/.corral/registry/<sessionId>.json` (dir `0700`, atomic write)
-      with all fields of §2, `sessionId` matching the filename.
+- [ ] Write `<cwd>/.corral/registry/<sessionId>.json` (dirs `0700`, atomic
+      write) with the fields of §2 (no `cwd` field), `sessionId` matching the
+      filename and its charset, and append the workdir to the
+      `$HOME/.corral/registry` index file.
 - [ ] Bind `<cwd>/.corral/<label>-<pid>.sock` (dir `0700`) speaking
       newline-delimited JSON-RPC 2.0.
 - [ ] Answer `initialize` with `agentInfo`.
@@ -313,19 +343,26 @@ direction (the agent is still fully discoverable, triageable, and messageable
 *by* the consumer).
 
 Sandboxed agents cannot reach each other's sockets, so an agent does not deliver
-directly. It submits one message per connection over the consumer's control
-socket, newline-delimited JSON (request line, then one ack line):
+directly. To submit, it **writes the request JSON to its own outbox**
+(`<cwd>/.corral/outbox/<id>.json`) and sends only a one-line envelope
+`{"submit":"<absolute path to that file>"}` over the consumer's control socket
+(then reads one ack line):
 
 - Socket: `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`). A
   connect failure means the consumer is not running, so submission fails loud
   rather than queuing silently.
+- The consumer opens the outbox file and derives the sender's `fromCwd` from
+  **where the file physically lives**, not from any field — so the sender's
+  directory is proven (only that workdir's sandboxed agent could have written
+  there), never self-reported. The consumer reads then deletes the file. The
+  same envelope carries a message, a `stop`, or a `list` request (below); the
+  request JSON is the outbox file's content.
 
-Request fields:
+Request fields (the JSON written to the outbox file):
 
 | Field           | Type              | Meaning |
 |-----------------|-------------------|---------|
-| `id`            | string            | Unique message id. |
-| `fromCwd`       | string            | Sender's working directory (the routing authorization is keyed on directory pairs). |
+| `id`            | string            | Unique message id (also the outbox filename stem). |
 | `fromSession`   | string            | Sender's `sessionId`, a reply handle so the receiver can answer this exact agent. |
 | `message`       | string            | The message text. |
 | `targetDir`     | string (one of)   | Deliver to whoever works in this directory (spawning one if none). |
@@ -355,9 +392,12 @@ after approval without a further ack.
 
 ### Roster query (`list`)
 
-Over the same control socket, an agent MAY send a read-only roster query
-(`{"op":"list","fromCwd":"<dir>"}`) and read one reply line
-(`{"status":"ok","agents":[…]}`). It is ungated: any listed session is
+Over the same control socket, an agent MAY send a read-only roster query: write
+`{"op":"list"}` to an outbox file and send the `{"submit":path}` envelope, then
+read one reply line (`{"status":"ok","agents":[…]}`). The consumer derives the
+caller's directory from the outbox location (so the roster's reachability gate
+cannot be widened by claiming another `fromCwd`). It is ungated: any listed
+session is
 messsageable (the operator may be asked to approve an unwhitelisted pair). Every
 session is one per-session entry, always addressable by `sessionId`:
 
@@ -377,8 +417,10 @@ escalate uncertainty up, stay event-driven).
 ### Stop request (`stop`)
 
 Over the same control socket, an agent MAY stop (kill) a peer session
-(`corral_stop_agent`): it submits `{"op":"stop","id":..,"fromCwd":..,`
-`"fromSession":..,"targetSession":..}` and reads one ack line. Stopping kills
+(`corral_stop_agent`): it writes `{"op":"stop","id":..,"fromSession":..,`
+`"targetSession":..}` to an outbox file, sends the `{"submit":path}` envelope
+(the consumer derives `fromCwd` from the file location), and reads one ack line.
+Stopping kills
 the target's process, so its record goes dormant and stays resumable — the same
 effect as the consumer's own close action, reached through the router. A stop
 targets an exact session only (`targetSession`); killing whoever-works-in-a-dir
