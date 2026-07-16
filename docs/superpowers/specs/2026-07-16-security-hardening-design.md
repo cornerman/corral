@@ -32,6 +32,14 @@ The four findings and their fixes:
 A directory split of `~/.corral` supports findings 1 and 2 and closes two holes
 of its own (whitelist tampering and control-socket hijack).
 
+**Design constraint: simple code is reviewable, and reviewability is a safety
+property.** Each mechanism reduces to a small, pure, unit-tested function reused
+by every caller: one `resolve` that derives a trusted `cwd` from an open fd
+(records and submissions alike), one `registered` predicate that both corrald
+and the viewers apply to filter the registry, one `normalize` for command
+templates. No mechanism whose correctness a reviewer cannot hold in their head
+at once.
+
 ## Threat Model and Scope
 
 **Defended:** a compromised or prompt-injected agent running arbitrary code
@@ -81,10 +89,24 @@ of symlinks pointing at those records.
   (atomic: temp file, then rename), beside its socket.
 - The agent creates `~/.corral/registry/<sessionId>.json` as a **symlink** to
   that real file.
-- A consumer resolves the symlink to its **canonical physical path**
-  (`realpath`), then derives `cwd` by stripping the trailing
-  `/.corral/<sessionId>.json`. The consumer **ignores any `cwd` field in the
-  record content**; the physical location is authoritative.
+- A consumer **opens** the symlink target, then derives `cwd` from that open
+  file descriptor's real path via `/proc/self/fd/<n>`, requiring the path to
+  match `<cwd>/.corral/<sessionId>.json` and stripping the suffix. It reads the
+  record content **from the same fd**. It **ignores any `cwd` field in the
+  content**; the physical location is authoritative.
+- **`sessionId` MUST match a strict charset** (`[A-Za-z0-9._-]`, no leading
+  `-`) and equal the symlink filename; a record violating either is rejected.
+  This is load-bearing for Mechanism 3, where `sessionId` is substituted into a
+  launch argv (finding C3): a value like `--config=/evil` would otherwise inject
+  an argument into the launched command.
+
+**Never `realpath`-then-reopen.** Resolving to a path string and opening it
+again is a time-of-check/time-of-use race: an agent swaps the symlink between
+the two steps, so `realpath` returns a victim-looking path (cwd = victim) while
+the reopen reads the attacker's file, attributing attacker content to the
+victim's directory. Opening once and deriving `cwd` from that same fd closes
+it. Records and outbox submissions share **one** `resolve(fd) -> cwd` function,
+both for correctness and so a reviewer checks the derivation in one place.
 
 The registry stays the single discovery store: a consumer scans the symlink
 farm, never the scattered workdirs.
@@ -173,6 +195,14 @@ This closes two holes the current "grant all of `~/.corral`" opens:
 The connect line is not extra structure; it is the one channel that makes
 agent-to-corrald messaging exist at all. `state/` is never exposed to an agent.
 
+**Profile precision (finding M4).** The write grant is on the *contents* of
+`registry/`, not on `~/.corral` itself: if the root were writable, an agent
+could replace the `registry/` directory or unlink and rebind `corrald.sock`,
+reopening the hijack. The whole model also presumes the sandbox confines the
+agent's writes to its own workdir and `registry/` only; a shared writable
+bind-mount into another workdir silently breaks physical-location identity, so
+the deployment MUST NOT create one.
+
 **Enforcement boundary.** Corral cannot apply the sandbox profile itself.
 CONVENTION states the requirement; the `~/nixos` deployment glue implements it
 (bwrap / landlock). `core::paths` moves the default layout here; the existing
@@ -180,13 +210,36 @@ env overrides (`CORRAL_REGISTRY_DIR`, `CORRAL_CONTROL_SOCKET`,
 `CORRAL_WHITELIST`) stay, and a new `CORRAL_STATE_DIR` (or equivalent) covers
 the approved-commands store.
 
-## Mechanism 3: Approved Command Templates (Trust on First Use)
+## Mechanism 3: Harness Registration (Approved Command Templates)
 
 Physical-location identity stops a record from lying about *whose* it is, but a
 compromised agent can still rewrite *its own* record's argv to
 `["bash","-c","…"]`, and that argv runs unsandboxed when the operator or corrald
-launches it. The fix is an operator-approved store of command templates, keyed
-on the harness kind.
+launches it. The fix: **a harness kind must be registered before any of its
+agents can be used.** corrald is the sole registrar; the viewers only ever
+consume registered kinds.
+
+### Registration Is the Gate to Usability
+
+The unit is the `label` (harness kind) plus its normalized command templates.
+corrald assures registration: watching the registry, on a first-seen `(label,
+template)` it raises **one** "register harness `X`?" approval showing the
+literal `spawnCommand` / `resumeCommand` argv, and on approval writes the
+template to the sealed store. From then on every agent of that label whose
+commands match is a full citizen.
+
+An **unregistered** kind (or a record whose argv deviates from its label's
+registered template) is **fully quarantined**: not launchable, not focusable,
+not messageable, and not shown as an actionable card. It surfaces only as the
+single pending "verify harness `X`?" item. So a compromised agent spamming 100
+novel labels yields 100 quarantined kinds behind one review list, not 100 cards
+flooding the board (this is the finding-H2 approval-flood fix, falling out of
+registration rather than a bolt-on rate limiter). The cost is a one-time
+ceremony: the first session of a genuinely new harness waits as "pending
+verification" for the seconds until the operator registers the kind, then it and
+all siblings are full citizens. That cost buys the property that **nothing
+attacker-authored reaches the actionable board until the operator has vetted the
+kind.**
 
 ### Store
 
@@ -214,81 +267,122 @@ session then collapses to one template. Launch reverses the substitution to
 build the real argv. An attacker who buries `bash -c evil` in any non-placeholder
 position produces a different normalized template, so it never matches.
 
-### Approval Flow: corrald Is the Sole Approver
+### One Shared Predicate: corrald Registers, Viewers Filter
 
-- corrald already scans the registry each tick. It diffs each record's
-  normalized `(label, template)` against `approved-commands.json` and, on a
-  never-seen one, raises its existing async approval surface (tray and
-  `notify-send`): "New harness `pi` wants to run `pi --session {sessionId}`.
-  Trust this command? yes / no." On yes it writes the template. corrald is the
-  **only writer**, so there are no multi-viewer write races.
-- The viewers (`corral`, `corral-gui`) only **read** the store. An
-  argv-executing action is permitted only if the template is approved;
-  otherwise it is inert with a hint: "harness not approved yet — approve via the
-  corral tray." No board modal and no board-to-corrald call: the two still share
-  only the filesystem.
+corrald is the sole approver and the only writer of the store. The viewers
+(`corral`, `corral-gui`) only **read** it and apply **one shared pure
+predicate** — `registered(record)`: does the record's normalized `(label,
+template)` match a stored entry? — to filter the registry. A record that fits is
+taken as a full citizen; one that does not is quarantined. corrald applies the
+same predicate to decide what still needs registration and what is routable. No
+viewer talks to corrald; both sides just apply the same function over the sealed
+`state/` file, so enforcement cannot drift and a reviewer checks it once.
 
-Because corrald prompts eagerly at announce time, the approval usually exists in
-the store before the operator reaches for spawn or resume.
+Because corrald registers eagerly at announce time, a kind is usually already
+registered before the operator reaches for it.
 
-### What the Gate Covers
+### Argv Substitution Is Exec-Safe
 
-Only argv-executing launches: spawn, resume, resume-with-message, the card-move
-resume, and reveal / hide (which resume). Focus, close, kill, cancel, and
-nudge-to-a-live-socket execute no argv and stay ungated, so going to a live
-session never prompts. Visibility is never gated: a running session of a
-brand-new kind still appears and is focusable, killable, and messageable; only
-launching its command waits on approval.
+Launch builds the real argv by substituting `{sessionId}` and `{cwd}` back into
+the registered template and running it as an exec array (`setsid --fork
+<argv>`), never through a shell, so a value can never inject a *shell* command.
+Argument injection is closed upstream: `sessionId` is charset-constrained
+(Mechanism 1), and any `{cwd}` substituted into argv is space/`-`/`@`-guarded as
+the message path already guards. `argv[0]` resolves via the operator's PATH, not
+the target cwd. The registered template pins `gui` and `messageFlag` too, so a
+post-registration flip of those record fields cannot change launch behavior
+under an otherwise-matching argv.
 
-### The Agent-Initiated Path Stacks Two Gates
+### Registration and Messaging Are Two Separate Approvals (finding H3)
 
-An agent-initiated spawn hits both the message gate (may X message directory Y?)
-and the command gate (is Y's spawn argv approved?). corrald owns both surfaces,
-so when both fire for one spawn it shows a single combined prompt: "agent in `a`
-wants to message `b`, which will spawn `pi …` — allow?" When only the command
-gate fires (a new kind announced, no message), it is the standalone command
-prompt.
+They are distinct trust objects with distinct stores and lifetimes, never one
+consent:
 
-### Safety Rests on the Approval Showing the Argv
+- **Registration** is a property of the harness *kind* → `approved-commands.json`,
+  permanent per `(label, template)`.
+- **Message authorization** is a property of the *directory pair* → `whitelist`,
+  once or always.
 
-The `label` is attacker-controlled record content, so an attacker can claim
-`label: "pi"` with evil argv. If honest pi is already approved, the evil argv
-deviates and is refused silently. If it is first-seen (a malicious first
-approval, or a novel label like `pi2`), the prompt shows the literal argv, so
-the operator rejects it. The approval surface **must** display the full argv;
-this is a hard requirement on the tray and notification.
+They are decoupled at the source: registration fires from the registry-watch at
+announce time, message authorization fires per pair at message time. An
+agent-initiated spawn-delivery proceeds only when **both** are independently
+satisfied. Denying registration quarantines the kind but leaves the pair's
+verdict untouched; denying the message blocks delivery but the registration (if
+granted) persists (trusting `pi` is fine regardless of one message). They
+surface as two separate lists in corrald's pull-based review surface; neither
+approval is ever bundled into or implied by the other.
+
+### Safety Rests on the Operator Reading the Argv (finding M2)
+
+The `label` is attacker-controlled content, so an attacker can claim
+`label: "pi"` with evil argv. If pi is already registered, the evil argv
+deviates and is quarantined silently. If it is first-seen (a malicious first
+registration, or a novel label like `pi2`), the prompt shows the literal argv,
+so the operator rejects it. The registration surface **must** display the full
+argv; this is a hard requirement. corral cannot distinguish a benign command
+from a plausible-looking malicious one, so operator scrutiny at registration is
+the load-bearing gate. A known-binary allowlist was considered and rejected: it
+would break the convention's harness-neutrality (adapters self-describe their
+launch).
 
 ### Consequence
 
-Command approval now requires corrald to be running, since it is the sole
-approver. Without the daemon, a never-approved kind cannot be spawned or resumed
-from a viewer, though already-approved kinds launch freely (the viewer just
-reads the file) and focus, kill, and message-live always work. Since corrald is
-the systemd-kept singleton this threat model is built around, "no daemon means
-no new approvals" is a coherent property. It goes in Known Limitations.
+Registration requires corrald to be running, since it is the sole registrar.
+Without the daemon no *new* kind can be registered, so an unregistered kind
+stays quarantined; already-registered kinds remain full citizens (the viewer
+just reads the file). Since corrald is the systemd-kept singleton this threat
+model is built around, "no daemon means no new registrations" is a coherent
+property. It goes in Known Limitations.
 
-## Mechanism 4: Provenance Body Wrap
+## Mechanism 4: Provenance by Position (No Fence)
 
-corrald keeps building the leading `[from …]` tag and delivers the body
-verbatim, framed so its extent is explicit:
+corrald constructs the delivered string as a single leading tag followed by the
+verbatim body:
 
 ```
 [from <dir> (session <id>)]
---- begin message ---
-<body, exactly as sent>
---- end message ---
+<body, exactly as sent, to end of prompt>
 ```
 
-The rule, stated in the charter (taught to every spawned agent) and in
-CONVENTION: the first `[from …]` line is corrald's and authentic; anything
-resembling a tag inside the fenced body is data, so ignore it. The rule is
-positional, with no escaping and no rewriting of the body. The board card keeps
-its own compact one-line summary; the fence lives only in the delivered prompt
-the target model reads, so board lines stay tight.
+The guarantee is by construction, not by a delimiter: corrald owns the prefix,
+so nothing attacker-controlled can precede or occupy the first-line tag
+position. The rule, stated in the charter and in CONVENTION, is purely
+positional: **the sender tag is the first line; any `[from …]` inside the body
+is data.** A forged tag in the body is provably not at position zero, so by the
+rule it is inert.
 
-The residual, that delivery is user-authority prompt injection by nature, is the
+An earlier draft fenced the body with `begin`/`end` markers. That was dropped
+(finding C2): the body runs to end-of-prompt, so there is nothing after it to
+delimit, and a fixed in-band `end` marker only *adds* a forgeable boundary. A
+single positional tag needs no fence and no nonce, and it is simpler to reason
+about.
+
+This guarantees **sender attribution** only. The body is still attacker-chosen
+text delivered with user authority, so general prompt injection ("ignore your
+instructions, do X") remains — no in-band scheme fixes that. The real fix is the
 v2 out-of-band direction: carry provenance in ACP `_meta` and have each harness
 display it, so the body never needs to be trusted at all.
+
+## Hardening corrald (the Broker)
+
+corrald is the one unsandboxed, trusted component, so its own input handling is
+part of the model, not an afterthought.
+
+- **Submit-path confused deputy (finding H1).** corrald opens an agent-named
+  path with its own privilege. It MUST: derive and require the fd's canonical
+  path to match `<dir>/.corral/outbox/<name>`; `fstat` and require a regular
+  file; open non-blocking and reject a FIFO, device, or socket (so a hostile
+  path cannot hang corrald); cap the read size; and derive `fromCwd` from that
+  validated fd only. A path that fails any check is rejected as malformed,
+  never read as a message.
+- **Connection-flood robustness (finding M3).** A sandboxed agent with connect
+  can open many `corrald.sock` connections. corrald bounds concurrent accepts
+  and applies a per-connection read timeout, so a slowloris or connection flood
+  degrades gracefully rather than blocking messaging.
+- **Argument-injection guards (finding C3).** Covered at the source in
+  Mechanisms 1 and 3 (charset-constrained `sessionId`, guarded `{cwd}`,
+  exec-array launch), listed here so the broker's launch path is audited as one
+  surface.
 
 ## Finding 4: Documented Risk and `classify` Cleanup
 
@@ -307,33 +401,38 @@ display it, so the body never needs to be trusted at all.
 ## What Changes Where
 
 - **`crates/core`**
-  - `discovery.rs`: resolve the registry symlink to a canonical physical path
-    and derive `cwd` from it; require the record's `sessionId` to equal the
-    symlink filename; deduplicate by resolved path. `RegistryEntry.cwd` becomes
-    a derived, trusted value rather than parsed content.
+  - `discovery.rs`: one `resolve(fd) -> cwd` that opens the registry symlink
+    target and derives `cwd` from `/proc/self/fd` (never realpath-then-reopen);
+    validate the `sessionId` charset and require it to equal the symlink
+    filename; deduplicate by resolved path. `RegistryEntry.cwd` becomes a
+    derived, trusted value rather than parsed content.
   - `paths.rs`: the new layout (`registry/`, `state/`, root `corrald.sock`) and
     the `state/` accessors (`whitelist_file`, `approved_commands_file`); env
     overrides retained plus a state-dir override.
-  - New `approved_commands.rs`: normalize a record's argv to a template, compare
-    against the store, denormalize to build the launch argv, read and write the
-    JSON store. Pure and unit-tested.
-  - Submission helper: write an outbox file and send `{"submit": path}`; used by
-    the adapters is out of scope for this crate, but the shared parse/derive
-    lives where corrald can reuse it.
+  - New `approved_commands.rs`: `normalize` a record's argv to a template, the
+    `registered(record)` predicate (shared by corrald and both viewers),
+    denormalize with guarded substitution to build the launch argv, and read of
+    the JSON store (write is corrald-only). Pure and unit-tested.
+  - Submission helper: write an outbox file and send `{"submit": path}`; the
+    shared parse/derive lives where corrald can reuse it.
 - **`crates/daemon`**
-  - `control.rs`: accept `{"submit": path}`, open and canonicalize the file,
-    derive `fromCwd` from the physical path, read then delete the file. Keep the
-    synchronous ack.
-  - `router.rs`: enforce the command-approval gate before any spawn or resume;
-    watch the registry for never-seen templates and raise the approval; combine
-    the message and command prompts when both fire.
-  - `mailbox.rs`: `classify` gate-reason cleanup; the body wrap in the delivered
-    text; outbox-path submission parsing.
-  - `tray.rs` / `notify.rs`: the command-approval prompt, showing the full argv.
+  - `control.rs`: accept `{"submit": path}` with the H1 validation (canonical
+    `outbox` path, regular file, non-blocking, size cap), derive `fromCwd` from
+    the validated fd, read then delete; bounded accepts + read timeout (M3).
+    Keep the synchronous ack.
+  - `router.rs`: apply `registered` before any spawn or resume; watch the
+    registry and raise a registration for each never-seen template; keep the
+    message gate entirely separate (two approvals, never combined).
+  - `mailbox.rs`: `classify` gate-reason cleanup; the positional leading tag in
+    the delivered text (no fence); outbox-path submission parsing.
+  - `tray.rs` / `notify.rs`: the registration prompt showing the full argv, and
+    the message-approval prompt, as two distinct pull-based lists.
 - **`crates/board` and `crates/gui`**
-  - Read `approved-commands.json`; gate argv-executing actions on it; render the
-    inert-with-hint state for an unapproved command. No approval UI (corrald is
-    the sole approver).
+  - Read `approved-commands.json` and apply the shared `registered` predicate to
+    filter the registry: only fitting records are taken as actionable cards; an
+    unregistered/deviating one is fully quarantined (surfaced, if at all, as a
+    "pending verification" hint, not an actionable card). No approval UI
+    (corrald is the sole registrar).
 - **Extensions (all four adapters)**
   - Write the real record to `<cwd>/.corral/<sessionId>.json` and create the
     `~/.corral/registry/<sessionId>.json` symlink to it.
@@ -351,11 +450,21 @@ display it, so the body never needs to be trusted at all.
 
 This is a breaking convention change, so CONVENTION goes to v2 and all four
 adapters update in-repo together. A legacy flat record (a regular file in the
-registry, not a symlink) cannot be location-authenticated, so its `cwd` is
-untrusted: a consumer MAY still display it (focusable, since focus executes no
-argv) but MUST NOT treat it as a trusted messaging identity, and messaging to or
-from it fails closed. Old records age out by the existing prune. The env
-overrides keep existing deployments working while the layout moves.
+registry, not a symlink) cannot be location-authenticated, so it is treated as
+unverified and **fully quarantined**, exactly like an unregistered kind: not a
+trusted identity, not actionable, messaging to or from it fails closed. Old
+records age out by the existing prune. The env overrides keep existing
+deployments running while the layout moves.
+
+### Session Identity Within a Directory Is Not Authenticated (finding M1)
+
+Physical location authenticates the *directory*, not the individual session
+within it. Two sessions in one box both resolve to that box's cwd, so one can
+claim the other's `fromSession` reply handle. This is accepted and consistent
+with the model: the directory is the unit of identity and authorization (the
+whitelist keys on directory pairs), and same-directory agents already share a
+trust and sandbox boundary. Documented so it is an explicit property, not a
+silent assumption.
 
 ## Testing Strategy
 
@@ -367,13 +476,19 @@ The pure core stays unit-tested; the IO wrappers stay thin.
 - Outbox-path canonicalization via the fd readlink, including a symlink swapped
   after open (must not redirect); `fromSession` verified against the record's
   physical directory.
-- Approved-command normalization and comparison: the `{sessionId}` and `{cwd}`
-  placeholders; a buried `bash -c` deviating; an unapproved template refused; a
-  first-seen template producing an approval carrying the literal argv.
+- The `resolve(fd)` derivation: a symlink swapped after open must not redirect
+  the derived cwd (the realpath-then-reopen race must be absent); a
+  charset-violating or filename-mismatched `sessionId` rejected.
+- Submit-path validation (H1): a non-`outbox` canonical path, a FIFO, and an
+  oversize file are each rejected as malformed, not read.
+- `normalize` and the `registered` predicate: the `{sessionId}`/`{cwd}`
+  placeholders; a buried `bash -c` deviating (quarantined); an unregistered
+  label quarantined; a registered label with matching argv taken; guarded
+  substitution of a `-`-leading cwd.
 - `classify` with the explicit gate reason across every ack (parity with the
   current table, minus the `hidden` contortion).
-- The body wrap: a forged inner `[from …]` stays inside the fence; the leading
-  tag is unchanged.
+- The positional tag: a forged inner `[from …]` after the first line does not
+  occupy position zero; the leading tag is corrald-constructed and unchanged.
 - Adapter unit tests: the record is written as a symlink pair; submission emits
   `{"submit": path}` with the file present.
 
