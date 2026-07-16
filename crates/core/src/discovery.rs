@@ -109,8 +109,16 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
     })
 }
 
-/// Scan the registry directory for `*.json` records. A missing directory is an
-/// empty result, not an error: no agent has announced yet.
+/// Scan the registry directory for `*.json` records, returning only
+/// **location-authenticated** entries (security design T2/T3). Each entry is a
+/// symlink into a session's own workdir; [`resolve_record`] opens it once and
+/// derives the trusted `cwd` from the resolved fd, which overrides any `cwd` in
+/// the content. An entry is dropped (quarantined) when it does not resolve to a
+/// `<cwd>/.corral/<sessionId>.json` file, when its `sessionId` fails the charset
+/// gate, or when its `sessionId` does not equal the symlink filename (so a
+/// record cannot masquerade under another id). A legacy flat record (not a
+/// symlink into a workdir) does not resolve and is therefore quarantined.
+/// A missing directory is an empty result, not an error.
 pub fn scan_registry(dir: &Path) -> Vec<RegistryEntry> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -118,9 +126,22 @@ pub fn scan_registry(dir: &Path) -> Vec<RegistryEntry> {
     entries
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .filter_map(|t| parse_registry_json(&t))
+        .filter_map(|e| resolve_and_authenticate(&e.path()))
         .collect()
+}
+
+/// Resolve one registry symlink to an authenticated entry, or `None` to
+/// quarantine it. The `cwd` is the physical location (not content); the
+/// `sessionId` must be charset-safe and equal the filename stem.
+pub fn resolve_and_authenticate(entry: &Path) -> Option<RegistryEntry> {
+    let stem = entry.file_stem()?.to_string_lossy().into_owned();
+    let (cwd, content) = resolve_record(entry)?;
+    let mut rec = parse_registry_json(&content)?;
+    if !valid_session_id(&rec.session_id) || rec.session_id != stem {
+        return None;
+    }
+    rec.cwd = Some(cwd); // physical location is authoritative
+    Some(rec)
 }
 
 /// The connectable socket of a live registry entry, if any. Dormant records
@@ -328,6 +349,50 @@ mod tests {
     #[test]
     fn scan_missing_dir_is_empty() {
         assert!(scan_registry(Path::new("/nonexistent/definitely-not-here")).is_empty());
+    }
+
+    /// Build a workdir record + registry symlink; return (registry_dir, cwd).
+    fn announce(tmp: &Path, sid: &str, content: &str) -> (PathBuf, String) {
+        let boxd = tmp.join(format!("box-{sid}"));
+        let corral = boxd.join(".corral");
+        std::fs::create_dir_all(&corral).unwrap();
+        let record = corral.join(format!("{sid}.json"));
+        std::fs::write(&record, content).unwrap();
+        let regdir = tmp.join("registry");
+        std::fs::create_dir_all(&regdir).unwrap();
+        std::os::unix::fs::symlink(&record, regdir.join(format!("{sid}.json"))).unwrap();
+        (regdir, boxd.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn scan_authenticates_cwd_and_rejects_spoofs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Honest record: content cwd is a lie; physical location wins.
+        let (regdir, real_cwd) =
+            announce(tmp.path(), "s1", r#"{"sessionId":"s1","cwd":"/etc"}"#);
+        let scanned = scan_registry(&regdir);
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].cwd.as_deref(), Some(real_cwd.as_str()));
+
+        // sessionId not matching the symlink filename -> dropped.
+        announce(tmp.path(), "s2", r#"{"sessionId":"other"}"#);
+        // charset-violating id (also filename) -> dropped.
+        announce(tmp.path(), "s3", r#"{"sessionId":"s3"}"#); // valid, kept
+        let scanned = scan_registry(&regdir);
+        let ids: Vec<_> = scanned.iter().map(|e| e.session_id.as_str()).collect();
+        assert!(ids.contains(&"s1") && ids.contains(&"s3"));
+        assert!(!ids.contains(&"other"), "mismatched sessionId quarantined");
+    }
+
+    #[test]
+    fn scan_quarantines_legacy_flat_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let regdir = tmp.path().join("registry");
+        std::fs::create_dir_all(&regdir).unwrap();
+        // A flat regular file directly in registry/ (pre-symlink) is not under a
+        // workdir's .corral/, so it cannot be authenticated -> quarantined.
+        std::fs::write(regdir.join("old.json"), r#"{"sessionId":"old","cwd":"/w"}"#).unwrap();
+        assert!(scan_registry(&regdir).is_empty());
     }
 
     #[test]

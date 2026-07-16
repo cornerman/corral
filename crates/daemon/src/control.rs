@@ -181,23 +181,38 @@ mod tests {
         (tmp, socket, registry, whitelist)
     }
 
+    /// Announce a record the authenticated way: write it physically at
+    /// `<cwd>/.corral/<sid>.json` and symlink it into the registry dir, so
+    /// `scan_registry` resolves and trusts it (matching the shipped layout).
+    fn announce(regdir: &Path, sid: &str, cwd: &str, content: &str) {
+        let corral = Path::new(cwd).join(".corral");
+        std::fs::create_dir_all(&corral).unwrap();
+        let record = corral.join(format!("{sid}.json"));
+        std::fs::write(&record, content).unwrap();
+        let link = regdir.join(format!("{sid}.json"));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&record, &link).unwrap();
+    }
+
     fn write_registry(dir: &Path, sid: &str, cwd: &str) {
-        std::fs::write(
-            dir.join(format!("{sid}.json")),
-            format!(r#"{{"sessionId":"{sid}","cwd":"{cwd}","label":"pi"}}"#),
-        )
-        .unwrap();
+        announce(
+            dir,
+            sid,
+            cwd,
+            &format!(r#"{{"sessionId":"{sid}","cwd":"{cwd}","label":"pi"}}"#),
+        );
     }
 
     /// A live record: a `socket` is set, so the daemon treats it as live.
     fn write_live_registry(dir: &Path, sid: &str, cwd: &str) {
-        std::fs::write(
-            dir.join(format!("{sid}.json")),
-            format!(
+        announce(
+            dir,
+            sid,
+            cwd,
+            &format!(
                 r#"{{"sessionId":"{sid}","cwd":"{cwd}","label":"pi","socket":"{cwd}/.corral/pi-9.sock"}}"#
             ),
-        )
-        .unwrap();
+        );
     }
 
     #[test]
@@ -345,8 +360,13 @@ mod tests {
         let reachable = tmp.path().join("reach");
         std::fs::create_dir(&reachable).unwrap();
         let reach = reachable.to_str().unwrap();
+        // An unreachable session lives in a real dir the caller is not
+        // whitelisted for; the roster must hide its path.
+        let secret = tmp.path().join("secret");
+        std::fs::create_dir(&secret).unwrap();
+        let secret_path = secret.to_str().unwrap();
         write_registry(&registry, "visible-1", reach);
-        write_registry(&registry, "hidden-1", "/secret/dir");
+        write_registry(&registry, "hidden-1", secret_path);
         mailbox::whitelist_add(&whitelist, "/caller", reach).unwrap();
         let (tx, _rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
@@ -363,7 +383,7 @@ mod tests {
             "sessionId is the addressable handle"
         );
         assert!(
-            !reply.contains("/secret/dir"),
+            !reply.contains(secret_path),
             "never leak an unreachable cwd"
         );
     }
