@@ -228,6 +228,25 @@ can only ever drive a session in its own box. **Future `[designed]`:** an
 install-time nonce the socket proves on connect, to authenticate the socket
 itself and not just its path location.
 
+### T18. Viewer Parses the Live Socket Stream
+
+Viewers connect to each live agent socket to watch its live state
+(running/idle/requires_action, activity, title). So a viewer parses one
+untrusted stream from a possibly-compromised agent. The record's identity is
+already authenticated (the card's `cwd`/socket came from corrald's vetted
+`state/registry/`), so the worst a hostile stream achieves is **display**
+spoofing of its own card: a wrong state dot, a misleading activity line, a
+forged title — on a card that is already, correctly, attributed to that box.
+
+**Accepted residual `[accepted]` (decision B, 2026-07-16):** display-only, on an
+already-authenticated card, no identity or code-execution gain. The principled
+fix is **full socket mediation** — corrald becomes the sole socket connector,
+folds live state into `state/registry/`, and viewers read everything from there
+(zero untrusted input in a viewer). Deferred because it deepens the corrald
+dependency and routes operator `m` / card-move cancel-nudge through corrald;
+tracked in TODO.md (Future Features). The inotify watch on `state/registry/` is
+already the viewer mechanism that migration would use.
+
 ### T7. Forged Provenance Tag
 
 corrald prepends `[from <dir> (session <id>)]` to a delivered message. The tag
