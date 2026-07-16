@@ -12,16 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use crate::discovery::{self, RegistryEntry};
+use crate::discovery;
 use crate::model::{Board, Update};
 use crate::watch;
 
-/// How often the registry is rescanned.
+/// Safety-poll cadence backing the inotify watch on the vetted registry.
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
-
-/// A dormant record untouched for this long is pruned (its session file is
-/// stale or abandoned), measured from the registry file's mtime.
-const DORMANT_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 /// A compact age string: `8s` / `5m` / `2h` / `3d`.
 pub fn age_label(d: Duration) -> String {
@@ -120,7 +116,10 @@ impl Engine {
             }
         }
         if changed || self.last_scan.elapsed() >= SCAN_INTERVAL {
-            let entries = prune(&self.dir, discovery::scan_registry(&self.dir));
+            // Read the vetted registry as-is. Pruning stale/dormant records is
+            // corrald's job (it owns the source records and this store); the
+            // engine only reflects.
+            let entries = discovery::scan_registry(&self.dir);
             self.dead_sockets.retain(|p| {
                 entries
                     .iter()
@@ -200,33 +199,6 @@ impl Engine {
     }
 }
 
-/// Prune dormant records only when they have gone untouched past
-/// `DORMANT_MAX_AGE`. Deletion is deliberately conservative: a record is
-/// removed solely on age, never because it looks unresumable or fails to
-/// parse. An unreadable or unfamiliar record is ignored (skipped from the
-/// view), not deleted, so a schema change or a newer producer can never
-/// destroy history. Live records (socket set) are never pruned.
-fn prune(dir: &Path, entries: Vec<RegistryEntry>) -> Vec<RegistryEntry> {
-    entries
-        .into_iter()
-        .filter(|e| {
-            if e.socket.is_some() {
-                return true; // live: not ours to prune
-            }
-            let file = dir.join(format!("{}.json", e.session_id));
-            let stale = std::fs::metadata(&file)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > DORMANT_MAX_AGE);
-            if stale {
-                let _ = std::fs::remove_file(&file);
-                return false;
-            }
-            true
-        })
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {

@@ -30,6 +30,13 @@ const MAX_TEXT: usize = 200;
 /// read an unbounded amount (security design H1).
 const MAX_SUBMISSION: u64 = 256 * 1024;
 
+/// A dormant (socket-cleared) source record left untouched this long is pruned
+/// by the curator (measured from the record file's mtime, which an adapter
+/// refreshes on activity and clears-socket on shutdown). A live record is never
+/// pruned. corrald owns this lifecycle, since it is the only reader of the
+/// agent-written source records.
+const DORMANT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
+
 /// Resolve an agent's outbox submission (security design T2-send / T14). The
 /// sender wrote its message to `<cwd>/.corral/outbox/<id>.json` and passed the
 /// path over the control socket; corrald opens it and derives the trusted
@@ -144,6 +151,19 @@ pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
             let stem = p.file_stem()?.to_string_lossy().into_owned();
             let text = std::fs::read_to_string(&p).ok()?;
             let rec = parse_registry_json(&text)?;
+            // Prune a dormant record (socket cleared) whose file has gone stale
+            // past the horizon; live records (socket set) are never pruned.
+            if rec.socket.is_none() {
+                let stale = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > DORMANT_MAX_AGE);
+                if stale {
+                    let _ = std::fs::remove_file(&p);
+                    return None;
+                }
+            }
             vet(dir, &stem, rec)
         })
         .collect()

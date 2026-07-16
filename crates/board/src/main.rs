@@ -508,7 +508,7 @@ fn run(
                             &mut status,
                         ),
                         MenuAction::Dismiss => {
-                            dismiss_selected(dir, focuser.as_ref(), board, selected, &mut status);
+                            dismiss_selected(focuser.as_ref(), board, selected, &mut status);
                         }
                     }
                 } else if keep {
@@ -649,7 +649,7 @@ fn run(
                         }
                     }
                     KeyCode::Char('d') => {
-                        dismiss_selected(dir, focuser.as_ref(), board, selected, &mut status);
+                        dismiss_selected(focuser.as_ref(), board, selected, &mut status);
                     }
                     KeyCode::Char('h') => {
                         toggle_selected(focuser.as_ref(), &launcher, board, selected, &mut status);
@@ -704,7 +704,6 @@ fn run(
                                     overlay = open_compose(board, selected);
                                 }
                                 ui::FooterAction::Delete => dismiss_selected(
-                                    dir,
                                     focuser.as_ref(),
                                     board,
                                     selected,
@@ -909,7 +908,6 @@ fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &m
 /// by deleting its registry file. So `d` twice fully removes a session: close,
 /// then forget.
 fn dismiss_selected(
-    dir: &Path,
     focuser: &dyn WindowFocuser,
     board: &Board,
     selected: usize,
@@ -937,8 +935,12 @@ fn dismiss_selected(
             };
         }
         Origin::Dormant => {
-            if let Some(id) = &agent.session_id {
-                let file = dir.join(format!("{id}.json"));
+            // Forget a dormant session by deleting its SOURCE record in the
+            // agent's own workdir (`<cwd>/.corral/registry/`); corrald's curator
+            // reflects the removal out of state/registry next tick. Deleting
+            // the state/registry copy directly would be futile (re-curated).
+            if let (Some(cwd), Some(id)) = (&agent.cwd, &agent.session_id) {
+                let file = corral_core::curation::record_dir(cwd).join(format!("{id}.json"));
                 if let Err(e) = std::fs::remove_file(&file) {
                     *status = format!("dismiss: {e}");
                 }

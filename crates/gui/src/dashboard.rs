@@ -133,7 +133,6 @@ pub struct Board {
     engine: Engine,
     focuser: Box<dyn WindowFocuser>,
     launcher: TerminalLauncher,
-    dir: PathBuf,
     dark: bool,
     last_theme_check: Instant,
     filter: String,
@@ -183,10 +182,9 @@ impl Board {
         // Viewers read only corrald's vetted registry (never agent-writable records).
         let dir = paths::state_registry_dir().expect("state registry dir (set $HOME or $CORRAL_STATE_DIR)");
         let mut b = Board {
-            engine: Engine::new(dir.clone()),
+            engine: Engine::new(dir),
             focuser: focus::detect(),
             launcher: TerminalLauncher,
-            dir,
             dark: system_prefers_dark(),
             last_theme_check: Instant::now(),
             filter: String::new(),
@@ -782,12 +780,18 @@ impl Board {
                     Err(e) => format!("close: {e}"),
                 }
             }
-            Origin::Dormant => match &agent.session_id {
-                Some(id) => match std::fs::remove_file(self.dir.join(format!("{id}.json"))) {
-                    Ok(()) => "forgot dormant record".into(),
-                    Err(e) => format!("dismiss: {e}"),
-                },
-                None => "dismiss: no session id".into(),
+            // Forget a dormant session by deleting its SOURCE record in the
+            // agent's own workdir; corrald reflects the removal out of
+            // state/registry (deleting the copy directly would be re-curated).
+            Origin::Dormant => match (&agent.cwd, &agent.session_id) {
+                (Some(cwd), Some(id)) => {
+                    let file = corral_core::curation::record_dir(cwd).join(format!("{id}.json"));
+                    match std::fs::remove_file(&file) {
+                        Ok(()) => "forgot dormant record".into(),
+                        Err(e) => format!("dismiss: {e}"),
+                    }
+                }
+                _ => "dismiss: no session id/cwd".into(),
             },
         }
     }
