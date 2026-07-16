@@ -22,6 +22,12 @@ use corral_core::curation;
 /// records and make the directory match them (add/update present, delete
 /// vanished). Best-effort per file; a single unwritable record never aborts the
 /// sync.
+///
+/// NOTE: the registration gate (`curation::partition` over the approved store)
+/// is not applied here yet, so today every authenticated + field-validated
+/// record is published. Wiring the gate + the operator approval surface is the
+/// next phase; until then this store is not yet the "registered only" set the
+/// design specifies.
 pub fn refresh(index_file: &Path, state_registry_dir: &Path) {
     let vetted = curation::curate(index_file);
     if std::fs::create_dir_all(state_registry_dir).is_err() {
@@ -36,9 +42,14 @@ pub fn refresh(index_file: &Path, state_registry_dir: &Path) {
         present.insert(name.clone());
         let Ok(json) = record_json(rec) else { continue };
         let target = state_registry_dir.join(&name);
+        // Write only on change, so viewers watching state/registry do not see a
+        // stream of identical rewrites.
+        if std::fs::read_to_string(&target).ok().as_deref() == Some(json.as_str()) {
+            continue;
+        }
         // Atomic write (tmp + rename) so a scanning viewer never reads a partial.
         let tmp = state_registry_dir.join(format!(".{}.{}.tmp", rec.session_id, std::process::id()));
-        if std::fs::write(&tmp, json).is_ok() {
+        if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &target);
         }
     }

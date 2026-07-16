@@ -19,6 +19,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::approved_commands::{self, Approved, Template};
 use crate::discovery::{self, parse_registry_json, RegistryEntry};
 
 /// Cap for free-text display fields, so a hostile record cannot bloat a card.
@@ -138,6 +139,40 @@ pub fn record_dir(cwd: &str) -> PathBuf {
     Path::new(cwd).join(".corral").join("registry")
 }
 
+/// The result of applying the registration gate to the vetted set: the
+/// `registered` records (safe to publish to `state/registry/` and route to),
+/// and the deduplicated `pending` launch-sets that still need operator
+/// approval before their kind may be used.
+#[derive(Debug, Default)]
+pub struct Split {
+    pub registered: Vec<RegistryEntry>,
+    /// Distinct `(label, launch-set)` pairs awaiting registration. Deduplicated
+    /// so a flood of unregistered sessions of one novel kind yields one prompt,
+    /// not one per session (the approval-flood defense).
+    pub pending: Vec<(String, Template)>,
+}
+
+/// Apply the registration gate (security design T4): partition the vetted
+/// records into those whose kind + launch-set is already registered and those
+/// still pending. Pure over the injected `approved` store. Only `registered`
+/// records are ever published or routed; `pending` drives the operator prompt.
+pub fn partition(vetted: Vec<RegistryEntry>, approved: &Approved) -> Split {
+    let mut split = Split::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for rec in vetted {
+        if approved_commands::registered(&rec, approved) {
+            split.registered.push(rec);
+        } else if let Some(label) = rec.label.clone() {
+            // A kind with no label can never be registered; drop it silently.
+            let cand = approved_commands::candidate(&rec);
+            if seen.insert((label.clone(), cand.clone())) {
+                split.pending.push((label, cand));
+            }
+        }
+    }
+    split
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +235,27 @@ mod tests {
         assert_eq!(read_index(&f), vec!["/a", "/b", "/c"]);
         // Missing file is empty.
         assert!(read_index(&tmp.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn partition_gates_on_registration_and_dedups_pending() {
+        use crate::approved_commands::{register, Approved};
+        let mut pi = rec("s1", None);
+        pi.spawn_command = Some(vec!["pi".into()]);
+        let approved = register(Approved::new(), &pi);
+        // A registered pi session is published; two unregistered opencode
+        // sessions collapse to one pending prompt (approval-flood defense).
+        let mut oc1 = rec("s2", None);
+        oc1.label = Some("opencode".into());
+        oc1.spawn_command = Some(vec!["opencode".into()]);
+        let mut oc2 = rec("s3", None);
+        oc2.label = Some("opencode".into());
+        oc2.spawn_command = Some(vec!["opencode".into()]);
+        let split = partition(vec![pi, oc1, oc2], &approved);
+        assert_eq!(split.registered.len(), 1);
+        assert_eq!(split.registered[0].session_id, "s1");
+        assert_eq!(split.pending.len(), 1, "one prompt per novel kind, not per session");
+        assert_eq!(split.pending[0].0, "opencode");
     }
 
     #[test]

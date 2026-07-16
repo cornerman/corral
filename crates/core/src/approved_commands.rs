@@ -27,7 +27,7 @@ pub const CWD_PLACEHOLDER: &str = "{cwd}";
 /// set matches (see [`registered`]) — any change to any field is a new set that
 /// needs its own approval, so a flipped `gui` or `message_flag` cannot ride in
 /// under an already-approved argv.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Template {
     pub spawn: Option<Vec<String>>,
     pub resume: Option<Vec<String>>,
