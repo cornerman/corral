@@ -79,13 +79,14 @@ A stop submission is one JSON line over `corrald.sock`, distinguished by
 ### Adapters (`extensions/`)
 
 Register `corral_stop_agent({ target_session })` beside `corral_message_agent`
-in all four adapters — `corral-pi.ts`, `corral-opencode.ts`,
-`corral-claude/`, `corral-cursor/`. It submits the `op:"stop"` line and reports
-the ack. `corral-pi.ts` is authored first; the other three mirror it
-mechanically (they already mirror the message tool and stay UNVERIFIED in this
-repo). The tool description states it stops a peer by session id, that stopping
-kills the process (leaving it resumable), and that an unwhitelisted stop needs
-operator approval.
+in the two adapters that have a send side: `corral-pi.ts` and
+`corral-opencode.ts`. The `corral-claude/` and `corral-cursor/` adapters do not
+register `corral_message_agent` at all (they are receive/state-only; cursor's
+README lists send-side messaging as an open TODO), so there is no submit path
+to host a stop tool — they are out of scope until they grow a send side. The
+tool submits the `op:"stop"` line and reports the ack. Its description states
+it stops a peer by session id, that stopping kills the process (leaving it
+resumable), and that an unwhitelisted stop needs operator approval.
 
 ### `crates/daemon/src/mailbox.rs`
 
