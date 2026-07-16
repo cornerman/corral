@@ -273,6 +273,22 @@ One per-session file drives discovery, isolation, and resume.
 
 ## Future Features
 
+- [ ] Full socket mediation (corrald as the sole socket connector). Today
+      viewers connect to each live agent socket themselves to watch live state
+      (running/idle/requires_action, activity, title), so a viewer still parses
+      one untrusted stream (a compromised agent's socket) — a low-severity
+      **display**-spoofing residual on an already-authenticated card (see
+      SECURITY.md T18). The principled endpoint of the curator model is to make
+      corrald the ONLY process that opens agent sockets, fold live state into
+      `state/registry/`, and have viewers read everything from there (zero
+      untrusted input in a viewer). Deferred (decision B, 2026-07-16): it
+      deepens the corrald dependency and moves operator `m` / card-move
+      cancel/nudge through corrald (viewers could no longer reach sockets). The
+      inotify watch on `state/registry/` already in place is exactly the viewer
+      mechanism this would need, so the migration is mostly: move `core::watch`
+      consumption + operator prompt/cancel into corrald, and delete viewer
+      socket I/O.
+
 - [ ] Cross-box tasking: grow `corral_message_agent` into the full pi-subagents
       verb set (`spawn`/`send`/`list`/`history`/`kill`/`set_status`), scoped by
       a new **task-group** primitive where same-group agents skip the
