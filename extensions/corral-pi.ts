@@ -180,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 			// not running: fail loud here rather than silently queue undelivered.
 			let status: string;
 			try {
-				status = await submitToCorral(socketPath, record);
+				status = await submitToCorral(socketPath, ctx.cwd, record);
 			} catch {
 				return {
 					content: [
@@ -241,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 			const dest = `session ${params.target_session}`;
 			let status: string;
 			try {
-				status = await submitToCorral(socketPath, record);
+				status = await submitToCorral(socketPath, ctx.cwd, record);
 			} catch {
 				return {
 					content: [{ type: "text", text: `corral is not running (cannot reach ${socketPath}); stop not sent.` }],
@@ -276,7 +276,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			let reply: string;
 			try {
-				reply = await submitRawToCorral(socketPath, { op: "list", fromCwd: ctx.cwd });
+				reply = await submitRawToCorral(socketPath, ctx.cwd, { op: "list", fromCwd: ctx.cwd });
 			} catch {
 				return {
 					content: [{ type: "text", text: `corral is not running (cannot reach ${socketPath}).` }],
@@ -700,8 +700,34 @@ export default function (pi: ExtensionAPI) {
 // reply line (a JSON document). Rejects on connect failure (corral down) or if
 // no reply arrives within a short window (so the tool never hangs). Both the
 // message tool and the roster query use it; each parses the line it expects.
-function submitRawToCorral(socketPath: string, record: Record<string, unknown>): Promise<string> {
+// Where this session drops outbox request files: `<cwd>/.corral/outbox/`.
+// corrald derives the trusted `fromCwd` from a request file's location, so the
+// request need not (and cannot be trusted to) name its own directory.
+function outboxDir(cwd: string): string {
+	const corral = process.env.CORRAL_SOCKET_DIR ?? path.join(cwd, ".corral");
+	return path.join(corral, "outbox");
+}
+
+// Submit a control request the authenticated way: write it to our outbox and
+// send only `{"submit":"<path>"}` over the socket. corrald opens the file,
+// derives `fromCwd` from its physical location, reads and deletes it, and
+// replies with the ack line. `cwd` is this session's working directory.
+function submitRawToCorral(
+	socketPath: string,
+	cwd: string,
+	record: Record<string, unknown>,
+): Promise<string> {
 	return new Promise((resolve, reject) => {
+		let file: string;
+		try {
+			const dir = outboxDir(cwd);
+			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+			file = path.join(dir, `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+			fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+		} catch (e) {
+			reject(e as Error);
+			return;
+		}
 		const conn = net.createConnection(socketPath);
 		let buf = "";
 		let done = false;
@@ -711,8 +737,8 @@ function submitRawToCorral(socketPath: string, record: Record<string, unknown>):
 			conn.destroy();
 			fn();
 		};
-		conn.setTimeout(5000, () => finish(() => reject(new Error("timeout"))));
-		conn.on("connect", () => conn.write(`${JSON.stringify(record)}\n`));
+		conn.setTimeout(5000, () => finish(() => { try { fs.rmSync(file, { force: true }); } catch {} reject(new Error("timeout")); }));
+		conn.on("connect", () => conn.write(`${JSON.stringify({ submit: file })}\n`));
 		conn.on("data", (chunk) => {
 			buf += chunk.toString("utf8");
 			const nl = buf.indexOf("\n");
@@ -720,15 +746,15 @@ function submitRawToCorral(socketPath: string, record: Record<string, unknown>):
 			const line = buf.slice(0, nl);
 			finish(() => resolve(line));
 		});
-		conn.on("error", (e) => finish(() => reject(e)));
+		conn.on("error", (e) => finish(() => { try { fs.rmSync(file, { force: true }); } catch {} reject(e); }));
 		conn.on("close", () => finish(() => reject(new Error("closed before ack"))));
 	});
 }
 
 // Submit a message record and resolve with the one-word ack status corral
 // returns (parsed from the raw reply line).
-async function submitToCorral(socketPath: string, record: Record<string, unknown>): Promise<string> {
-	const line = await submitRawToCorral(socketPath, record);
+async function submitToCorral(socketPath: string, cwd: string, record: Record<string, unknown>): Promise<string> {
+	const line = await submitRawToCorral(socketPath, cwd, record);
 	try {
 		return String((JSON.parse(line) as { status?: unknown }).status ?? "unknown");
 	} catch {

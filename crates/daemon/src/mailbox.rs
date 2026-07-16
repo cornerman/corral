@@ -177,7 +177,9 @@ pub fn parse_message(text: &str) -> Option<Message> {
     };
     Some(Message {
         id: s("id")?,
-        from_cwd: s("fromCwd")?,
+        // `fromCwd` is authenticated by corrald from the outbox file location
+        // and overwritten there; the content field (if any) is not trusted.
+        from_cwd: s("fromCwd").unwrap_or_default(),
         from_session: s("fromSession"),
         target,
         message: s("message")?,
@@ -202,7 +204,8 @@ pub fn parse_stop(text: &str) -> Option<Message> {
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
     Some(Message {
         id: s("id")?,
-        from_cwd: s("fromCwd")?,
+        // Authenticated + overwritten by corrald (outbox location); not trusted.
+        from_cwd: s("fromCwd").unwrap_or_default(),
         from_session: s("fromSession"),
         target: Target::Session(s("targetSession")?),
         message: String::new(),
@@ -277,14 +280,25 @@ pub fn roster_json(roster: &[RosterEntry]) -> String {
     serde_json::json!({ "status": "ok", "agents": agents }).to_string()
 }
 
-/// Parse a `list` roster query (`{"op":"list","fromCwd":"/a"}`), returning the
-/// caller's cwd. `None` means it is not a list query, so the caller falls
-/// through to message parsing.
-pub fn parse_list(text: &str) -> Option<String> {
+/// Parse a submission envelope (`{"submit":"<outbox path>"}`), returning the
+/// path. Every control request rides one: the real request JSON lives in the
+/// sender's `<cwd>/.corral/outbox/<id>.json`, and corrald derives the trusted
+/// `fromCwd` from that file's physical location rather than trusting a
+/// self-reported field (security design T2-send). `None` means the line is not
+/// a submit envelope.
+pub fn parse_submit(text: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    (v.get("op").and_then(|o| o.as_str()) == Some("list"))
-        .then(|| v.get("fromCwd").and_then(|c| c.as_str()).map(String::from))
-        .flatten()
+    v.get("submit").and_then(|s| s.as_str()).map(String::from)
+}
+
+/// Parse a `list` roster query (`{"op":"list"}`), returning whether the content
+/// is a list request. The caller supplies the authenticated `fromCwd` (derived
+/// from the outbox location), so the content's own `fromCwd` is ignored.
+pub fn is_list(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("op").and_then(|o| o.as_str()).map(|o| o == "list"))
+        .unwrap_or(false)
 }
 
 /// The `(from -> target)` separator in the whitelist file.
@@ -500,16 +514,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_matches_only_the_list_op() {
-        assert_eq!(
-            parse_list(r#"{"op":"list","fromCwd":"/a"}"#).as_deref(),
-            Some("/a")
-        );
-        assert_eq!(
-            parse_list(r#"{"id":"1","fromCwd":"/a","message":"hi"}"#),
-            None
-        );
-        assert_eq!(parse_list("nope"), None);
+    fn is_list_matches_only_the_list_op() {
+        assert!(is_list(r#"{"op":"list"}"#));
+        assert!(is_list(r#"{"op":"list","fromCwd":"/a"}"#));
+        assert!(!is_list(r#"{"id":"1","message":"hi"}"#));
+        assert!(!is_list("nope"));
+        // parse_submit reads the envelope path.
+        assert_eq!(parse_submit(r#"{"submit":"/w/.corral/outbox/m.json"}"#).as_deref(), Some("/w/.corral/outbox/m.json"));
+        assert_eq!(parse_submit(r#"{"op":"list"}"#), None);
     }
 
     #[test]

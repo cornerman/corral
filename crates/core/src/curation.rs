@@ -15,6 +15,7 @@
 //! Registration (the `approved_commands` gate) is applied by corrald *after*
 //! curation, so this module stays about identity + field validation only.
 
+use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,40 @@ use crate::discovery::{self, parse_registry_json, RegistryEntry};
 
 /// Cap for free-text display fields, so a hostile record cannot bloat a card.
 const MAX_TEXT: usize = 200;
+
+/// Cap for an outbox submission file, so a hostile path cannot make corrald
+/// read an unbounded amount (security design H1).
+const MAX_SUBMISSION: u64 = 256 * 1024;
+
+/// Resolve an agent's outbox submission (security design T2-send / T14). The
+/// sender wrote its message to `<cwd>/.corral/outbox/<id>.json` and passed the
+/// path over the control socket; corrald opens it and derives the trusted
+/// `fromCwd` from where the file physically lives, ignoring any `fromCwd` in
+/// the content. Returns `(cwd, content)`.
+///
+/// Hardened against a confused-deputy path (corrald is unsandboxed):
+/// - non-blocking open, so a FIFO in place cannot hang corrald;
+/// - regular file only (reject FIFO/device/dir);
+/// - size-capped;
+/// - the fd's real path must match `<cwd>/.corral/outbox/<name>` — any other
+///   location (a symlink target elsewhere, `/etc/...`) is rejected, so corrald
+///   never reads an arbitrary file.
+pub fn resolve_submission(path: &Path) -> Option<(String, String)> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_SUBMISSION {
+        return None;
+    }
+    let real = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
+    let cwd = discovery::cwd_from_outbox_path(&real)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).ok()?;
+    Some((cwd, content))
+}
 
 /// Read the raw dir-index file into a deduplicated list of directory paths.
 /// Blank lines are skipped; a missing file is empty. The paths are still
@@ -235,6 +270,30 @@ mod tests {
         assert_eq!(read_index(&f), vec!["/a", "/b", "/c"]);
         // Missing file is empty.
         assert!(read_index(&tmp.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn resolve_submission_derives_cwd_and_rejects_bad_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let boxd = tmp.path().join("proj");
+        let outbox = boxd.join(".corral").join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let msg = outbox.join("m1.json");
+        std::fs::write(&msg, r#"{"id":"1","message":"hi"}"#).unwrap();
+        let (cwd, content) = resolve_submission(&msg).unwrap();
+        assert_eq!(
+            cwd,
+            std::fs::canonicalize(&boxd).unwrap().to_string_lossy()
+        );
+        assert!(content.contains("\"message\":\"hi\""));
+
+        // A file not under .corral/outbox is rejected (corrald never reads an
+        // arbitrary path).
+        let stray = boxd.join(".corral").join("stray.json");
+        std::fs::write(&stray, "{}").unwrap();
+        assert_eq!(resolve_submission(&stray), None);
+        // A missing file is rejected.
+        assert_eq!(resolve_submission(&outbox.join("nope.json")), None);
     }
 
     #[test]

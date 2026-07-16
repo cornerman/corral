@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use corral_core::discovery;
+use corral_core::{curation, discovery};
 
 use crate::mailbox::{self, Ack, Message, Target};
 
@@ -69,11 +69,24 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         return;
     }
     let mut conn = reader.into_inner();
-    // A read-only roster query is answered synchronously and never routed. It
-    // is ungated (any session is messageable subject to operator approval), but
-    // the roster withholds an unreachable directory's cwd and description,
-    // exposing only its sessionId as an addressable handle.
-    if let Some(from_cwd) = mailbox::parse_list(line.trim()) {
+    // Every request rides a submission envelope (`{"submit":"<outbox path>"}`):
+    // corrald opens the file and derives the trusted `fromCwd` from where it
+    // physically lives, so a self-reported sender cannot be forged (T2-send).
+    let Some(path) = mailbox::parse_submit(line.trim()) else {
+        let _ = ack(&mut conn, "malformed");
+        return;
+    };
+    let Some((from_cwd, content)) = curation::resolve_submission(Path::new(&path)) else {
+        let _ = ack(&mut conn, "malformed");
+        return;
+    };
+    // The request has been read; remove the outbox file (best-effort).
+    let _ = std::fs::remove_file(&path);
+
+    // A read-only roster query, answered synchronously and never routed. The
+    // `fromCwd` is the authenticated one, so an agent cannot widen its roster
+    // view by claiming another directory.
+    if mailbox::is_list(&content) {
         let entries = discovery::scan_registry(registry_dir);
         let visible =
             |cwd: &str| cwd == from_cwd || mailbox::is_whitelisted(whitelist, &from_cwd, cwd);
@@ -81,18 +94,19 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         let _ = writeln!(conn, "{}", mailbox::roster_json(&roster));
         return;
     }
-    // A stop submission (`op:"stop"`) kills a live session; it is acked from
-    // liveness (already dormant -> a no-op success) and otherwise gated exactly
-    // like a message. Tried before parse_message, whose required `message`
-    // field a stop line lacks.
-    if let Some(msg) = mailbox::parse_stop(line.trim()) {
+    // A stop submission (`op:"stop"`) kills a live session; gated like a
+    // message. Tried before parse_message, whose required `message` field a
+    // stop line lacks. `from_cwd` is forced to the authenticated value.
+    if let Some(mut msg) = mailbox::parse_stop(&content) {
+        msg.from_cwd = from_cwd;
         handle_stop(&mut conn, msg, registry_dir, whitelist, tx);
         return;
     }
-    let Some(msg) = mailbox::parse_message(line.trim()) else {
+    let Some(mut msg) = mailbox::parse_message(&content) else {
         let _ = ack(&mut conn, "malformed");
         return;
     };
+    msg.from_cwd = from_cwd; // authenticated, overrides any content fromCwd
     let target_cwd = resolve(&msg.target, registry_dir);
     let whitelisted = target_cwd
         .as_deref()
@@ -163,22 +177,43 @@ mod tests {
     use std::io::Read;
     use std::sync::mpsc;
 
-    /// Connect, send one request line, return the ack line.
-    fn submit(socket: &Path, body: &str) -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
+    /// Submit a request the authenticated way: write the request JSON to the
+    /// sender's `<from>/.corral/outbox/<id>.json`, send the `{"submit":path}`
+    /// envelope, return the ack. corrald derives `fromCwd` from the file's
+    /// location, so `from` (a real dir) is the authenticated sender.
+    fn submit(socket: &Path, from: &Path, body: &str) -> String {
+        let outbox = from.join(".corral").join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let file = outbox.join(format!("m-{n}.json"));
+        std::fs::write(&file, body).unwrap();
+        let envelope = format!(r#"{{"submit":"{}"}}"#, file.display());
         let mut c = UnixStream::connect(socket).unwrap();
-        c.write_all(format!("{body}\n").as_bytes()).unwrap();
+        c.write_all(format!("{envelope}\n").as_bytes()).unwrap();
         let mut buf = String::new();
         c.read_to_string(&mut buf).unwrap();
         buf.trim().to_string()
     }
 
-    fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    /// Returns (tmp, socket, registry, whitelist, from) where `from` is a real
+    /// sender directory the outbox lives under.
+    fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("corrald.sock");
         let registry = tmp.path().join("registry");
         std::fs::create_dir(&registry).unwrap();
         let whitelist = tmp.path().join("whitelist");
-        (tmp, socket, registry, whitelist)
+        let from = tmp.path().join("from");
+        std::fs::create_dir(&from).unwrap();
+        (tmp, socket, registry, whitelist, from)
+    }
+
+    /// The canonical sender dir string corrald will derive for `from`.
+    fn from_str(from: &Path) -> String {
+        std::fs::canonicalize(from).unwrap().to_string_lossy().into_owned()
     }
 
     // The control socket reads corrald's VETTED registry (a plain dir of
@@ -205,16 +240,17 @@ mod tests {
 
     #[test]
     fn stop_live_whitelisted_is_accepted_and_enqueued() {
-        let (tmp, socket, registry, whitelist) = setup();
+        let (tmp, socket, registry, whitelist, from) = setup();
         let cwd = tmp.path().to_str().unwrap();
         write_live_registry(&registry, "sid-7", cwd);
-        mailbox::whitelist_add(&whitelist, "/a", cwd).unwrap();
+        mailbox::whitelist_add(&whitelist, &from_str(&from), cwd).unwrap();
         let (tx, rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"sid-7"}"#,
         );
         assert_eq!(ack, r#"{"status":"accepted"}"#);
@@ -225,7 +261,7 @@ mod tests {
 
     #[test]
     fn stop_live_unlisted_needs_approval() {
-        let (tmp, socket, registry, whitelist) = setup();
+        let (tmp, socket, registry, whitelist, from) = setup();
         let cwd = tmp.path().to_str().unwrap();
         write_live_registry(&registry, "sid-7", cwd);
         let (tx, rx) = mpsc::channel();
@@ -234,6 +270,7 @@ mod tests {
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"sid-7"}"#,
         );
         assert_eq!(ack, r#"{"status":"approval_needed"}"#);
@@ -246,7 +283,7 @@ mod tests {
 
     #[test]
     fn stop_dormant_is_already_stopped_and_not_routed() {
-        let (tmp, socket, registry, whitelist) = setup();
+        let (tmp, socket, registry, whitelist, from) = setup();
         // A dormant record (no socket): nothing to kill.
         write_registry(&registry, "sid-7", tmp.path().to_str().unwrap());
         let (tx, rx) = mpsc::channel();
@@ -255,6 +292,7 @@ mod tests {
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"sid-7"}"#,
         );
         assert_eq!(ack, r#"{"status":"already_stopped"}"#);
@@ -263,13 +301,14 @@ mod tests {
 
     #[test]
     fn stop_unknown_session_is_recipient_not_found() {
-        let (_tmp, socket, registry, whitelist) = setup();
+        let (_tmp, socket, registry, whitelist, from) = setup();
         let (tx, rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"ghost"}"#,
         );
         assert_eq!(ack, r#"{"status":"recipient_not_found"}"#);
@@ -278,15 +317,16 @@ mod tests {
 
     #[test]
     fn accepted_session_is_acked_and_enqueued() {
-        let (tmp, socket, registry, whitelist) = setup();
+        let (tmp, socket, registry, whitelist, from) = setup();
         write_registry(&registry, "sid-7", tmp.path().to_str().unwrap());
-        mailbox::whitelist_add(&whitelist, "/a", tmp.path().to_str().unwrap()).unwrap();
+        mailbox::whitelist_add(&whitelist, &from_str(&from), tmp.path().to_str().unwrap()).unwrap();
         let (tx, rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {} // wait for bind
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
         );
         assert_eq!(ack, r#"{"status":"accepted"}"#);
@@ -295,13 +335,14 @@ mod tests {
 
     #[test]
     fn unknown_session_is_recipient_not_found_and_not_enqueued() {
-        let (_tmp, socket, registry, whitelist) = setup();
+        let (_tmp, socket, registry, whitelist, from) = setup();
         let (tx, rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
         );
         assert_eq!(ack, r#"{"status":"recipient_not_found"}"#);
@@ -310,13 +351,14 @@ mod tests {
 
     #[test]
     fn missing_directory_is_directory_not_known() {
-        let (_tmp, socket, registry, whitelist) = setup();
+        let (_tmp, socket, registry, whitelist, from) = setup();
         let (tx, _rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
         let ack = submit(
             &socket,
+            &from,
             r#"{"id":"1","fromCwd":"/a","targetDir":"/no/such/dir","message":"hi"}"#,
         );
         assert_eq!(ack, r#"{"status":"directory_not_known"}"#);
@@ -324,7 +366,7 @@ mod tests {
 
     #[test]
     fn resolvable_but_unlisted_needs_approval_and_still_enqueued() {
-        let (tmp, socket, registry, whitelist) = setup();
+        let (tmp, socket, registry, whitelist, from) = setup();
         let dir = tmp.path().to_str().unwrap().to_string();
         let (tx, rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
@@ -332,6 +374,7 @@ mod tests {
 
         let ack = submit(
             &socket,
+            &from,
             &format!(r#"{{"id":"1","fromCwd":"/a","targetDir":"{dir}","message":"hi"}}"#),
         );
         assert_eq!(ack, r#"{"status":"approval_needed"}"#);
@@ -344,7 +387,7 @@ mod tests {
 
     #[test]
     fn list_query_exposes_whitelisted_dir_and_hides_unreachable_paths() {
-        let (tmp, socket, registry, whitelist) = setup();
+        let (tmp, socket, registry, whitelist, from) = setup();
         let reachable = tmp.path().join("reach");
         std::fs::create_dir(&reachable).unwrap();
         let reach = reachable.to_str().unwrap();
@@ -355,12 +398,12 @@ mod tests {
         let secret_path = secret.to_str().unwrap();
         write_registry(&registry, "visible-1", reach);
         write_registry(&registry, "hidden-1", secret_path);
-        mailbox::whitelist_add(&whitelist, "/caller", reach).unwrap();
+        mailbox::whitelist_add(&whitelist, &from_str(&from), reach).unwrap();
         let (tx, _rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
-        let reply = submit(&socket, r#"{"op":"list","fromCwd":"/caller"}"#);
+        let reply = submit(&socket, &from, r#"{"op":"list","fromCwd":"/caller"}"#);
         assert!(reply.contains("\"status\":\"ok\""));
         // The whitelisted dir is fully exposed and addressable.
         assert!(reply.contains("visible-1") && reply.contains(reach));
@@ -378,12 +421,12 @@ mod tests {
 
     #[test]
     fn malformed_is_acked_without_enqueue() {
-        let (_tmp, socket, registry, whitelist) = setup();
+        let (_tmp, socket, registry, whitelist, from) = setup();
         let (tx, rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
-        assert_eq!(submit(&socket, "not json"), r#"{"status":"malformed"}"#);
+        assert_eq!(submit(&socket, &from, "not json"), r#"{"status":"malformed"}"#);
         assert!(rx.try_recv().is_err());
     }
 }
