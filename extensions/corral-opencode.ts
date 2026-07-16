@@ -400,6 +400,10 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				description: "opencode: terminal coding agent",
 				socket: socketPath ?? null,
 				spawnCommand: ["opencode"],
+				// opencode's TUI reads a trailing positional as a project path and
+				// exits; its initial prompt rides a dedicated flag instead, so corral
+				// delivers a launch message as `--prompt "<text>"` (opencode.ai/docs/cli).
+				messageFlag: "--prompt",
 				resumeCommand: ["opencode", "--session", activeSessionId],
 				// A hidden spawn runs inside a headless cage; corral sets
 				// CORRAL_HIDDEN=1 there. Record it so the board reveals by resume.
