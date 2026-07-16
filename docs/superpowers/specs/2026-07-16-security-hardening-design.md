@@ -433,11 +433,14 @@ part of the model, not an afterthought.
     unregistered/deviating one is fully quarantined (surfaced, if at all, as a
     "pending verification" hint, not an actionable card). No approval UI
     (corrald is the sole registrar).
-- **Extensions (all four adapters)**
-  - Write the real record to `<cwd>/.corral/<sessionId>.json` and create the
+- **Extensions**
+  - **All four adapters (announce side):** write the real record to
+    `<cwd>/.corral/<sessionId>.json` and create the
     `~/.corral/registry/<sessionId>.json` symlink to it.
-  - Submit inter-agent messages by writing `<cwd>/.corral/outbox/<id>.json` and
-    sending `{"submit": path}` instead of the inline message.
+  - **pi and opencode only (send side):** submit inter-agent messages by writing
+    `<cwd>/.corral/outbox/<id>.json` and sending `{"submit": path}` instead of
+    the inline message. `corral-claude` and `corral-cursor` have no send side
+    (no `corral_message_agent`), so no submission change applies to them.
 - **`CONVENTION.md`**: bump to v2. Rewrite the registry section (symlink into
   the workdir, physical location authoritative, ignore the content `cwd`); the
   submission appendix (outbox file, `{"submit": path}`); a new sandbox-surface
