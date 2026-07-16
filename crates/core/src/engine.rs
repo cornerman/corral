@@ -40,21 +40,54 @@ pub fn age_label(d: Duration) -> String {
 /// The shared registry-reflect state. Construct with `new`, call `tick` on each
 /// frame, then read `board` and the age maps.
 pub struct Engine {
-    dir: PathBuf,
     board: Board,
+    dir: PathBuf,
     tx: Sender<Update>,
     rx: Receiver<Update>,
     known: HashSet<PathBuf>,
     dead_sockets: HashSet<PathBuf>,
     dormant_ages: HashMap<String, String>,
     last_scan: Instant,
+    /// inotify watch on the vetted registry dir, so a change corrald writes
+    /// triggers an immediate rescan instead of waiting for the safety poll.
+    /// `None` until the dir exists (re-armed each tick); the fd is forced
+    /// non-blocking, so draining events can never block the shell's frame.
+    inotify: Option<inotify::Inotify>,
+}
+
+/// Arm an inotify watch on `dir` (the vetted registry), non-blocking. Returns
+/// `None` if the dir does not exist yet or the watch cannot be set up, so the
+/// caller falls back to the safety poll and retries.
+fn arm_watch(dir: &Path) -> Option<inotify::Inotify> {
+    use std::os::fd::AsRawFd;
+    let inotify = inotify::Inotify::init().ok()?;
+    // Force O_NONBLOCK so read_events never blocks the UI frame, whatever the
+    // crate's init default is.
+    let fd = inotify.as_raw_fd();
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return None;
+        }
+    }
+    let mut inotify = inotify;
+    inotify
+        .add_watch(
+            dir,
+            inotify::WatchMask::CREATE
+                | inotify::WatchMask::MODIFY
+                | inotify::WatchMask::MOVED_TO
+                | inotify::WatchMask::MOVED_FROM
+                | inotify::WatchMask::DELETE,
+        )
+        .ok()?;
+    Some(inotify)
 }
 
 impl Engine {
     pub fn new(dir: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
-            dir,
             board: Board::default(),
             tx,
             rx,
@@ -63,13 +96,30 @@ impl Engine {
             dormant_ages: HashMap::new(),
             // Force a scan on the first tick.
             last_scan: Instant::now() - SCAN_INTERVAL * 2,
+            inotify: arm_watch(&dir),
+            dir,
         }
     }
 
-    /// One iteration: rescan/prune/watch on the scan cadence, then drain any
-    /// pending watcher updates into the board.
+    /// One iteration: rescan/prune/watch when the registry changed (inotify) or
+    /// the safety interval elapsed, then drain any pending watcher updates into
+    /// the board.
     pub fn tick(&mut self) {
-        if self.last_scan.elapsed() >= SCAN_INTERVAL {
+        // Re-arm the watch if it was never set up (dir absent at start) or
+        // dropped after an error, then drain events non-blocking.
+        if self.inotify.is_none() {
+            self.inotify = arm_watch(&self.dir);
+        }
+        let mut changed = false;
+        if let Some(ino) = &mut self.inotify {
+            let mut buf = [0u8; 4096];
+            match ino.read_events(&mut buf) {
+                Ok(events) => changed = events.count() > 0,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => self.inotify = None, // watch broke; poll + re-arm next tick
+            }
+        }
+        if changed || self.last_scan.elapsed() >= SCAN_INTERVAL {
             let entries = prune(&self.dir, discovery::scan_registry(&self.dir));
             self.dead_sockets.retain(|p| {
                 entries

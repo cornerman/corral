@@ -13,6 +13,10 @@ serde_json = "1"
 # Unix fd handling: a non-blocking open so a hostile FIFO target cannot hang a
 # record/submission read (security design C1/H1).
 libc = "0.2"
+# Event-driven viewer refresh: watch the vetted state/registry dir so a viewer
+# reacts to corrald's writes without a second poll stage (fd forced
+# non-blocking, so it never blocks the UI).
+inotify = "0.9"
 # X11 window focus via EWMH (pure-Rust XCB, links libxcb which is always
 # present in an X11 session; no libX11).
 x11rb = "0.13"
