@@ -10,6 +10,9 @@ description = "Shared registry/discovery/launch/prompt code for corral and corra
 
 [dependencies]
 serde_json = "1"
+# Unix fd handling: a non-blocking open so a hostile FIFO target cannot hang a
+# record/submission read (security design C1/H1).
+libc = "0.2"
 # X11 window focus via EWMH (pure-Rust XCB, links libxcb which is always
 # present in an X11 session; no libX11).
 x11rb = "0.13"

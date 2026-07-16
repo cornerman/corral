@@ -5,6 +5,9 @@
 //! shutdown. Corral reads the registry to find sockets it could never scan
 //! for directly (they live inside each session's own workdir).
 
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -130,6 +133,38 @@ pub fn live_socket(entry: &RegistryEntry) -> Option<SocketEntry> {
     Some(SocketEntry { path, label, pid })
 }
 
+/// Open a registry symlink's target and return the authenticated `(cwd,
+/// content)` derived from the **same open fd** (security design C1/T2). The
+/// physical location of the file the fd points at is the identity; a `cwd`
+/// field inside the content is never trusted.
+///
+/// Two properties make this unforgeable and safe:
+/// - **Open once, derive from the fd.** `cwd` comes from `/proc/self/fd/<n>`
+///   (the real path the descriptor points at), and the content is read from
+///   that same descriptor. This is immune to a symlink swapped after the open
+///   — the race that a `realpath`-then-reopen would leave, letting an attacker
+///   attribute its content to a victim directory.
+/// - **Regular files only, non-blocking open.** A hostile symlink pointing at a
+///   FIFO or device cannot hang the reader; a non-regular target is rejected.
+///
+/// Returns `None` if the target cannot be opened, is not a regular file, or
+/// does not physically live at `<cwd>/.corral/<name>.json`.
+pub fn resolve_record(entry: &Path) -> Option<(String, String)> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(entry)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let real = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
+    let cwd = cwd_from_record_path(&real)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).ok()?;
+    Some((cwd, content))
+}
+
 /// Whether a `sessionId` is safe to trust and to substitute into a launch
 /// argv (security design C3/T16). Restricted to `[A-Za-z0-9._-]`, non-empty,
 /// and never leading with `-`, so a value like `--config=/evil` can never be
@@ -188,6 +223,46 @@ pub fn parse_socket_filename(name: &str) -> Option<(String, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_record_derives_cwd_from_the_open_fd() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A real record physically at <box>/.corral/<sid>.json.
+        let boxd = tmp.path().join("box");
+        let corral = boxd.join(".corral");
+        std::fs::create_dir_all(&corral).unwrap();
+        let record = corral.join("s1.json");
+        std::fs::write(&record, r#"{"sessionId":"s1"}"#).unwrap();
+        // The registry entry is a symlink to it.
+        let regdir = tmp.path().join("registry");
+        std::fs::create_dir_all(&regdir).unwrap();
+        let link = regdir.join("s1.json");
+        std::os::unix::fs::symlink(&record, &link).unwrap();
+
+        let (cwd, content) = resolve_record(&link).unwrap();
+        assert_eq!(cwd, boxd.to_string_lossy());
+        assert!(content.contains("\"sessionId\":\"s1\""));
+    }
+
+    #[test]
+    fn resolve_record_rejects_target_outside_corral_and_non_regular() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A target not under a .corral dir -> cannot be attributed -> None.
+        let stray = tmp.path().join("stray.json");
+        std::fs::write(&stray, "{}").unwrap();
+        let link = tmp.path().join("link.json");
+        std::os::unix::fs::symlink(&stray, &link).unwrap();
+        assert_eq!(resolve_record(&link), None);
+
+        // A FIFO target under a valid .corral shape is rejected (not regular),
+        // and the non-blocking open does not hang.
+        let corral = tmp.path().join("b").join(".corral");
+        std::fs::create_dir_all(&corral).unwrap();
+        let fifo = corral.join("f.json");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(resolve_record(&fifo), None);
+    }
 
     #[test]
     fn session_id_charset_is_strict() {
