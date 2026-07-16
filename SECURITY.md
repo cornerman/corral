@@ -56,9 +56,11 @@ physically lives at `<D>/.corral/…` proves the announcing agent works in
 directory `D`. Directory permissions are the only credential, and they already
 exist, so corral introduces no tokens and no signatures.
 
-Each mechanism reduces to a small, pure, reused function: one `resolve(fd)` that
-derives a trusted `cwd`, one `registered(record)` predicate both corrald and the
-viewers apply, one `normalize` for command templates. This is deliberate:
+Each mechanism reduces to a small, pure, reused function, and they all run in
+one process (corrald, the curator): one `resolve(fd)` deriving a trusted `cwd`,
+one `registered(record)` predicate, one `normalize` for command templates. The
+viewers hold none of it — they read only corrald's vetted output. This is
+deliberate:
 **simple code is reviewable, and reviewability is itself a security property** —
 a gate whose correctness a reader cannot hold in their head at once is not one
 to trust.
@@ -68,15 +70,24 @@ to trust.
 - **The operator** is the trusting authority. Actions the operator takes from
   the board (`m` message, focus, spawn, resume) are ungated by design: gating
   them would mean asking the operator to approve the operator. `[in place]`
-- **The viewers (`corral`, `corral-gui`)** are pure readers of the registry
-  plus the operator's own actions. They hold no messaging or approval state and
-  may run many at once. `[in place]`
-- **corrald** is the single trusted broker for agent-initiated messaging. It
-  owns the control socket, the whitelist gate, and the approval surface, and is
-  the sole registrar of launch commands. Exactly one may run (singleton guard).
+- **The viewers (`corral`, `corral-gui`)** read **only** the vetted
+  `~/.corral/state/registry/` that corrald produces, plus the operator's own
+  actions. They do no authentication, resolution, or filtering of their own, so
+  no agent-writable record ever reaches a viewer. They still watch live sockets
+  directly for state/activity (low-severity display). Many may run at once.
+  `[designed]` (today they scan the agent-writable registry themselves).
+- **corrald** is the single trusted broker and the **registry curator**. It is
+  the only reader of the agent-writable raw index; it authenticates, validates
+  every field, and emits the vetted, sealed `state/registry/` the viewers read
+  ("parse, don't validate": untrusted records in, trusted records out). It also
+  owns the control socket, the whitelist gate, the approval surface, and is the
+  sole registrar of launch commands. Exactly one may run (singleton guard).
   Harness registration (T4) and message authorization (T2) are **two separate
   consents** with separate stores and lifetimes, never bundled into one. `[in place]`
-  for the socket/whitelist/singleton; `[designed]` for registration.
+  for the socket/whitelist/singleton; `[designed]` for curation + registration.
+  **Tradeoff:** viewers now need corrald for discovery (no daemon ⇒ an empty
+  board). Accepted for the trust concentration: the entire identity/argv attack
+  surface lives in one process, and viewers render only sealed data.
 - **Agents** are untrusted peers of one another. They reach each other only
   through corrald, never directly, because each socket is workdir-local.
   `[in place]`
@@ -106,10 +117,9 @@ message to `<cwd>/.corral/outbox/<id>.json` and sends only `{"submit": path}`.
 corrald opens the file, then derives `fromCwd` from that open fd's real path via
 `/proc/self/fd` (never realpath-then-reopen, so a symlink swapped after open
 cannot redirect it to a victim directory). `fromSession` is verified against the
-registry: the claimed session's record must physically live in that same
-directory. The act of writing inside `D` is the proof of identity `D`,
-unforgeable from another box. Records and submissions share one `resolve(fd)`
-function, so the derivation is reviewed in one place.
+curated registry: the claimed session must be one corrald already authenticated
+to that same directory. The act of writing inside `D` is the proof of identity
+`D`, unforgeable from another box.
 
 **Limitation `[accepted]`:** physical location authenticates the *directory*,
 not the session within it. Two sessions in one box can each claim the other's
@@ -125,15 +135,18 @@ directory, or plant attacker-chosen fields.
 **Status today `[in place]` for discovery, unauthenticated:** records are plain
 files whose `cwd` is trusted content.
 
-**Mitigation `[designed]`:** the record moves into the workdir it describes
-(`<cwd>/.corral/<sessionId>.json`); the registry entry becomes a symlink to it.
-A consumer opens the symlink target and derives `cwd` from the open fd's real
-path (the same race-free `resolve(fd)` as T2), ignoring any `cwd` in the
-content. A record physically in `evil/` is attributed to `evil/`, so an attacker
-cannot claim a directory it cannot write. The record's own `sessionId` must
-match a strict charset (`[A-Za-z0-9._-]`, no leading `-`) and equal the symlink
-filename; consumers deduplicate by resolved path. The charset is load-bearing
-for T16, where `sessionId` is substituted into a launch argv.
+**Mitigation `[designed]`: corrald curation.** Records live per-project at
+`<D>/.corral/registry/<sessionId>.json`; a newline-delimited `~/.corral/registry`
+file indexes the directories `D`. corrald is the only reader: it canonicalizes
+each `D` (race-safe, from a directory fd), attributes every record it finds
+there to that `D`, and **ignores any `cwd` in the content — the record does not
+carry one**. A record physically under `evil/` is attributed to `evil/`, so an
+attacker cannot claim a directory it cannot write; adding a dir to the index
+only surfaces records that genuinely exist there. Being in the right directory
+authenticates only *who wrote it* — **every other field is still adversarial**
+(see T4, T16, T17), so corrald validates each before emitting the vetted record.
+The `sessionId` must match a strict charset (`[A-Za-z0-9._-]`, no leading `-`)
+and equal the filename; corrald deduplicates by resolved path.
 
 ### T4. Attacker-Chosen Launch Command (Unsandboxed Code Execution)
 
@@ -149,16 +162,24 @@ through the coordination layer.
 registered before any of its agents can be used. corrald is the sole registrar:
 watching the registry, on a never-seen `(label, normalized-template)` it asks
 the operator once, showing the full argv, and writes the template to the sealed
-`~/.corral/state/approved-commands.json`. Templates normalize the record's own
-`sessionId` and `cwd` to placeholders, so a kind is registered once, ever. The
-viewers and corrald share one pure `registered(record)` predicate over that
-file; an unregistered kind, or a record whose argv deviates from its registered
-template, is **fully quarantined** — not launchable, not focusable, not
-messageable, not shown as an actionable card, surfaced only as a pending
-"verify harness X?" item. Launch substitutes placeholders back and runs an exec
-array (no shell); operator scrutiny of the argv at registration is the
-load-bearing gate, so the surface **must** display it. Depends on T5 (the store
-must be unwritable by agents).
+`~/.corral/state/approved-commands.json`. A template pins the **whole
+launch-affecting set** — `spawnCommand`, `resumeCommand`, `gui`, and
+`messageFlag` — with the record's own `sessionId` normalized to a placeholder,
+so a kind is registered once but **any change to any of those fields is a new
+unique set that needs its own approval**. The prompt shows the entire set, not
+just the argv, so a flip of `gui` (terminal vs direct launch) or `messageFlag`
+cannot ride in under an already-approved command. corrald applies one pure
+`registered(record)` predicate when curating; an unregistered kind, or a record
+whose set deviates, is **fully quarantined** — it is never written to
+`state/registry`, so viewers cannot see, focus, message, or launch it; it
+surfaces only as a pending "verify harness X?" item on corrald's tray. Launch
+substitutes the placeholder back and runs an exec array (no shell); operator
+scrutiny of the shown set at registration is the load-bearing gate. Depends on
+T5 (the store must be unwritable by agents).
+
+Only a *new or deviating* set prompts: a new session of an already-registered,
+matching kind is admitted to `state/registry` silently, so registration is
+per-kind-and-command-shape, never per session.
 
 **Side benefit:** quarantine also defuses approval-flood. A compromised agent
 spamming 100 novel labels yields 100 quarantined kinds behind one review list,
@@ -173,10 +194,11 @@ gate opens.
 **Status today `[in place]` gate, but the file is agent-writable** (all of
 `~/.corral` is on the sandbox allowlist).
 
-**Mitigation `[designed]`:** split `~/.corral` by trust. `registry/` is the only
-agent-writable directory; `state/` (holding `whitelist` and
-`approved-commands.json`) is daemon-only and never on the sandbox allowlist, so
-it is unwritable by construction.
+**Mitigation `[designed]`:** split `~/.corral` by trust. The only agent-writable
+surface is the `~/.corral/registry` dir-index file (append) and the socket
+(connect); `state/` (holding `whitelist`, `approved-commands.json`,
+`state/registry/`, and `audit.log`) is daemon-only and never on the sandbox
+allowlist, so it is unwritable by construction.
 
 ### T6. Control-Socket Hijack
 
@@ -191,6 +213,20 @@ directory.
 parent that is not agent-writable. A unix socket needs write on the socket file
 (bind-mounted into the sandbox), not on its parent, so the single connect
 capability lets an agent talk to corrald without being able to rebind it.
+
+### T17. Record Aiming corral at Another Session's Socket
+
+A record's `socket` field is attacker-authored content. An agent's own record
+(honestly attributed to its dir `D`) could set `socket` to *another* session's
+socket path; corral would then connect there to watch and, worse, the operator's
+ungated `m` to that card would deliver into the **victim's** session.
+
+**Mitigation `[designed]`:** corrald requires the record's `socket` to resolve
+**inside `<D>/.corral/`** (the record's own authenticated directory) before
+emitting the vetted record; a socket pointing elsewhere is rejected. So a card
+can only ever drive a session in its own box. **Future `[designed]`:** an
+install-time nonce the socket proves on connect, to authenticate the socket
+itself and not just its path location.
 
 ### T7. Forged Provenance Tag
 
@@ -250,14 +286,25 @@ forge a *directory*, only redirect a routing key to a directory the gate still
 independently authorizes. It is the same class as the deletion denial-of-service
 below.
 
-### T11. Denial of Service in the Shared Registry Directory
+### T10-note. Symlink Overwrite Eliminated by the Curator Model
 
-An agent with write access to `registry/` can delete or overwrite other
-sessions' symlinks.
+An earlier design put per-session symlinks in an agent-writable
+`~/.corral/registry/`, which an agent could overwrite to hijack another
+session's id. The curator model removes that vector: there are no per-session
+symlinks. The only shared agent-writable surface is the `~/.corral/registry`
+*index file* of directories; appending to it merely points corrald at a
+directory whose records are still authenticated by physical location. There is
+nothing to overwrite for identity gain.
 
-**Accepted `[accepted]`:** this is denial of service only and grants no
-identity or code execution. It is inherent to a shared, same-user directory, and
-an unsandboxed same-user process could do worse regardless.
+### T11. Denial of Service in the Shared Index
+
+An agent can append junk to, or truncate, the `~/.corral/registry` index file.
+
+**Accepted `[accepted]`:** this is denial of service only (at worst, discovery
+is delayed until live agents re-append their dirs) and grants no identity or
+code execution. It is inherent to a shared, same-user file, and an unsandboxed
+same-user process could do worse regardless. corrald ignores unparsable or
+nonexistent index lines.
 
 ### T12. Lost Messages on Daemon Crash
 
@@ -307,6 +354,20 @@ launch runs an exec array (`setsid --fork <argv>`), never a shell, so no value
 can inject a shell command. `argv[0]` resolves via the operator's PATH, not the
 target cwd.
 
+## Audit Trail
+
+corrald appends every security-relevant decision to a sealed, append-only
+`~/.corral/state/audit.log` (daemon-written, in the agent-unwritable `state/`):
+harness registration (approved / denied, with the shown launch set), message
+authorization (allow-once / allow-always / deny), stops, deliveries, and records
+it quarantined (with the reason). Each line carries a timestamp and the
+directories / sessions involved. The tray offers an "open audit log" action.
+`[designed]`
+
+A file is chosen over a bespoke UI: it is durable across restarts, greppable,
+and trivially reviewed, and it cannot itself become an attack surface. The log
+is the operator's after-the-fact record of what the broker did on their behalf.
+
 ## Deployment Preconditions
 
 Corral cannot enforce these; the deployment (for this project, `~/nixos`) must.
@@ -316,22 +377,23 @@ Corral cannot enforce these; the deployment (for this project, `~/nixos`) must.
    does not satisfy this.
 2. **The agent sandbox profile, once the split lands `[designed]`:**
    ```
-   allow write:   ~/.corral/registry/
-   allow connect: ~/.corral/corrald.sock     # one file, connect only
-   deny:          everything else (state/ sealed, root not writable)
+   allow append:  ~/.corral/registry          # the dir index (one file)
+   allow connect: ~/.corral/corrald.sock       # one file, connect only
+   deny:          everything else (state/ sealed, no other ~/.corral writes)
    ```
-   This closes T5 and T6. Granting all of `~/.corral`, as today, leaves both
-   open.
+   Records live in the agent's own workdir (`<D>/.corral/registry/`), already
+   writable as part of the workdir; no `~/.corral` grant is needed for them.
+   The agent touches only two things under `~/.corral`: append its dir to the
+   index, and connect to the socket. This closes T5 and T6.
 3. **corrald as a kept singleton.** A systemd user service with
    restart-on-failure keeps the sole broker alive. Harness registration (T4)
    and messaging require it; "no daemon means no new registrations" is a
    deliberate property (already-registered kinds still work).
 
-The write grant in (2) is on the *contents* of `registry/`, not on `~/.corral`
-itself, or an agent could replace `registry/` or rebind the socket (T6). The
-sandbox must also confine the agent's writes to its own workdir; a shared
-writable bind-mount into another workdir silently breaks physical-location
-identity (T2, T3).
+The append grant in (2) is on the `~/.corral/registry` index file only, not on
+`~/.corral` itself, or an agent could rebind the socket (T6). The sandbox must
+also confine the agent's writes to its own workdir; a shared writable bind-mount
+into another workdir silently breaks physical-location identity (T2, T3).
 
 ## Current Overall Assessment
 
