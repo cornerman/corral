@@ -526,6 +526,8 @@ mod tests {
             gui,
             message_flag: None,
             hidden: false,
+            state_since: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
         };
         let me = std::process::id();
         // GUI: strictly its own pid, never climbing to a parent window.

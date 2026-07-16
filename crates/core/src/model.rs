@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::discovery::RegistryEntry;
 
@@ -106,6 +107,15 @@ pub struct Agent {
     /// record on both live and dormant agents; the board shows a `hidden`
     /// badge on a live hidden card and reveals it by resume instead of focus.
     pub hidden: bool,
+    /// When this agent entered its current state. Runtime timing, not from the
+    /// record and not persisted: `Board::apply` sets it from the update stream.
+    /// Orders the Requires Action / Idle columns by time-in-state (longest
+    /// first), the same clock the card shows.
+    pub state_since: Instant,
+    /// When this agent last showed activity (a state change or a tool call).
+    /// Runtime timing like `state_since`; orders the Running column by
+    /// time-since-activity (longest-quiet first), the clock its card shows.
+    pub last_activity: Instant,
 }
 
 impl Agent {
@@ -185,7 +195,9 @@ fn is_subsequence(needle: &str, hay: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Update {
     /// Seed or refresh an agent's metadata (from initialize + session/list).
-    Upsert(Agent),
+    /// Boxed: `Agent` dwarfs the other variants, and this one is rare (a seed
+    /// or reconnect) while the small variants dominate the channel stream.
+    Upsert(Box<Agent>),
     /// A state transition (from a session/update state broadcast).
     SetState(PathBuf, State),
     /// A title change (from a session_info_update broadcast on rename).
@@ -197,8 +209,9 @@ pub enum Update {
     Gone(PathBuf),
 }
 
-/// The board state the UI renders. Live agents are keyed and ordered by socket
-/// path (stable across ticks); dormant agents are rebuilt from the registry
+/// The board state the UI renders. Live agents are keyed by socket path (their
+/// stable base order across ticks); `column` then orders each live column by
+/// the card's displayed age. Dormant agents are rebuilt from the registry
 /// snapshot on each scan.
 #[derive(Debug, Default)]
 pub struct Board {
@@ -212,12 +225,25 @@ pub struct Board {
 impl Board {
     pub fn apply(&mut self, update: Update) {
         match update {
-            Update::Upsert(agent) => {
-                self.live.insert(agent.socket_path.clone(), agent);
+            Update::Upsert(mut agent) => {
+                // Preserve the timing clocks across a watcher reseed (a
+                // reconnect re-upserts the same socket): only a genuinely new
+                // socket starts its clocks now, so an age never resets on a
+                // transient reconnect.
+                if let Some(prev) = self.live.get(&agent.socket_path) {
+                    agent.state_since = prev.state_since;
+                    agent.last_activity = prev.last_activity;
+                }
+                self.live.insert(agent.socket_path.clone(), *agent);
             }
             Update::SetState(path, state) => {
                 if let Some(a) = self.live.get_mut(&path) {
+                    // A state change resets both clocks: a transition is
+                    // activity, and it starts a fresh time-in-state.
+                    let now = Instant::now();
                     a.state = state;
+                    a.state_since = now;
+                    a.last_activity = now;
                 }
             }
             Update::SetTitle(path, title) => {
@@ -228,6 +254,7 @@ impl Board {
             Update::SetActivity(path, activity) => {
                 if let Some(a) = self.live.get_mut(&path) {
                     a.activity = Some(activity);
+                    a.last_activity = Instant::now();
                 }
             }
             Update::Gone(path) => {
@@ -292,6 +319,10 @@ impl Board {
                 gui: e.gui,
                 message_flag: e.message_flag.clone(),
                 hidden: e.hidden,
+                // Dormant cards order by record age (set below), not by these
+                // runtime clocks, so a placeholder now() is fine.
+                state_since: Instant::now(),
+                last_activity: Instant::now(),
             })
             .collect();
 
@@ -323,28 +354,26 @@ impl Board {
         self.dormant.iter().collect()
     }
 
+    /// Every live agent (any state, unfiltered), for reading the per-agent
+    /// timing clocks. The engine formats these into the card age labels, so the
+    /// clocks live in one place (here) rather than a parallel engine map.
+    pub fn live_agents(&self) -> impl Iterator<Item = &Agent> {
+        self.live.values()
+    }
+
     /// Set the content filter. Empty clears it.
     pub fn set_filter(&mut self, filter: String) {
         self.filter = filter;
     }
 
-    /// How often each working directory occurs across all known sessions,
-    /// live and dormant. Drives the within-column grouping: cards sharing a
-    /// cwd sit together, and the busiest directories float to the top.
-    fn cwd_occurrences(&self) -> std::collections::HashMap<&str, usize> {
-        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        for a in self.live.values().chain(self.dormant.iter()) {
-            *counts.entry(a.cwd.as_deref().unwrap_or("")).or_default() += 1;
-        }
-        counts
-    }
-
-    /// The agents in one column, narrowed by the content filter if set. The
-    /// live columns are then grouped by cwd with the most-used directories
-    /// first (a stable sort, so the base order is preserved within each
-    /// directory group). Dormant is exempt: it stays in its age order (newest
-    /// first), since a resumable session is picked by recency, not by which
-    /// directory is busiest.
+    /// The agents in one column, narrowed by the content filter if set, then
+    /// ordered by the very age the card displays so the column reads
+    /// monotonically top to bottom. Requires Action / Idle order by
+    /// time-in-state and Running by time-since-activity, both longest first
+    /// (the earliest clock at the top). Dormant is exempt: it keeps the
+    /// newest-first record-age order `sync_registry` gave it, since a resumable
+    /// session is picked by recency. A stable sort, so equal ages keep the base
+    /// socket-path order across ticks.
     pub fn column(&self, column: Column) -> Vec<&Agent> {
         let base = match column {
             Column::RequiresAction => self.in_state(State::RequiresAction),
@@ -359,22 +388,14 @@ impl Board {
                 .filter(|a| a.matches_query(&self.filter))
                 .collect()
         };
-        // Dormant keeps its newest-first age order; only the live columns group.
-        if column == Column::Dormant {
-            return list;
+        match column {
+            // Newest-first record order already applied in sync_registry.
+            Column::Dormant => {}
+            // Longest time-in-state first: the earliest entry Instant on top.
+            Column::RequiresAction | Column::Idle => list.sort_by_key(|a| a.state_since),
+            // Longest quiet first: the earliest last-activity Instant on top.
+            Column::Running => list.sort_by_key(|a| a.last_activity),
         }
-        let counts = self.cwd_occurrences();
-        list.sort_by(|a, b| {
-            let (ca, cb) = (
-                a.cwd.as_deref().unwrap_or(""),
-                b.cwd.as_deref().unwrap_or(""),
-            );
-            let (na, nb) = (
-                counts.get(ca).copied().unwrap_or(0),
-                counts.get(cb).copied().unwrap_or(0),
-            );
-            nb.cmp(&na).then_with(|| ca.cmp(cb))
-        });
         list
     }
 
@@ -415,6 +436,8 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            state_since: Instant::now(),
+            last_activity: Instant::now(),
         }
     }
 
@@ -422,7 +445,7 @@ mod tests {
     fn live_agent_gets_hidden_and_resume_from_record() {
         let mut b = Board::default();
         // A live agent keyed by socket; session id links it to a record.
-        b.apply(Update::Upsert(agent("sess-1", State::Running)));
+        b.apply(Update::Upsert(Box::new(agent("sess-1", State::Running))));
         let rec = RegistryEntry {
             session_id: "sess-1".into(),
             cwd: Some("/tmp/p".into()),
@@ -534,30 +557,52 @@ mod tests {
     }
 
     #[test]
-    fn column_groups_by_cwd_most_used_first() {
+    fn idle_column_orders_by_time_in_state_longest_first() {
         let mut b = Board::default();
-        let mk = |sock: &str, cwd: &str| {
+        let mk = |sock: &str, secs: u64| {
             let mut a = agent(sock, State::Idle);
-            a.cwd = Some(cwd.into());
+            // A new socket keeps its own state_since (apply only carries a
+            // previous one over), so the pre-set age survives the upsert.
+            a.state_since = Instant::now() - std::time::Duration::from_secs(secs);
             a
         };
-        b.apply(Update::Upsert(mk("/s/pi-1.sock", "/b")));
-        b.apply(Update::Upsert(mk("/s/pi-2.sock", "/a")));
-        b.apply(Update::Upsert(mk("/s/pi-3.sock", "/a")));
-        let cwds: Vec<&str> = b
+        // Upserted out of age order.
+        b.apply(Update::Upsert(Box::new(mk("/s/pi-2.sock", 5))));
+        b.apply(Update::Upsert(Box::new(mk("/s/pi-1.sock", 30))));
+        b.apply(Update::Upsert(Box::new(mk("/s/pi-3.sock", 10))));
+        let order: Vec<String> = b
             .column(Column::Idle)
             .iter()
-            .map(|a| a.cwd.as_deref().unwrap())
+            .map(|a| a.socket_path.to_string_lossy().into_owned())
             .collect();
-        // /a occurs twice, so its group sorts ahead of the single /b.
-        assert_eq!(cwds, vec!["/a", "/a", "/b"]);
+        // Longest in state (30s) on top, shortest (5s) at the bottom.
+        assert_eq!(order, vec!["/s/pi-1.sock", "/s/pi-3.sock", "/s/pi-2.sock"]);
     }
 
     #[test]
-    fn dormant_column_stays_age_ordered_ignoring_cwd_grouping() {
+    fn running_column_orders_by_time_since_activity_longest_first() {
         let mut b = Board::default();
-        // /busy occurs twice, /solo once. cwd grouping would float /busy up,
-        // but the Dormant column must ignore that and stay newest-first.
+        let mk = |sock: &str, quiet_secs: u64| {
+            let mut a = agent(sock, State::Running);
+            a.last_activity = Instant::now() - std::time::Duration::from_secs(quiet_secs);
+            a
+        };
+        b.apply(Update::Upsert(Box::new(mk("/s/pi-a.sock", 2))));
+        b.apply(Update::Upsert(Box::new(mk("/s/pi-b.sock", 40))));
+        let order: Vec<String> = b
+            .column(Column::Running)
+            .iter()
+            .map(|a| a.socket_path.to_string_lossy().into_owned())
+            .collect();
+        // Quiet longest (40s) on top.
+        assert_eq!(order, vec!["/s/pi-b.sock", "/s/pi-a.sock"]);
+    }
+
+    #[test]
+    fn dormant_column_stays_newest_first() {
+        let mut b = Board::default();
+        // Dormant order is by record age (last_seen), newest first — the
+        // runtime state_since/last_activity clocks never apply here.
         b.sync_registry(
             &[
                 dormant_record("newest", "/solo", "2026-06-03T00:00:00Z"),
@@ -577,7 +622,7 @@ mod tests {
     #[test]
     fn upsert_then_set_state() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Running))));
         assert_eq!(b.in_state(State::Running).len(), 1);
         b.apply(Update::SetState(PathBuf::from("/s/pi-1.sock"), State::Idle));
         assert_eq!(b.in_state(State::Running).len(), 0);
@@ -597,7 +642,7 @@ mod tests {
     #[test]
     fn set_title_updates_label() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Idle)));
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Idle))));
         b.apply(Update::SetTitle(
             PathBuf::from("/s/pi-1.sock"),
             Some("renamed".into()),
@@ -608,7 +653,7 @@ mod tests {
     #[test]
     fn gone_removes_agent() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Running))));
         b.apply(Update::Gone(PathBuf::from("/s/pi-1.sock")));
         assert!(b.selectable().is_empty());
     }
@@ -617,7 +662,7 @@ mod tests {
     fn dormant_shows_all_resumable_newest_first_excluding_live() {
         let mut b = Board::default();
         // A live session (its sessionId must suppress a dormant twin).
-        b.apply(Update::Upsert(agent("live-1", State::Running)));
+        b.apply(Update::Upsert(Box::new(agent("live-1", State::Running))));
         let entries = vec![
             dormant_record("old", "/p2", "2026-01-01T00:00:00Z"),
             dormant_record("new", "/p2", "2026-06-01T00:00:00Z"),
@@ -682,9 +727,9 @@ mod tests {
     #[test]
     fn selectable_orders_by_attention_priority() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(agent("/s/pi-1.sock", State::Running)));
-        b.apply(Update::Upsert(agent("/s/pi-2.sock", State::Idle)));
-        b.apply(Update::Upsert(agent("/s/pi-3.sock", State::RequiresAction)));
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Running))));
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-2.sock", State::Idle))));
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-3.sock", State::RequiresAction))));
         b.sync_registry(&[dormant_record("z", "/p9", "t")], &HashSet::new());
         let sel = b.selectable();
         assert_eq!(sel[0].state, State::RequiresAction);

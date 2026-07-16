@@ -1,10 +1,11 @@
 //! The registry-reflect loop, shared by any presentation shell. It owns the
 //! `Board` and drives it from the filesystem registry: on a ~1s cadence it
 //! scans and prunes the registry, spawns a watcher per live socket, and folds
-//! watcher updates into the board while tracking per-agent age timers. A shell
-//! (TUI or GUI) calls `tick` each frame and then renders `board()` plus the age
-//! maps. Both shells run on this engine, so scan/prune/watch behavior cannot
-//! drift between them.
+//! watcher updates into the board. The per-agent age clocks live on the model
+//! (`Board::apply`); the engine reads them to format the card age labels. A
+//! shell (TUI or GUI) calls `tick` each frame and then renders `board()` plus
+//! the age maps. Both shells run on this engine, so scan/prune/watch behavior
+//! cannot drift between them.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -45,8 +46,6 @@ pub struct Engine {
     rx: Receiver<Update>,
     known: HashSet<PathBuf>,
     dead_sockets: HashSet<PathBuf>,
-    state_since: HashMap<PathBuf, Instant>,
-    last_event: HashMap<PathBuf, Instant>,
     dormant_ages: HashMap<String, String>,
     last_scan: Instant,
 }
@@ -61,8 +60,6 @@ impl Engine {
             rx,
             known: HashSet::new(),
             dead_sockets: HashSet::new(),
-            state_since: HashMap::new(),
-            last_event: HashMap::new(),
             dormant_ages: HashMap::new(),
             // Force a scan on the first tick.
             last_scan: Instant::now() - SCAN_INTERVAL * 2,
@@ -103,28 +100,17 @@ impl Engine {
         }
 
         while let Ok(update) = self.rx.try_recv() {
+            // The per-agent age clocks live on the model now (Board::apply); the
+            // engine only tracks socket liveness for scan/watch bookkeeping.
             match &update {
                 Update::Gone(path) => {
                     self.known.remove(path);
-                    self.state_since.remove(path);
-                    self.last_event.remove(path);
                     self.dead_sockets.insert(path.clone());
                 }
-                Update::SetState(path, _) => {
-                    let now = Instant::now();
-                    self.state_since.insert(path.clone(), now);
-                    self.last_event.insert(path.clone(), now);
-                }
-                Update::SetActivity(path, _) => {
-                    self.last_event.insert(path.clone(), Instant::now());
-                }
                 Update::Upsert(a) => {
-                    let now = Instant::now();
-                    self.state_since.entry(a.socket_path.clone()).or_insert(now);
-                    self.last_event.entry(a.socket_path.clone()).or_insert(now);
                     self.dead_sockets.remove(&a.socket_path);
                 }
-                Update::SetTitle(..) => {}
+                _ => {}
             }
             self.board.apply(update);
         }
@@ -140,19 +126,21 @@ impl Engine {
         self.board.set_filter(filter);
     }
 
-    /// Time each live agent has been in its current state (by socket path).
+    /// Time each live agent has been in its current state (by socket path),
+    /// formatted from the model's per-agent clock.
     pub fn in_state_ages(&self) -> HashMap<PathBuf, String> {
-        self.state_since
-            .iter()
-            .map(|(p, t)| (p.clone(), age_label(t.elapsed())))
+        self.board
+            .live_agents()
+            .map(|a| (a.socket_path.clone(), age_label(a.state_since.elapsed())))
             .collect()
     }
 
-    /// Time since each live agent last produced activity (by socket path).
+    /// Time since each live agent last produced activity (by socket path),
+    /// formatted from the model's per-agent clock.
     pub fn quiet_ages(&self) -> HashMap<PathBuf, String> {
-        self.last_event
-            .iter()
-            .map(|(p, t)| (p.clone(), age_label(t.elapsed())))
+        self.board
+            .live_agents()
+            .map(|a| (a.socket_path.clone(), age_label(a.last_activity.elapsed())))
             .collect()
     }
 

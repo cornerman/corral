@@ -175,10 +175,15 @@ ratatui / iced, the daemon keeps ksni).
     `state_update` vocabulary; `Column::ALL` is the single source of column
     order). `Board.set_filter` + `Agent::matches_query` power the inline content
     filter (a fuzzy subsequence match over title / cwd / activity / state /
-    harness label), applied inside `column`, which also groups cards by cwd
-    with the most-used directories first, so counts, selection, rendering and
-    hit-testing all narrow and order together. `Agent`/`RegistryEntry` carry a
-    `hidden` flag (from the record); `sync_registry` stamps it — and the
+    harness label), applied inside `column`, which then orders each live column
+    by the age the card displays (Requires Action / Idle by time-in-state,
+    Running by time-since-activity, both longest first; Dormant stays
+    newest-first by record age), so counts, selection, rendering and hit-testing
+    all narrow and order together. The age clocks (`state_since` /
+    `last_activity`) live on the `Agent`, set by `Board::apply` from the update
+    stream; the engine formats them into the card labels, so ordering and the
+    shown number are the same quantity by construction. `Agent`/`RegistryEntry`
+    carry a `hidden` flag (from the record); `sync_registry` stamps it — and the
     `resume_command` — onto live agents too, so a live hidden card can be
     revealed/hidden by resume. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per live socket: seeds from
@@ -657,8 +662,8 @@ message/tool updates) is ACP v1.
   `"continue"`, any live → Dormant kills it, Dormant → Idle/Running resumes
   (Requires Action is never a drop target); `/` focuses a prominent
   centered filter box that fuzzily narrows the cards by their content (title /
-  cwd / activity / state / harness label), cards grouped by cwd with the
-  most-used directories first; while filtering, Enter goes and Shift+Enter spawns
+  cwd / activity / state / harness label), each live column ordered by the age
+  its cards show (longest-waiting first); while filtering, Enter goes and Shift+Enter spawns
   directly, arrows still navigate, Esc clears (never exits the normal board);
   `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant

@@ -172,7 +172,7 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
         // Seed once from the session/list reply (id 1).
         if !seeded && msg.get("id") == Some(&serde_json::json!(1)) {
             let (session_id, title, cwd) = parse_session_list(&msg);
-            let _ = tx.send(Update::Upsert(Agent {
+            let _ = tx.send(Update::Upsert(Box::new(Agent {
                 socket_path: entry.path.clone(),
                 pid: entry.pid,
                 label: entry.label.clone(),
@@ -190,7 +190,11 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 gui: false,
                 message_flag: None,
                 hidden: false,
-            }));
+                // Clocks start at seed time; Board::apply keeps them across a
+                // reconnect and resets state_since on the next transition.
+                state_since: std::time::Instant::now(),
+                last_activity: std::time::Instant::now(),
+            })));
             seeded = true;
             continue;
         }

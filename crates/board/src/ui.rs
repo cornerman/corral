@@ -759,7 +759,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn upsert(board: &mut Board, path: &str, state: State) {
-        board.apply(Update::Upsert(Agent {
+        board.apply(Update::Upsert(Box::new(Agent {
             socket_path: PathBuf::from(path),
             pid: 1,
             label: "pi".into(),
@@ -774,7 +774,9 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
-        }));
+            state_since: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+        })));
     }
 
     #[test]
@@ -856,6 +858,8 @@ mod card_tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            state_since: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
         }
     }
 

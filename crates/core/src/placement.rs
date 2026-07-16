@@ -117,6 +117,8 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden,
+            state_since: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
         }
     }
 
