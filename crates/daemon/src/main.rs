@@ -98,15 +98,22 @@ fn main() {
         match router.pending() {
             Some(msg) if announced.as_deref() != Some(&msg.id) => {
                 let from = mailbox::basename(&msg.from_cwd);
+                // A stop is destructive, so the operator must see it is a kill,
+                // not a message: the verb prefixes both surfaces.
+                let verb = match msg.action {
+                    mailbox::Action::Stop => "stop ",
+                    mailbox::Action::Deliver => "",
+                };
                 tray.set_pending(Some((
                     msg.id.clone(),
-                    format!("{from} → {}", msg.target_label_short()),
+                    format!("{from} → {verb}{}", msg.target_label_short()),
                 )));
                 notifier.notify(
                     msg.id.clone(),
                     &msg.from_cwd,
                     &msg.target_label(),
                     &msg.message,
+                    msg.action,
                     napp_tx.clone(),
                 );
                 announced = Some(msg.id.clone());

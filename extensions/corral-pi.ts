@@ -188,6 +188,62 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// corral_stop_agent: stop (kill) a peer session's process, leaving it dormant
+	// and resumable — the same effect as the operator's `d` on the board, reached
+	// through corrald. Gated exactly like corral_message_agent: the whitelisted
+	// (sender-dir → target-dir) pair stops straight through, an unwhitelisted pair
+	// prompts the operator. Stopping an already-dormant target is a no-op success.
+	pi.registerTool({
+		name: "corral_stop_agent",
+		label: "Stop agent",
+		description:
+			"Stop another coding-agent session: kill its process so it goes dormant (its " +
+			"transcript survives and it can be resumed later). Use it to shut down an agent you " +
+			"spawned once its work is done, or to stop a runaway peer.\n\n" +
+			"Addressing: give target_session, the exact session id to stop (the <id> from a " +
+			"'[from <dir> (session <id>)]' provenance tag, or from list_corral_agents). There is no " +
+			"target_dir form — stopping is precise.\n\n" +
+			"Gating: if the (your dir → target dir) pair is not whitelisted the operator must " +
+			"approve the stop. Stopping a session that is already dormant or gone succeeds as a " +
+			"no-op. Fire-and-forget: corral does not report back once the kill lands.",
+		parameters: Type.Object({
+			target_session: Type.String({
+				description:
+					"The exact session id to stop (kill its process). Take it from a message's " +
+					"'[from <dir> (session <id>)]' tag or from list_corral_agents.",
+			}),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const home = process.env.HOME;
+			const socketPath =
+				process.env.CORRAL_CONTROL_SOCKET ?? (home ? path.join(home, ".corral", "corrald.sock") : undefined);
+			if (!socketPath) {
+				return { content: [{ type: "text", text: "corral: no HOME; cannot stop agent" }] };
+			}
+			if (typeof params.target_session !== "string" || params.target_session.length === 0) {
+				return { content: [{ type: "text", text: "corral_stop_agent: target_session is required" }] };
+			}
+			const record: Record<string, unknown> = {
+				op: "stop",
+				id: randomUUID(),
+				fromCwd: ctx.cwd,
+				fromSession: ctx.sessionManager.getSessionId(),
+				targetSession: params.target_session,
+				createdAt: new Date().toISOString(),
+			};
+			const dest = `session ${params.target_session}`;
+			let status: string;
+			try {
+				status = await submitToCorral(socketPath, record);
+			} catch {
+				return {
+					content: [{ type: "text", text: `corral is not running (cannot reach ${socketPath}); stop not sent.` }],
+				};
+			}
+			return { content: [{ type: "text", text: describeStopAck(status, dest) }] };
+		},
+	});
+
 	// list_corral_agents: read-only capability roster. Ungated — any session is
 	// messageable (operator approval may be asked). Every session is a
 	// per-session entry addressable by sessionId; corral hides an unreachable
@@ -637,6 +693,26 @@ async function submitToCorral(socketPath: string, record: Record<string, unknown
 		return String((JSON.parse(line) as { status?: unknown }).status ?? "unknown");
 	} catch {
 		return "unknown";
+	}
+}
+
+// Turn corral's ack for a stop into a message for the sending agent. Shares the
+// wire vocabulary with a message ack, plus `already_stopped` (the idempotent
+// no-op when the target was already dormant or gone).
+function describeStopAck(status: string, dest: string): string {
+	switch (status) {
+		case "accepted":
+			return `Stop accepted by corral (${dest}); the agent is being killed.`;
+		case "approval_needed":
+			return `Stop submitted (${dest}); operator approval needed, killed once approved.`;
+		case "already_stopped":
+			return `Already stopped: ${dest} was dormant or gone (no-op).`;
+		case "recipient_not_found":
+			return `Not stopped: no such session (${dest}).`;
+		case "malformed":
+			return "Not stopped: corral rejected the request as malformed.";
+		default:
+			return `corral responded: ${status}.`;
 	}
 }
 

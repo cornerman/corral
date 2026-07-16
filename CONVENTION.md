@@ -374,6 +374,31 @@ reading. A charter prepended to a freshly spawned agent's first prompt teaches
 it these two verbs (message + list) and the swarm discipline (confirm the task,
 escalate uncertainty up, stay event-driven).
 
+### Stop request (`stop`)
+
+Over the same control socket, an agent MAY stop (kill) a peer session
+(`corral_stop_agent`): it submits `{"op":"stop","id":..,"fromCwd":..,`
+`"fromSession":..,"targetSession":..}` and reads one ack line. Stopping kills
+the target's process, so its record goes dormant and stays resumable — the same
+effect as the consumer's own close action, reached through the router. A stop
+targets an exact session only (`targetSession`); killing whoever-works-in-a-dir
+would be ambiguous, so there is no `targetDir` form.
+
+Authorization is identical to a message: the consumer gates the
+`(fromCwd -> target directory)` pair against its whitelist and asks the operator
+for an unwhitelisted pair. The ack:
+
+| `status`              | Meaning |
+|-----------------------|---------|
+| `accepted`            | Live target, pair authorized; the consumer will kill it. |
+| `approval_needed`     | Live target, not yet authorized; held for the operator (not awaited). |
+| `already_stopped`     | Target is already dormant or gone: stopping is a no-op success. |
+| `recipient_not_found` | `targetSession` is not in the registry. |
+| `malformed`           | Unparseable request. |
+
+Stopping is fire-and-forget: the ack confirms the verdict, not that the process
+has exited.
+
 ## Appendix B — Reference Implementation (non-normative)
 
 - Agent side, first example: `extensions/corral-pi.ts` (a pi extension

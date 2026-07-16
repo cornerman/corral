@@ -408,6 +408,10 @@ ratatui / iced, the daemon keeps ksni).
   sender's `fromSession` as a reply handle) and reports corral's ack (accepted
   / approval_needed / recipient_not_found / directory_not_known); a connect failure is
   surfaced as "corrald not running" (fail loud, no silent queue). It also
+  registers `corral_stop_agent` (`target_session` only), which submits an
+  `{"op":"stop",…}` line over the same socket to kill a peer's process (→
+  dormant, resumable), gated exactly like a message and reporting the ack
+  (accepted / approval_needed / already_stopped / recipient_not_found). It also
   registers `list_corral_agents` (no args), a read-only roster query
   (`{"op":"list"}` over the same socket) returning the capability picture:
   every session as a per-session entry (kind, sessionId, live) addressable by
@@ -436,8 +440,8 @@ ratatui / iced, the daemon keeps ksni).
   (multi-session multiplexing is deferred) and, lacking a plugin-unload hook,
   clears the record's socket and unlinks on process exit/SIGINT/SIGTERM;
   best-effort, since corral's dead-socket sweep makes a missed teardown dormant
-  anyway. It registers the same `corral_message_agent` (with the `hidden` param)
-  and `list_corral_agents` tools via opencode's
+  anyway. It registers the same `corral_message_agent` (with the `hidden` param),
+  `corral_stop_agent`, and `list_corral_agents` tools via opencode's
   `tool` hook, and writes the same `description` record field. Untypechecked in this repo (no opencode toolchain here), so the
   plugin API shapes are probed defensively at runtime and flagged UNVERIFIED
   in-file. Install: symlink into `~/.config/opencode/plugin/` (global) or
@@ -604,9 +608,20 @@ does. A roster never carries a session title or activity — messaging is not
 reading. The `description` is a one-line,
 adapter-authored string in the record (CONVENTION §1; latest-seen per label
 wins), so a caller can pick a kind (GUI review → a GUI agent, terminal coding →
-pi/opencode) before spawning. Kill of a peer is deferred: the settled rule
-limits it to a session `corrald` observed the caller spawn, but the operator is
-the governor and kills any agent from the board (`d`).
+pi/opencode) before spawning.
+
+An agent stops a peer with **`corral_stop_agent`** (`target_session` only): it
+submits `{"op":"stop",…}` over the control socket and `corrald` kills the target
+session's process (by the pid in its socket filename), leaving a dormant,
+resumable record — the same effect as the operator's board `d`, reached through
+the daemon. Stopping is gated exactly like a message: the `(sender-dir ->
+target-dir)` whitelist authorizes it (a whitelisted pair kills straight through,
+an unwhitelisted pair prompts the operator, whose tray/notification reads "stop
+agent" so a kill is never mistaken for a message). Stopping a target that is
+already dormant or gone is a no-op success (`already_stopped`). There is no
+`target_dir` form — killing whoever-works-in-a-dir would be ambiguous. corrald
+tracks no parentage, so any peer a caller can message it can stop; the operator
+remains the governor and kills any agent from the board (`d`).
 
 ## ACP Conformance
 

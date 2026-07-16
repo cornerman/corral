@@ -19,11 +19,16 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use corral_core::discovery::RegistryEntry;
+use corral_core::discovery::{self, RegistryEntry};
 use corral_core::launch::{LaunchMode, Launcher};
+use corral_core::placement;
 use corral_core::prompt;
 
-use crate::mailbox::{is_whitelisted, whitelist_add, Message, Target};
+use crate::mailbox::{is_whitelisted, whitelist_add, Action, Message, Target};
+
+/// Terminate a process by pid. The real path is `placement::kill_pid`; tests
+/// inject a recording stub so a unit test never kills a real process.
+type Kill = Box<dyn Fn(u32) -> Result<(), String> + Send>;
 
 /// The swarm charter, prepended to the first prompt of a freshly spawned
 /// agent (ported from the subagents extension, adapted to corral's two verbs
@@ -84,15 +89,23 @@ pub struct Router {
     /// Messages accepted over the control socket, awaiting routing.
     queue: VecDeque<Message>,
     pending: Option<Pending>,
+    /// How a `Stop` action kills its target's process (real: `kill_pid`).
+    kill: Kill,
 }
 
 impl Router {
     pub fn new(whitelist: PathBuf) -> Self {
+        Self::with_kill(whitelist, Box::new(placement::kill_pid))
+    }
+
+    /// Construct with an injected kill (tests record pids instead of killing).
+    pub fn with_kill(whitelist: PathBuf, kill: Kill) -> Self {
         Self {
             whitelist,
             approved: HashSet::new(),
             queue: VecDeque::new(),
             pending: None,
+            kill,
         }
     }
 
@@ -140,7 +153,7 @@ impl Router {
                 self.pending = Some(Pending { msg, target_cwd });
                 break;
             }
-            status = Some(deliver(&msg, entries, launcher));
+            status = Some(deliver(&msg, entries, launcher, self.kill.as_ref()));
         }
         status
     }
@@ -179,11 +192,45 @@ impl Router {
     }
 }
 
-/// Deliver one authorized message to its target, returning a status line.
-fn deliver(msg: &Message, entries: &[RegistryEntry], launcher: &dyn Launcher) -> String {
-    match &msg.target {
-        Target::Dir(dir) => deliver_dir(msg, dir, entries, launcher),
-        Target::Session(sid) => deliver_session(msg, sid, entries, launcher),
+/// Perform one authorized routed item, returning a status line. A `Deliver`
+/// injects/spawns/resumes; a `Stop` kills the target's live process.
+fn deliver(
+    msg: &Message,
+    entries: &[RegistryEntry],
+    launcher: &dyn Launcher,
+    kill: &dyn Fn(u32) -> Result<(), String>,
+) -> String {
+    match msg.action {
+        Action::Stop => deliver_stop(msg, entries, kill),
+        Action::Deliver => match &msg.target {
+            Target::Dir(dir) => deliver_dir(msg, dir, entries, launcher),
+            Target::Session(sid) => deliver_session(msg, sid, entries, launcher),
+        },
+    }
+}
+
+/// Kill the target session's process by the pid parsed from its socket
+/// filename, leaving a dormant, resumable record (the adapter or corral's
+/// dead-socket sweep then clears the socket). Never spawns or resumes: a
+/// target gone by routing time is a no-op, since the sender was already acked
+/// `accepted`/`already_stopped`.
+fn deliver_stop(
+    msg: &Message,
+    entries: &[RegistryEntry],
+    kill: &dyn Fn(u32) -> Result<(), String>,
+) -> String {
+    let Target::Session(sid) = &msg.target else {
+        return "stop: target is not a session".into();
+    };
+    let Some(entry) = entries.iter().find(|e| &e.session_id == sid) else {
+        return format!("stop: session {sid} gone");
+    };
+    match discovery::live_socket(entry) {
+        Some(sock) => match kill(sock.pid) {
+            Ok(()) => format!("stopped {}", msg.target_label()),
+            Err(e) => format!("stop kill: {e}"),
+        },
+        None => format!("stop: {} already dormant", msg.target_label()),
     }
 }
 
@@ -321,6 +368,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
 
     /// Records launch calls, classifying by the argv the record carried: a
     /// resume command contains `--session`, a fresh spawn does not.
@@ -350,6 +398,37 @@ mod tests {
             self.last_hidden.set(mode.hidden);
             Ok(())
         }
+    }
+
+    /// A no-op kill for `deliver` tests that never take the Stop branch.
+    fn no_kill(_pid: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// A live record whose socket filename carries `pid`, so `deliver_stop`
+    /// parses that pid to kill.
+    fn live_record(session_id: &str, cwd: &str, pid: u32) -> RegistryEntry {
+        RegistryEntry {
+            session_id: session_id.into(),
+            cwd: Some(cwd.into()),
+            title: None,
+            socket: Some(PathBuf::from(format!("{cwd}/.corral/pi-{pid}.sock"))),
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), "x".into()]),
+            label: Some("pi".into()),
+            last_seen: None,
+            gui: false,
+            message_flag: None,
+            hidden: false,
+            description: None,
+        }
+    }
+
+    fn stop_msg(id: &str, from: &str, sid: &str) -> Message {
+        mailbox::parse_stop(&format!(
+            r#"{{"op":"stop","id":"{id}","fromCwd":"{from}","targetSession":"{sid}"}}"#
+        ))
+        .unwrap()
     }
 
     fn dir_msg(id: &str, from: &str, target: &str) -> Message {
@@ -427,7 +506,7 @@ mod tests {
         // must be hidden so an uninvited window never pops up.
         let entries = [dir_record("/b")];
         let launcher = StubLauncher::default();
-        deliver(&dir_msg("1", "/a", "/b"), &entries, &launcher);
+        deliver(&dir_msg("1", "/a", "/b"), &entries, &launcher, &no_kill);
         assert_eq!(launcher.spawns.get(), 1);
         assert!(
             launcher.last_hidden.get(),
@@ -445,7 +524,7 @@ mod tests {
         .unwrap();
         let entries = [dir_record("/b")];
         let launcher = StubLauncher::default();
-        deliver(&msg, &entries, &launcher);
+        deliver(&msg, &entries, &launcher, &no_kill);
         assert_eq!(launcher.spawns.get(), 1);
         assert!(
             !launcher.last_hidden.get(),
@@ -669,5 +748,71 @@ mod tests {
         handle.join().unwrap();
         assert_eq!(launcher.spawns.get(), 0, "live session needs no spawn");
         assert_eq!(launcher.resumes.get(), 0, "live socket needs no resume");
+    }
+
+    /// A Router whose kill records pids into a shared `Vec` (the kill closure
+    /// must be `Send`, so `Arc<Mutex<_>>`, not `Rc<RefCell<_>>`).
+    fn recording_router(whitelist: PathBuf) -> (Router, Arc<Mutex<Vec<u32>>>) {
+        let killed = Arc::new(Mutex::new(Vec::new()));
+        let sink = killed.clone();
+        let r = Router::with_kill(
+            whitelist,
+            Box::new(move |pid| {
+                sink.lock().unwrap().push(pid);
+                Ok(())
+            }),
+        );
+        (r, killed)
+    }
+
+    #[test]
+    fn stop_kills_the_live_target_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        let (mut r, killed) = recording_router(whitelist);
+        let entries = [live_record("sid-7", "/b", 4242)];
+        r.enqueue(stop_msg("1", "/a", "sid-7"));
+        let launcher = StubLauncher::default();
+
+        r.poll(&entries, &launcher);
+        assert!(r.pending().is_none(), "whitelisted: no operator prompt");
+        assert_eq!(*killed.lock().unwrap(), vec![4242], "killed the socket pid");
+        assert_eq!(launcher.spawns.get(), 0, "a stop never spawns");
+        assert_eq!(launcher.resumes.get(), 0, "a stop never resumes");
+    }
+
+    #[test]
+    fn stop_dormant_target_is_a_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        let (mut r, killed) = recording_router(whitelist);
+        // Dormant record (no socket): nothing to kill.
+        let entries = [dormant("sid-7", "/b", "/s/sid-7.jsonl")];
+        r.enqueue(stop_msg("1", "/a", "sid-7"));
+        let launcher = StubLauncher::default();
+
+        let status = r.poll(&entries, &launcher);
+        assert!(killed.lock().unwrap().is_empty(), "nothing to kill");
+        assert!(status.unwrap().contains("already dormant"));
+    }
+
+    #[test]
+    fn stop_honors_the_approval_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        // Not whitelisted: the stop must go pending, killing nothing until allowed.
+        let (mut r, killed) = recording_router(whitelist);
+        let entries = [live_record("sid-7", "/b", 4242)];
+        r.enqueue(stop_msg("1", "/a", "sid-7"));
+        let launcher = StubLauncher::default();
+
+        r.poll(&entries, &launcher);
+        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
+        assert!(killed.lock().unwrap().is_empty(), "no kill before approval");
+        r.apply(ApprovalAction::AllowOnce).unwrap();
+        r.poll(&entries, &launcher);
+        assert_eq!(*killed.lock().unwrap(), vec![4242], "allowed -> killed");
     }
 }

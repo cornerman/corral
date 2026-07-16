@@ -19,6 +19,19 @@ pub enum Target {
     Session(String),
 }
 
+/// What a routed item does to its target. A message is delivered (injected /
+/// spawned / resumed); a stop kills the target's live process, leaving a
+/// dormant, resumable record. Both share the queue, whitelist, and approval
+/// gate — the machinery is action-agnostic, so only `deliver` branches on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Action {
+    /// Deliver the message text to the target (the default routed item).
+    #[default]
+    Deliver,
+    /// Kill the target session's process (the `corral_stop_agent` tool).
+    Stop,
+}
+
 /// One queued cross-session message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
@@ -39,6 +52,9 @@ pub struct Message {
     /// (a visible window is a stronger action than a message, so the whitelist
     /// alone never authorizes it — see `classify`).
     pub hidden: bool,
+    /// Deliver the message, or stop (kill) the target. A `Stop` carries a
+    /// `Session` target, an empty body, and never a charter or spawn.
+    pub action: Action,
 }
 
 impl Message {
@@ -106,6 +122,10 @@ pub enum Ack {
     RecipientNotFound,
     /// A `target_dir` that is not an existing directory: nowhere to spawn.
     DirectoryNotKnown,
+    /// A `corral_stop_agent` target that is already dormant (or whose process
+    /// is gone): stopping it is a no-op success, not an error. Synchronous and
+    /// never routed — nothing is left to kill.
+    AlreadyStopped,
 }
 
 impl Ack {
@@ -116,6 +136,7 @@ impl Ack {
             Ack::ApprovalNeeded => "approval_needed",
             Ack::RecipientNotFound => "recipient_not_found",
             Ack::DirectoryNotKnown => "directory_not_known",
+            Ack::AlreadyStopped => "already_stopped",
         }
     }
 
@@ -163,6 +184,32 @@ pub fn parse_message(text: &str) -> Option<Message> {
         force_new: v.get("forceNew").and_then(|x| x.as_bool()).unwrap_or(false),
         label: s("label"),
         hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(true),
+        action: Action::Deliver,
+    })
+}
+
+/// Parse a stop submission (`{"op":"stop","id":..,"fromCwd":..,"targetSession":..}`).
+/// A stop always targets an exact session (killing whoever-works-in-a-dir would
+/// be ambiguous), so it requires `targetSession` and ignores `targetDir`. The
+/// body is empty and `hidden` is true so the shared classify never force-gates
+/// it as a visible spawn; a stop authorizes exactly like a message. Returns
+/// `None` unless `op` is `"stop"` (so the caller falls through to a message).
+pub fn parse_stop(text: &str) -> Option<Message> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    if v.get("op").and_then(|o| o.as_str()) != Some("stop") {
+        return None;
+    }
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
+    Some(Message {
+        id: s("id")?,
+        from_cwd: s("fromCwd")?,
+        from_session: s("fromSession"),
+        target: Target::Session(s("targetSession")?),
+        message: String::new(),
+        force_new: false,
+        label: None,
+        hidden: true,
+        action: Action::Stop,
     })
 }
 
@@ -283,6 +330,7 @@ mod tests {
             force_new: false,
             label: None,
             hidden: true,
+            action: Action::Deliver,
         }
     }
 
@@ -334,6 +382,32 @@ mod tests {
         );
         assert_eq!(parse_message(r#"{"id":"1"}"#), None);
         assert_eq!(parse_message("nope"), None);
+    }
+
+    #[test]
+    fn parse_stop_requires_op_and_session() {
+        let m = parse_stop(
+            r#"{"op":"stop","id":"1","fromCwd":"/a","fromSession":"s9","targetSession":"sid-7"}"#,
+        )
+        .unwrap();
+        assert_eq!(m.action, Action::Stop);
+        assert_eq!(m.target, Target::Session("sid-7".into()));
+        assert_eq!(m.from_session.as_deref(), Some("s9"));
+        assert!(m.message.is_empty(), "a stop carries no body");
+        // Not a stop line -> None, so the caller falls through to a message.
+        assert_eq!(
+            parse_stop(r#"{"id":"1","fromCwd":"/a","targetSession":"x","message":"hi"}"#),
+            None
+        );
+        // op:stop but no targetSession (a dir is not a valid stop target) -> None.
+        assert_eq!(parse_stop(r#"{"op":"stop","id":"1","fromCwd":"/a"}"#), None);
+        assert_eq!(parse_stop("nope"), None);
+    }
+
+    #[test]
+    fn already_stopped_is_a_non_routable_success() {
+        assert_eq!(Ack::AlreadyStopped.wire(), "already_stopped");
+        assert!(!Ack::AlreadyStopped.routable(), "nothing left to kill");
     }
 
     #[test]
@@ -415,7 +489,10 @@ mod tests {
         let json = roster_json(&build_roster(&entries, |_| false));
         assert!(!json.contains("secret title"), "never leak the title");
         assert!(!json.contains("/secret"), "never leak an unreachable cwd");
-        assert!(!json.contains("terminal agent"), "hide unreachable description");
+        assert!(
+            !json.contains("terminal agent"),
+            "hide unreachable description"
+        );
         // The sessionId is the addressable handle, so it is exposed.
         assert!(json.contains("\"sessionId\":\"s1\""));
         assert!(json.contains("\"kind\":\"pi\"") && json.contains("\"live\":true"));

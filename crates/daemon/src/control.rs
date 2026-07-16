@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use corral_core::discovery;
 
-use crate::mailbox::{self, Message, Target};
+use crate::mailbox::{self, Ack, Message, Target};
 
 /// Whether another daemon is already serving this socket. A successful connect
 /// proves a live listener; a connect failure means the socket is absent or
@@ -81,6 +81,14 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         let _ = writeln!(conn, "{}", mailbox::roster_json(&roster));
         return;
     }
+    // A stop submission (`op:"stop"`) kills a live session; it is acked from
+    // liveness (already dormant -> a no-op success) and otherwise gated exactly
+    // like a message. Tried before parse_message, whose required `message`
+    // field a stop line lacks.
+    if let Some(msg) = mailbox::parse_stop(line.trim()) {
+        handle_stop(&mut conn, msg, registry_dir, whitelist, tx);
+        return;
+    }
     let Some(msg) = mailbox::parse_message(line.trim()) else {
         let _ = ack(&mut conn, "malformed");
         return;
@@ -91,6 +99,42 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
     let verdict = mailbox::classify(&msg.target, target_cwd.as_deref(), whitelisted, msg.hidden);
     let _ = ack(&mut conn, verdict.wire());
+    if verdict.routable() {
+        let _ = tx.send(msg);
+    }
+}
+
+/// Handle a stop submission. The target is always a session: no record ->
+/// `recipient_not_found`; a dormant record (socket cleared) -> `already_stopped`
+/// (idempotent no-op, never routed, since nothing is running to kill); a live
+/// record -> classify against the whitelist and route the kill on approval.
+fn handle_stop(
+    conn: &mut UnixStream,
+    msg: Message,
+    registry_dir: &Path,
+    whitelist: &Path,
+    tx: &Sender<Message>,
+) {
+    let Target::Session(sid) = &msg.target else {
+        let _ = ack(conn, "malformed");
+        return;
+    };
+    let entry = discovery::scan_registry(registry_dir)
+        .into_iter()
+        .find(|e| &e.session_id == sid);
+    let verdict = match &entry {
+        None => Ack::RecipientNotFound,
+        // Dormant: nothing to kill, so the stop already succeeded.
+        Some(e) if e.socket.is_none() => Ack::AlreadyStopped,
+        Some(e) => {
+            let whitelisted = e
+                .cwd
+                .as_deref()
+                .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
+            mailbox::classify(&msg.target, e.cwd.as_deref(), whitelisted, msg.hidden)
+        }
+    };
+    let _ = ack(conn, verdict.wire());
     if verdict.routable() {
         let _ = tx.send(msg);
     }
@@ -143,6 +187,90 @@ mod tests {
             format!(r#"{{"sessionId":"{sid}","cwd":"{cwd}","label":"pi"}}"#),
         )
         .unwrap();
+    }
+
+    /// A live record: a `socket` is set, so the daemon treats it as live.
+    fn write_live_registry(dir: &Path, sid: &str, cwd: &str) {
+        std::fs::write(
+            dir.join(format!("{sid}.json")),
+            format!(
+                r#"{{"sessionId":"{sid}","cwd":"{cwd}","label":"pi","socket":"{cwd}/.corral/pi-9.sock"}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn stop_live_whitelisted_is_accepted_and_enqueued() {
+        let (tmp, socket, registry, whitelist) = setup();
+        let cwd = tmp.path().to_str().unwrap();
+        write_live_registry(&registry, "sid-7", cwd);
+        mailbox::whitelist_add(&whitelist, "/a", cwd).unwrap();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"sid-7"}"#,
+        );
+        assert_eq!(ack, r#"{"status":"accepted"}"#);
+        let routed = rx.recv().unwrap();
+        assert_eq!(routed.id, "1");
+        assert_eq!(routed.action, mailbox::Action::Stop, "routed as a kill");
+    }
+
+    #[test]
+    fn stop_live_unlisted_needs_approval() {
+        let (tmp, socket, registry, whitelist) = setup();
+        let cwd = tmp.path().to_str().unwrap();
+        write_live_registry(&registry, "sid-7", cwd);
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"sid-7"}"#,
+        );
+        assert_eq!(ack, r#"{"status":"approval_needed"}"#);
+        assert_eq!(
+            rx.recv().unwrap().id,
+            "1",
+            "held for approval, still routed"
+        );
+    }
+
+    #[test]
+    fn stop_dormant_is_already_stopped_and_not_routed() {
+        let (tmp, socket, registry, whitelist) = setup();
+        // A dormant record (no socket): nothing to kill.
+        write_registry(&registry, "sid-7", tmp.path().to_str().unwrap());
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"sid-7"}"#,
+        );
+        assert_eq!(ack, r#"{"status":"already_stopped"}"#);
+        assert!(rx.try_recv().is_err(), "no-op success -> not enqueued");
+    }
+
+    #[test]
+    fn stop_unknown_session_is_recipient_not_found() {
+        let (_tmp, socket, registry, whitelist) = setup();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            r#"{"op":"stop","id":"1","fromCwd":"/a","targetSession":"ghost"}"#,
+        );
+        assert_eq!(ack, r#"{"status":"recipient_not_found"}"#);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -230,8 +358,14 @@ mod tests {
         assert!(reply.contains("visible-1") && reply.contains(reach));
         // An unreachable session is still addressable by its id, but its path
         // stays hidden.
-        assert!(reply.contains("hidden-1"), "sessionId is the addressable handle");
-        assert!(!reply.contains("/secret/dir"), "never leak an unreachable cwd");
+        assert!(
+            reply.contains("hidden-1"),
+            "sessionId is the addressable handle"
+        );
+        assert!(
+            !reply.contains("/secret/dir"),
+            "never leak an unreachable cwd"
+        );
     }
 
     #[test]

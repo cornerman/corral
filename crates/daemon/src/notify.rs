@@ -8,10 +8,13 @@ use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::thread;
 
+use crate::mailbox::Action;
 use crate::router::ApprovalAction;
 
 /// Fire a notification for a pending approval; the chosen action comes back on
 /// a channel, tagged with the message id so a stale reply can be ignored.
+/// `action` distinguishes a message delivery from a destructive stop so the
+/// operator sees which they are approving.
 pub trait ApprovalNotifier {
     fn notify(
         &self,
@@ -19,6 +22,7 @@ pub trait ApprovalNotifier {
         from: &str,
         target: &str,
         message: &str,
+        action: Action,
         tx: Sender<(String, ApprovalAction)>,
     );
 }
@@ -72,24 +76,28 @@ impl ApprovalNotifier for NotifySendNotifier {
         from: &str,
         target: &str,
         message: &str,
+        action: Action,
         tx: Sender<(String, ApprovalAction)>,
     ) {
         // Compact: basename the paths, clip the message.
         let from_s = from.rsplit('/').next().unwrap_or(from);
         let to_s = target.rsplit('/').next().unwrap_or(target);
-        let body = format!("{from_s} → {to_s}\n{}", clip(message, 140));
+        // A stop has no body; say what it does so the operator sees the kill.
+        let (title, body) = match action {
+            Action::Stop => (
+                "corral: stop agent",
+                format!("{from_s} → stop {to_s}\n(kill the agent, leaving it resumable)"),
+            ),
+            Action::Deliver => (
+                "corral: agent message",
+                format!("{from_s} → {to_s}\n{}", clip(message, 140)),
+            ),
+        };
         thread::spawn(move || {
             // `-A name=Label` implies --wait and prints the chosen name to
             // stdout; critical urgency keeps it on screen until acted on.
             let out = Command::new("notify-send")
-                .args([
-                    "-u",
-                    "critical",
-                    "-a",
-                    "corral",
-                    "corral: agent message",
-                    &body,
-                ])
+                .args(["-u", "critical", "-a", "corral", title, &body])
                 .args([
                     "-A",
                     "once=Allow once",
