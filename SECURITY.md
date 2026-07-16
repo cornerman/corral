@@ -8,15 +8,12 @@ defenses are designed but not yet built, and claiming otherwise would mislead.
 Read this before trusting corral as a boundary between mutually distrusting
 agents. The short version: corral is safe for a single operator running
 cooperative agents on one machine. The mitigations that make it a boundary
-between mutually untrusted agents are implemented and unit-tested on branch
-`security-hardening` (2026-07-16) and land on `main` when it merges.
+between mutually untrusted agents landed on `main` with the security-hardening
+work (2026-07-16), each with unit tests behind it.
 
 Status tags used throughout:
 
-- `[in place]` — enforced by the code on `main` today.
-- `[implemented]` — built and unit-tested on branch `security-hardening`;
-  becomes `[in place]` when that branch merges. Tagged this way (not `[in
-  place]`) so the doc never claims a defense `main` does not yet carry.
+- `[in place]` — enforced by the code on `main` today, with a test behind it.
 - `[designed]` — specified in
   [the security-hardening design](docs/superpowers/specs/2026-07-16-security-hardening-design.md),
   not yet implemented.
@@ -25,7 +22,7 @@ Status tags used throughout:
 
 ## Threat Model
 
-**Defended (the target, once the `[implemented]` items merge to `main`): a compromised or
+**Defended: a compromised or
 prompt-injected agent inside one workdir sandbox.** It runs arbitrary code, can
 write its own workdir and the agent-writable part of `~/.corral`, and can speak
 raw JSON to the control socket. A prompt-injected agent is treated as fully
@@ -113,10 +110,10 @@ A message over `corrald.sock` self-reports `fromCwd` and `fromSession`. Since
 session ids are public through the roster, any agent can claim any sender and
 bypass the whitelist, roster, and stop gates.
 
-**Status today `[in place]` gate but spoofable:** the whitelist and approval
+**Before this hardening: gate but spoofable:** the whitelist and approval
 gates exist, but the identity they key on is unauthenticated.
 
-**Mitigation `[implemented]`:** physical-location identity. The sender writes the
+**Mitigation `[in place]`:** physical-location identity. The sender writes the
 message to `<cwd>/.corral/outbox/<id>.json` and sends only `{"submit": path}`.
 corrald opens the file, then derives `fromCwd` from that open fd's real path via
 `/proc/self/fd` (never realpath-then-reopen, so a symlink swapped after open
@@ -136,10 +133,10 @@ boundary.
 An agent can write `~/.corral/registry/*`. A forged record can claim another
 directory, or plant attacker-chosen fields.
 
-**Status today `[in place]` for discovery, unauthenticated:** records are plain
+**Before this hardening: for discovery, unauthenticated:** records are plain
 files whose `cwd` is trusted content.
 
-**Mitigation `[implemented]`: corrald curation.** Records live per-project at
+**Mitigation `[in place]`: corrald curation.** Records live per-project at
 `<D>/.corral/registry/<sessionId>.json`; a newline-delimited `~/.corral/registry`
 file indexes the directories `D`. corrald is the only reader: it canonicalizes
 each `D` (race-safe, from a directory fd), attributes every record it finds
@@ -160,9 +157,9 @@ Records carry `spawnCommand` and `resumeCommand` that corral runs verbatim and
 Enter or corrald spawns into that directory. This is a sandbox-escape channel
 through the coordination layer.
 
-**Status today `[in place]` verbatim execution, no gate.**
+**Before this hardening: verbatim execution, no gate.**
 
-**Mitigation `[implemented]`: harness registration.** A harness *kind* must be
+**Mitigation `[in place]`: harness registration.** A harness *kind* must be
 registered before any of its agents can be used. corrald is the sole registrar:
 watching the registry, on a never-seen `(label, normalized-template)` it asks
 the operator once, showing the full argv, and writes the template to the sealed
@@ -195,10 +192,10 @@ The message whitelist authorizes `(sender-dir -> target-dir)` pairs. If it is
 agent-writable, a compromised agent appends `(itself -> anywhere)` and every
 gate opens.
 
-**Status today `[in place]` gate, but the file is agent-writable** (all of
+**Before this hardening: gate, but the file is agent-writable** (all of
 `~/.corral` is on the sandbox allowlist).
 
-**Mitigation `[implemented]`:** split `~/.corral` by trust. The only agent-writable
+**Mitigation `[in place]`:** split `~/.corral` by trust. The only agent-writable
 surface is the `~/.corral/registry` dir-index file (append) and the socket
 (connect); `state/` (holding `whitelist`, `approved-commands.json`,
 `state/registry/`, and `audit.log`) is daemon-only and never on the sandbox
@@ -210,10 +207,10 @@ With write access to `~/.corral/`, a compromised agent can unlink
 `corrald.sock` and bind its own, becoming the router: it then reads every routed
 message and forges every ack.
 
-**Status today `[in place]` hole:** the socket sits in an agent-writable
+**Before this hardening: hole:** the socket sits in an agent-writable
 directory.
 
-**Mitigation `[implemented]`:** the socket lives at the root of `~/.corral` with a
+**Mitigation `[in place]`:** the socket lives at the root of `~/.corral` with a
 parent that is not agent-writable. A unix socket needs write on the socket file
 (bind-mounted into the sandbox), not on its parent, so the single connect
 capability lets an agent talk to corrald without being able to rebind it.
@@ -225,7 +222,7 @@ A record's `socket` field is attacker-authored content. An agent's own record
 socket path; corral would then connect there to watch and, worse, the operator's
 ungated `m` to that card would deliver into the **victim's** session.
 
-**Mitigation `[implemented]`:** corrald requires the record's `socket` to resolve
+**Mitigation `[in place]`:** corrald requires the record's `socket` to resolve
 **inside `<D>/.corral/`** (the record's own authenticated directory) before
 emitting the vetted record; a socket pointing elsewhere is rejected. So a card
 can only ever drive a session in its own box. **Future `[designed]`:** an
@@ -256,9 +253,9 @@ already the viewer mechanism that migration would use.
 corrald prepends `[from <dir> (session <id>)]` to a delivered message. The tag
 is in-band plain text, so a message body can embed a second, forged tag.
 
-**Status today `[in place]` single-position tag, no body framing.**
+**Before this hardening: single-position tag, no body framing.**
 
-**Mitigation `[implemented]`: positional, by construction.** corrald builds the
+**Mitigation `[in place]`: positional, by construction.** corrald builds the
 delivered string as `"[from <dir> (session <id>)]\n" + body`, so nothing
 attacker-controlled can precede or occupy the first-line tag position. The rule,
 in the charter and CONVENTION, is purely positional: the sender tag is the first
@@ -350,7 +347,7 @@ corrald is unsandboxed and opens an agent-named path (`{"submit": path}`) with
 its own privilege. A hostile path (a device, a FIFO that blocks the read, a huge
 file, or a path outside any workdir) could hang or mislead it.
 
-**Mitigation `[implemented]`:** corrald requires the opened fd's canonical path to
+**Mitigation `[in place]`:** corrald requires the opened fd's canonical path to
 match `<dir>/.corral/outbox/<name>`, requires a regular file (`fstat`), opens
 non-blocking and rejects FIFO/device/socket, and caps the read size. `fromCwd`
 is derived from that validated fd only. A path that fails any check is rejected
@@ -361,7 +358,7 @@ as malformed, never read as a message.
 A sandboxed agent with connect can open many `corrald.sock` connections
 (slowloris, accept exhaustion).
 
-**Mitigation `[implemented]`:** corrald bounds concurrent accepts and applies a
+**Mitigation `[in place]`:** corrald bounds concurrent accepts and applies a
 per-connection read timeout, so a flood degrades gracefully rather than blocking
 messaging.
 
@@ -371,7 +368,7 @@ Launch substitutes the record's `sessionId` and `cwd` into a registered
 template. An unconstrained value (a session named `--config=/evil`, a cwd
 leading with `-`) would inject an argument into the launched program.
 
-**Mitigation `[implemented]`:** `sessionId` is charset-constrained at record
+**Mitigation `[in place]`:** `sessionId` is charset-constrained at record
 acceptance (T3); any `{cwd}` substituted into argv is space/`-`/`@`-guarded; and
 launch runs an exec array (`setsid --fork <argv>`), never a shell, so no value
 can inject a shell command. `argv[0]` resolves via the operator's PATH, not the
@@ -398,7 +395,7 @@ Corral cannot enforce these; the deployment (for this project, `~/nixos`) must.
 1. **Whole-process workdir sandbox.** Each agent must be boxed to its workdir so
    siblings' sockets and workdirs are unreachable (T1). A tool-level sandbox
    does not satisfy this.
-2. **The agent sandbox profile, once the split lands `[designed]`:**
+2. **The agent sandbox profile (deployment glue in `~/nixos`, `[designed]`):**
    ```
    allow append:  ~/.corral/registry          # the dir index (one file)
    allow connect: ~/.corral/corrald.sock       # one file, connect only
@@ -424,27 +421,21 @@ into another workdir silently breaks physical-location identity (T2, T3).
 channels are local and unexposed (T13), the operator is always in the loop, and
 hidden-by-default spawns prevent uninvited windows.
 
-**A boundary between mutually untrusted agents — implemented, pending merge.**
-Branch `security-hardening` closes the identity, launch-command, whitelist,
-socket-rebind, provenance, and broker-hardening holes (T2–T7, T14–T17), each
-with unit tests behind it: physical-location identity (corrald curates a vetted
-registry from per-workdir records and outbox submissions), harness registration
-(no unapproved launch command runs), the `state/` seal (whitelist,
-approved-commands, vetted registry, audit log unwritable by agents), the
-root-socket (no rebind), the positional provenance tag, and the broker's
-confused-deputy + flood defenses. On `main` today these are still open, so until
-the branch merges treat the whitelist and gates on `main` as a convenience, not
-a control.
+**A boundary between mutually untrusted agents — in place.** The identity,
+launch-command, whitelist, socket-rebind, provenance, and broker-hardening holes
+(T2–T7, T14–T17) are closed on `main`, each with unit tests behind it:
+physical-location identity (corrald curates a vetted registry from per-workdir
+records and outbox submissions), harness registration (no unapproved launch
+command runs), the `state/` seal (whitelist, approved-commands, vetted registry,
+audit log unwritable by agents), the root-socket (no rebind), the positional
+provenance tag, and the broker's confused-deputy + flood defenses.
 
-The residuals that remain after the branch are deliberate: cross-agent message
-content is prompt injection by nature (T8, fix is out-of-band `_meta`, v2);
-pid-based focus/kill is unverified by choice (T9); a viewer still parses the
-live socket stream for display (T18, fixed by full mediation, deferred —
-TODO.md); and everything rests on the whole-process workdir sandbox
-precondition. None is a code-execution or cross-directory-identity hole.
-
-When the branch merges, flip the `[implemented]` tags to `[in place]` (the code
-and the claim land together) and drop the "pending merge" wording here.
+The residuals that remain are deliberate: cross-agent message content is prompt
+injection by nature (T8, fix is out-of-band `_meta`, v2); pid-based focus/kill
+is unverified by choice (T9); a viewer still parses the live socket stream for
+display (T18, fixed by full mediation, deferred — TODO.md); and everything rests
+on the whole-process workdir sandbox precondition (deployment glue, not corral
+code). None is a code-execution or cross-directory-identity hole.
 
 ## Reporting a Vulnerability
 
