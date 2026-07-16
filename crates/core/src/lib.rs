@@ -4,6 +4,7 @@
 //! once. Everything UI-specific (the board's ratatui, the daemon's tray) stays
 //! in its own crate; this crate stays dependency-light on purpose.
 
+pub mod approved_commands;
 pub mod click;
 pub mod discovery;
 pub mod engine;

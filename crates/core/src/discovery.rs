@@ -130,6 +130,50 @@ pub fn live_socket(entry: &RegistryEntry) -> Option<SocketEntry> {
     Some(SocketEntry { path, label, pid })
 }
 
+/// Whether a `sessionId` is safe to trust and to substitute into a launch
+/// argv (security design C3/T16). Restricted to `[A-Za-z0-9._-]`, non-empty,
+/// and never leading with `-`, so a value like `--config=/evil` can never be
+/// mistaken for a flag by a launched program. A record whose id fails this is
+/// rejected at acceptance (wired in the identity phase).
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Derive the authenticated `cwd` from a record's *resolved physical path*
+/// (security design T2/T3). A record physically lives at
+/// `<cwd>/.corral/<name>.json`, so the cwd is the grandparent of a file whose
+/// parent directory is named `.corral`. Any other shape yields `None`
+/// (rejected). Pure: the caller supplies the canonical path derived from an
+/// open fd (never a re-followed symlink, see the identity phase).
+pub fn cwd_from_record_path(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    if parent.file_name()? != ".corral" {
+        return None;
+    }
+    Some(parent.parent()?.to_string_lossy().into_owned())
+}
+
+/// Derive the authenticated `cwd` from an outbox submission's *resolved
+/// physical path* (security design T2). A submission lives at
+/// `<cwd>/.corral/outbox/<name>`, so the cwd is the great-grandparent of a file
+/// under a directory named `outbox` under one named `.corral`. Any other shape
+/// yields `None`, so corrald never derives a cwd from an arbitrary path.
+pub fn cwd_from_outbox_path(path: &Path) -> Option<String> {
+    let outbox = path.parent()?;
+    if outbox.file_name()? != "outbox" {
+        return None;
+    }
+    let corral = outbox.parent()?;
+    if corral.file_name()? != ".corral" {
+        return None;
+    }
+    Some(corral.parent()?.to_string_lossy().into_owned())
+}
+
 /// Parse `<label>-<pid>.sock`. The pid is everything after the *last* '-',
 /// so labels themselves may contain dashes.
 pub fn parse_socket_filename(name: &str) -> Option<(String, u32)> {
@@ -144,6 +188,43 @@ pub fn parse_socket_filename(name: &str) -> Option<(String, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_id_charset_is_strict() {
+        assert!(valid_session_id("6f1c2e7a-3b4d-4c5e-9a10"));
+        assert!(valid_session_id("abc.def_123"));
+        // Rejected: leading dash (flag injection), empty, and metacharacters.
+        assert!(!valid_session_id("--config=/evil"));
+        assert!(!valid_session_id(""));
+        assert!(!valid_session_id("a/b"));
+        assert!(!valid_session_id("a b"));
+        assert!(!valid_session_id("a;rm"));
+    }
+
+    #[test]
+    fn cwd_derives_from_record_physical_path() {
+        assert_eq!(
+            cwd_from_record_path(Path::new("/home/dev/x/.corral/abc.json")).as_deref(),
+            Some("/home/dev/x")
+        );
+        // Not under a .corral dir -> rejected (cannot be attributed).
+        assert_eq!(cwd_from_record_path(Path::new("/home/dev/x/abc.json")), None);
+        assert_eq!(cwd_from_record_path(Path::new("/abc.json")), None);
+    }
+
+    #[test]
+    fn cwd_derives_from_outbox_physical_path() {
+        assert_eq!(
+            cwd_from_outbox_path(Path::new("/home/dev/x/.corral/outbox/m1.json")).as_deref(),
+            Some("/home/dev/x")
+        );
+        // Wrong shape (not under .corral/outbox) -> rejected.
+        assert_eq!(
+            cwd_from_outbox_path(Path::new("/home/dev/x/.corral/m1.json")),
+            None
+        );
+        assert_eq!(cwd_from_outbox_path(Path::new("/etc/passwd")), None);
+    }
 
     #[test]
     fn parses_simple_filename() {
