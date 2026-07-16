@@ -58,20 +58,21 @@ pub struct Message {
 }
 
 impl Message {
-    /// The delivered text, carrying in-band provenance so the receiving model
-    /// and the watching human see it came from another agent, not the
-    /// operator. Kept short so it does not dominate a board activity line: the
-    /// sender directory is shown as its basename (the full cwd is not needed to
-    /// reply, which uses the session id, and `list_corral_agents` still gives
-    /// the full cwd for a reachable dir). When the sender's session is known it
-    /// is included in full as a reply handle: the receiver answers with
-    /// `corral_message_agent(target_session = ..)`.
+    /// The delivered text: a provenance tag on its **own first line**, then the
+    /// body verbatim to the end (security design T7). corrald builds the string,
+    /// so nothing attacker-controlled can precede the first-line tag; the
+    /// positional rule (stated in the charter and CONVENTION) is that only the
+    /// first line is an authentic sender tag, and any `[from …]` inside the body
+    /// is data. The sender directory shows as its basename (a reply uses the
+    /// session id, not the cwd); when the sender's session is known it rides in
+    /// full as the reply handle for `corral_message_agent(target_session = ..)`.
     pub fn tagged(&self) -> String {
         let from = basename(&self.from_cwd);
-        match &self.from_session {
-            Some(sid) => format!("[from {from} (session {sid})] {}", self.message),
-            None => format!("[from {from}] {}", self.message),
-        }
+        let tag = match &self.from_session {
+            Some(sid) => format!("[from {from} (session {sid})]"),
+            None => format!("[from {from}]"),
+        };
+        format!("{tag}\n{}", self.message)
     }
 
     /// Full human label for the target (used in the detail popup).
@@ -150,16 +151,25 @@ impl Ack {
 /// `target_cwd` is `Some` when the recipient is found (a known session's cwd,
 /// or an existing target directory), else `None`. `whitelisted` is consulted
 /// only when the recipient is found.
-/// `hidden` is the requested spawn visibility: a visible spawn (`false`) always
-/// needs the operator, so the whitelist alone never accepts it.
-pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool, hidden: bool) -> Ack {
+///
+/// `force_approval` names an explicit gate reason: the action is stronger than
+/// a plain message (a **visible** spawn, `hidden:false`), so it always needs
+/// the operator, whitelisted or not. It replaces the old overloading of the
+/// `hidden` flag — a stop, which never spawns, simply passes `false`.
+pub fn classify(
+    target: &Target,
+    target_cwd: Option<&str>,
+    whitelisted: bool,
+    force_approval: bool,
+) -> Ack {
     match target_cwd {
         None => match target {
             Target::Session(_) => Ack::RecipientNotFound,
             Target::Dir(_) => Ack::DirectoryNotKnown,
         },
-        // A visible window is operator-gated regardless of the whitelist.
-        Some(_) if !hidden => Ack::ApprovalNeeded,
+        // A stronger-than-message action is operator-gated regardless of the
+        // whitelist.
+        Some(_) if force_approval => Ack::ApprovalNeeded,
         Some(_) if whitelisted => Ack::Accepted,
         Some(_) => Ack::ApprovalNeeded,
     }
@@ -193,9 +203,10 @@ pub fn parse_message(text: &str) -> Option<Message> {
 /// Parse a stop submission (`{"op":"stop","id":..,"fromCwd":..,"targetSession":..}`).
 /// A stop always targets an exact session (killing whoever-works-in-a-dir would
 /// be ambiguous), so it requires `targetSession` and ignores `targetDir`. The
-/// body is empty and `hidden` is true so the shared classify never force-gates
-/// it as a visible spawn; a stop authorizes exactly like a message. Returns
-/// `None` unless `op` is `"stop"` (so the caller falls through to a message).
+/// body is empty; a stop never spawns, so the stop path passes
+/// `force_approval:false` to `classify` explicitly (a stop authorizes exactly
+/// like a message) — no `hidden`-flag contortion. Returns `None` unless `op`
+/// is `"stop"` (so the caller falls through to a message).
 pub fn parse_stop(text: &str) -> Option<Message> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     if v.get("op").and_then(|o| o.as_str()) != Some("stop") {
@@ -211,7 +222,9 @@ pub fn parse_stop(text: &str) -> Option<Message> {
         message: String::new(),
         force_new: false,
         label: None,
-        hidden: true,
+        // A stop never spawns, so visibility is irrelevant; the stop path gates
+        // it explicitly (force_approval:false), not via this flag.
+        hidden: false,
         action: Action::Stop,
     })
 }
@@ -353,7 +366,7 @@ mod tests {
         let json = r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi"}"#;
         let m = parse_message(json).unwrap();
         assert_eq!(m, msg());
-        assert_eq!(m.tagged(), "[from a] hi");
+        assert_eq!(m.tagged(), "[from a]\nhi");
         assert!(!m.force_new);
     }
 
@@ -366,7 +379,7 @@ mod tests {
         assert_eq!(m.target_label(), "session sid-7");
         // The reply handle (sender's session) rides in the provenance tag; the
         // dir shows as its basename, the session id stays full.
-        assert_eq!(m.tagged(), "[from a (session sid-9)] hi");
+        assert_eq!(m.tagged(), "[from a (session sid-9)]\nhi");
     }
 
     #[test]
@@ -428,18 +441,18 @@ mod tests {
     fn classify_covers_every_ack() {
         let sess = Target::Session("sid".into());
         let dir = Target::Dir("/b".into());
-        // Recipient found + hidden spawn -> whitelisted decides accepted vs approval.
-        assert_eq!(classify(&sess, Some("/b"), true, true), Ack::Accepted);
+        // Recipient found, no force -> whitelisted decides accepted vs approval.
+        assert_eq!(classify(&sess, Some("/b"), true, false), Ack::Accepted);
         assert_eq!(
-            classify(&sess, Some("/b"), false, true),
+            classify(&sess, Some("/b"), false, false),
             Ack::ApprovalNeeded
         );
-        assert_eq!(classify(&dir, Some("/b"), true, true), Ack::Accepted);
-        // A visible spawn (hidden=false) always needs the operator, even whitelisted.
-        assert_eq!(classify(&dir, Some("/b"), true, false), Ack::ApprovalNeeded);
-        // Recipient not found -> reason depends on the target kind (visibility moot).
-        assert_eq!(classify(&sess, None, false, true), Ack::RecipientNotFound);
-        assert_eq!(classify(&dir, None, false, true), Ack::DirectoryNotKnown);
+        assert_eq!(classify(&dir, Some("/b"), true, false), Ack::Accepted);
+        // force_approval (a visible spawn) always needs the operator, even whitelisted.
+        assert_eq!(classify(&dir, Some("/b"), true, true), Ack::ApprovalNeeded);
+        // Recipient not found -> reason depends on the target kind (force moot).
+        assert_eq!(classify(&sess, None, false, false), Ack::RecipientNotFound);
+        assert_eq!(classify(&dir, None, false, false), Ack::DirectoryNotKnown);
         // Only resolvable targets are routed onward.
         assert!(Ack::Accepted.routable());
         assert!(Ack::ApprovalNeeded.routable());

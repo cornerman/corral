@@ -591,7 +591,7 @@ mod tests {
         let first = launcher.last_msg.borrow();
         let first = first.as_deref().unwrap();
         assert!(
-            first.ends_with("[from a] hi"),
+            first.ends_with("[from a]\nhi"),
             "the provenance-tagged message is the tail of the first prompt"
         );
         assert!(
@@ -678,7 +678,7 @@ mod tests {
         r.poll(&entries, &launcher);
         assert!(r.pending().is_none(), "whitelisted: no operator prompt");
         assert_eq!(launcher.resumes.get(), 1, "dormant session is resumed");
-        assert_eq!(launcher.last_msg.borrow().as_deref(), Some("[from a] hi"));
+        assert_eq!(launcher.last_msg.borrow().as_deref(), Some("[from a]\nhi"));
     }
 
     #[test]
