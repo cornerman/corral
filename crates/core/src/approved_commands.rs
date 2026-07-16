@@ -11,6 +11,7 @@
 //! reviewer checks it in one place.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
 use crate::discovery::RegistryEntry;
@@ -201,6 +202,30 @@ pub fn register(mut approved: Approved, record: &RegistryEntry) -> Approved {
     approved
 }
 
+/// Persist the approved store to `path` (corrald is the sole writer, on operator
+/// approval). Atomic (temp + rename), mode `0600`, creating the parent. So a
+/// reader never sees a half-written store.
+pub fn write_approved(path: &Path, approved: &Approved) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        f.write_all(approved_json(approved).as_bytes())?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +355,16 @@ mod tests {
     fn malformed_store_is_empty() {
         assert!(parse_approved("not json").is_empty());
         assert!(parse_approved("[]").is_empty());
+    }
+
+    #[test]
+    fn write_approved_round_trips_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("approved-commands.json");
+        let mut r = rec(Some("pi"), "s1", None);
+        r.spawn_command = Some(vec!["pi".into()]);
+        let approved = register(Approved::new(), &r);
+        write_approved(&path, &approved).unwrap();
+        assert_eq!(read_approved(&path), approved);
     }
 }

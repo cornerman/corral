@@ -23,12 +23,14 @@ use corral_core::paths;
 mod control;
 mod curator;
 mod icon;
+mod registrations;
 mod mailbox;
 mod notify;
 mod router;
 mod tray;
 
 use notify::{ApprovalNotifier, NotifySendNotifier};
+use registrations::Registrar;
 use router::{ApprovalAction, Router};
 use tray::{Tray, TrayCommand};
 
@@ -40,12 +42,14 @@ fn main() {
     let (
         Some(index_file),
         Some(state_registry),
+        Some(approved_commands_file),
         Some(audit_log),
         Some(socket),
         Some(whitelist),
     ) = (
         paths::registry_index_file(),
         paths::state_registry_dir(),
+        paths::approved_commands_file(),
         paths::audit_log(),
         paths::control_socket(),
         paths::whitelist_file(),
@@ -53,7 +57,7 @@ fn main() {
         eprintln!("corrald: set $HOME or the CORRAL_* path overrides");
         std::process::exit(1);
     };
-    let _ = &audit_log; // wired into decisions in the registration phase
+
 
     // Singleton guard: one corrald owns the control socket. A live listener
     // means another daemon is already running; refuse rather than hijack it.
@@ -89,9 +93,13 @@ fn main() {
     // message id so a stale reply is ignored.
     let (napp_tx, napp_rx) = mpsc::channel::<(String, ApprovalAction)>();
     let tray = Tray::start();
-    // Which pending message id already has a tray/notification shown, so each
-    // fires once.
+    // Harness-registration approvals: the peer of the router's message
+    // approvals (separate consent, separate store — H3).
+    let mut registrar = Registrar::new(approved_commands_file.clone());
+    // Which pending message id / registration label already has a surface
+    // shown, so each fires (and is audited) once.
     let mut announced: Option<String> = None;
+    let mut announced_reg: Option<String> = None;
 
     loop {
         // Accept messages submitted over the control socket.
@@ -100,8 +108,25 @@ fn main() {
         }
 
         // Curate the untrusted raw index into the vetted state/registry the
-        // viewers and our own routing read (parse, don't validate).
-        curator::refresh(&index_file, &state_registry);
+        // viewers and our own routing read (parse, don't validate). Only
+        // registered kinds are published; the rest come back as pending
+        // registrations for the operator to verify.
+        let pending_regs = curator::refresh(&index_file, &state_registry, &approved_commands_file);
+        registrar.observe(pending_regs);
+        // Surface a newly pending registration to the tray (once), and audit it.
+        match registrar.current() {
+            Some((label, template)) if announced_reg.as_deref() != Some(label) => {
+                let desc = curator::describe(template);
+                tray.set_pending_registration(Some((label.clone(), desc.clone())));
+                curator::audit(&audit_log, &format!("registration pending: {label} [{desc}]"));
+                announced_reg = Some(label.clone());
+            }
+            None if announced_reg.is_some() => {
+                tray.set_pending_registration(None);
+                announced_reg = None;
+            }
+            _ => {}
+        }
         // Route whatever is authorized; the vetted registry is the daemon's
         // whole view of who is live (socket set) and dormant (socket cleared).
         let entries = discovery::scan_registry(&state_registry);
@@ -146,6 +171,19 @@ fn main() {
         while let Ok(cmd) = tray.commands.try_recv() {
             match cmd {
                 TrayCommand::Decide(id, action) => apply_decision(&mut router, &id, action),
+                TrayCommand::DecideRegistration(label, approve) => {
+                    if approve {
+                        match registrar.approve(&label) {
+                            Ok(true) => curator::audit(&audit_log, &format!("registered: {label}")),
+                            Ok(false) => {} // stale click; nothing pending
+                            Err(e) => eprintln!("corrald: register {label}: {e}"),
+                        }
+                    } else {
+                        registrar.deny(&label);
+                        curator::audit(&audit_log, &format!("registration denied: {label}"));
+                    }
+                    announced_reg = None; // re-evaluate what to surface next tick
+                }
                 TrayCommand::ShowDetails(id) => {
                     if let Some(msg) = router.pending().filter(|m| m.id == id) {
                         notify::show_detail(

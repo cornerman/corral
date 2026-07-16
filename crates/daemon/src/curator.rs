@@ -16,28 +16,30 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 
+use corral_core::approved_commands::{self, Template};
 use corral_core::curation;
 
-/// Refresh `state_registry_dir` from the raw `index_file`: curate the vetted
-/// records and make the directory match them (add/update present, delete
-/// vanished). Best-effort per file; a single unwritable record never aborts the
-/// sync.
-///
-/// NOTE: the registration gate (`curation::partition` over the approved store)
-/// is not applied here yet, so today every authenticated + field-validated
-/// record is published. Wiring the gate + the operator approval surface is the
-/// next phase; until then this store is not yet the "registered only" set the
-/// design specifies.
-pub fn refresh(index_file: &Path, state_registry_dir: &Path) {
-    let vetted = curation::curate(index_file);
+/// Refresh `state_registry_dir` from the raw `index_file`, gated by the
+/// `approved_file` registration store: curate + partition, publish only the
+/// **registered** records (add/update present, delete vanished), and return the
+/// deduplicated `(label, launch-set)` pairs still **pending** operator
+/// approval. Only registered records are published, so corrald routes and
+/// viewers render approved kinds only. Best-effort per file.
+pub fn refresh(
+    index_file: &Path,
+    state_registry_dir: &Path,
+    approved_file: &Path,
+) -> Vec<(String, Template)> {
+    let approved = approved_commands::read_approved(approved_file);
+    let split = curation::partition(curation::curate(index_file), &approved);
     if std::fs::create_dir_all(state_registry_dir).is_err() {
-        return;
+        return split.pending;
     }
     // 0700 on the state dir (defense in depth; the sandbox seals it anyway).
     let _ = set_mode_700(state_registry_dir);
 
     let mut present = BTreeSet::new();
-    for rec in &vetted {
+    for rec in &split.registered {
         let name = format!("{}.json", rec.session_id);
         present.insert(name.clone());
         let Ok(json) = record_json(rec) else { continue };
@@ -65,6 +67,7 @@ pub fn refresh(index_file: &Path, state_registry_dir: &Path) {
             }
         }
     }
+    split.pending
 }
 
 /// Serialize a vetted entry back to the record JSON shape the viewers parse.
@@ -114,10 +117,27 @@ fn set_mode_700(dir: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
+/// A compact one-line display of a launch set, shown at registration so the
+/// operator sees exactly what will run (argv + the launch-affecting flags).
+pub fn describe(t: &Template) -> String {
+    let mut parts = Vec::new();
+    if let Some(s) = &t.spawn {
+        parts.push(format!("spawn={}", s.join(" ")));
+    }
+    if let Some(r) = &t.resume {
+        parts.push(format!("resume={}", r.join(" ")));
+    }
+    if t.gui {
+        parts.push("gui".into());
+    }
+    if let Some(f) = &t.message_flag {
+        parts.push(format!("messageFlag={f}"));
+    }
+    parts.join(" ")
+}
+
 /// Append one line to the audit log (security design: the operator's after-the
 /// -fact record). Best-effort; a failure to log never blocks the daemon.
-/// Wired into registration/authz decisions in the registration phase.
-#[allow(dead_code)]
 pub fn audit(log: &Path, line: &str) {
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);

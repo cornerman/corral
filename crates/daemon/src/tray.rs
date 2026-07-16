@@ -19,19 +19,30 @@ use crate::router::ApprovalAction;
 
 /// An operator action from the tray for the main loop to act on.
 pub enum TrayCommand {
-    /// Decide the pending approval identified by this message id.
+    /// Decide the pending message approval identified by this message id.
     Decide(String, ApprovalAction),
     /// Pop a full detail view (from, to, body) of the pending message.
     ShowDetails(String),
+    /// Decide the pending harness registration for this label: approve
+    /// (register the shown launch set) or deny. A separate consent from a
+    /// message approval (never bundled — security design H3).
+    DecideRegistration(String, bool),
     /// Open the attention board (`kitty -e corral`).
     OpenBoard,
     /// Stop the daemon.
     Quit,
 }
 
-/// The pending approval shown in the tray, if any.
+/// The pending message approval shown in the tray, if any.
 struct TrayPending {
     id: String,
+    summary: String,
+}
+
+/// The pending harness registration shown in the tray, if any: the kind label
+/// and a display of the launch set the operator is being asked to trust.
+struct TrayRegistration {
+    label: String,
     summary: String,
 }
 
@@ -40,6 +51,7 @@ struct TrayPending {
 pub struct CorralTray {
     tx: Sender<TrayCommand>,
     pending: Option<TrayPending>,
+    pending_reg: Option<TrayRegistration>,
 }
 
 impl CorralTray {
@@ -52,6 +64,14 @@ impl CorralTray {
         }
         self.pending = None;
     }
+
+    /// Report a decision on the current pending registration, then clear it.
+    fn decide_registration(&mut self, approve: bool) {
+        if let Some(r) = &self.pending_reg {
+            let _ = self.tx.send(TrayCommand::DecideRegistration(r.label.clone(), approve));
+        }
+        self.pending_reg = None;
+    }
 }
 
 impl ksni::Tray for CorralTray {
@@ -60,9 +80,10 @@ impl ksni::Tray for CorralTray {
     }
 
     fn title(&self) -> String {
-        match &self.pending {
-            Some(_) => "corral — message waiting".into(),
-            None => "corral".into(),
+        match (&self.pending, &self.pending_reg) {
+            (Some(_), _) => "corral — message waiting".into(),
+            (_, Some(_)) => "corral — harness to verify".into(),
+            _ => "corral".into(),
         }
     }
 
@@ -82,9 +103,10 @@ impl ksni::Tray for CorralTray {
     // implementations) hide `Passive` items, which would make corrald
     // invisible until a message happened to arrive.
     fn status(&self) -> ksni::Status {
-        match &self.pending {
-            Some(_) => ksni::Status::NeedsAttention,
-            None => ksni::Status::Active,
+        if self.pending.is_some() || self.pending_reg.is_some() {
+            ksni::Status::NeedsAttention
+        } else {
+            ksni::Status::Active
         }
     }
 
@@ -155,6 +177,46 @@ impl ksni::Tray for CorralTray {
                 .into(),
             ),
         }
+        // A pending harness registration is a separate section with its own
+        // Approve/Deny, never merged into a message approval (security H3).
+        items.push(MenuItem::Separator);
+        match &self.pending_reg {
+            Some(r) => {
+                items.push(
+                    StandardItem {
+                        label: format!("Verify harness {}: {}", r.label, r.summary),
+                        enabled: false,
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(
+                    StandardItem {
+                        label: "Approve harness".into(),
+                        activate: Box::new(|t: &mut Self| t.decide_registration(true)),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(
+                    StandardItem {
+                        label: "Deny harness".into(),
+                        activate: Box::new(|t: &mut Self| t.decide_registration(false)),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+            None => items.push(
+                StandardItem {
+                    label: "No harness to verify".into(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            ),
+        }
+
         items.push(MenuItem::Separator);
         items.push(
             StandardItem {
@@ -193,7 +255,13 @@ impl Tray {
     /// Start the tray on its own thread (best-effort).
     pub fn start() -> Self {
         let (tx, commands) = mpsc::channel();
-        let handle = match (CorralTray { tx, pending: None }).spawn() {
+        let handle = match (CorralTray {
+            tx,
+            pending: None,
+            pending_reg: None,
+        })
+        .spawn()
+        {
             Ok(h) => Some(h),
             Err(e) => {
                 eprintln!("corrald: tray unavailable ({e}); using notifications only");
@@ -203,11 +271,20 @@ impl Tray {
         Tray { handle, commands }
     }
 
-    /// Reflect the current pending approval (or its absence) into the tray.
+    /// Reflect the current pending message approval (or its absence).
     pub fn set_pending(&self, pending: Option<(String, String)>) {
         if let Some(h) = &self.handle {
             h.update(|t| {
                 t.pending = pending.map(|(id, summary)| TrayPending { id, summary });
+            });
+        }
+    }
+
+    /// Reflect the current pending harness registration (or its absence).
+    pub fn set_pending_registration(&self, reg: Option<(String, String)>) {
+        if let Some(h) = &self.handle {
+            h.update(|t| {
+                t.pending_reg = reg.map(|(label, summary)| TrayRegistration { label, summary });
             });
         }
     }
