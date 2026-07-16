@@ -31,10 +31,26 @@ pub fn corral_path(env: &str, name: &str) -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join(name))
 }
 
-/// The registry directory: the session symlinks both binaries discover. The
-/// one agent-writable location under `~/.corral`.
-pub fn registry_dir() -> Option<PathBuf> {
-    corral_path("CORRAL_REGISTRY_DIR", "registry")
+/// The **raw dir-index** file (`~/.corral/registry`): a newline-delimited list
+/// of directories where agents have run. Agent-appendable; read only by
+/// corrald's curator, which then scans each `<D>/.corral/registry/`.
+pub fn registry_index_file() -> Option<PathBuf> {
+    corral_path("CORRAL_REGISTRY_INDEX", "registry")
+}
+
+/// The **vetted registry** directory (`~/.corral/state/registry/`): the
+/// authenticated, field-validated, registered records corrald writes and the
+/// viewers read. Sealed (under `state/`), so viewers only ever render trusted
+/// data.
+pub fn state_registry_dir() -> Option<PathBuf> {
+    state_path("CORRAL_STATE_REGISTRY", "registry")
+}
+
+/// The append-only security audit log (`~/.corral/state/audit.log`): corrald's
+/// record of registrations, authorizations, stops, deliveries, and quarantine
+/// drops. Sealed under `state/`.
+pub fn audit_log() -> Option<PathBuf> {
+    state_path("CORRAL_AUDIT_LOG", "audit.log")
 }
 
 /// The control socket the `corral_message_agent` tool submits to, and the

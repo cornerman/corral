@@ -45,8 +45,10 @@ use corral_core::{model, nav, paths};
 const POLL: Duration = Duration::from_millis(250);
 
 fn main() {
-    let Some(dir) = paths::registry_dir() else {
-        eprintln!("corral: set $CORRAL_REGISTRY_DIR or $HOME");
+    // Viewers read only corrald's vetted registry (security design: viewers
+    // never touch agent-writable records).
+    let Some(dir) = paths::state_registry_dir() else {
+        eprintln!("corral: set $CORRAL_STATE_DIR or $HOME");
         std::process::exit(1);
     };
 

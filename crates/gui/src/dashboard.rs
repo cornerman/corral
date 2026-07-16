@@ -180,7 +180,8 @@ impl Board {
     /// Build the board and its boot task. In launcher mode the boot task
     /// focuses the filter so you can type to narrow immediately.
     pub fn new(launcher_mode: bool) -> (Self, Task<Message>) {
-        let dir = paths::registry_dir().expect("registry dir (set $HOME or $CORRAL_REGISTRY_DIR)");
+        // Viewers read only corrald's vetted registry (never agent-writable records).
+        let dir = paths::state_registry_dir().expect("state registry dir (set $HOME or $CORRAL_STATE_DIR)");
         let mut b = Board {
             engine: Engine::new(dir.clone()),
             focuser: focus::detect(),

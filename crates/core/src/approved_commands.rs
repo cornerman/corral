@@ -22,13 +22,19 @@ pub const SESSION_PLACEHOLDER: &str = "{sessionId}";
 /// the working directory, e.g. cursor).
 pub const CWD_PLACEHOLDER: &str = "{cwd}";
 
-/// The approved argv templates for one registered kind, normalized. `spawn` or
-/// `resume` is `None` when that mode was never approved for the kind, so a
-/// record carrying the un-approved mode does not fit.
+/// The approved **launch set** for one registered kind: the normalized argv
+/// plus the launch-affecting flags. A record is a citizen only when its whole
+/// set matches (see [`registered`]) — any change to any field is a new set that
+/// needs its own approval, so a flipped `gui` or `message_flag` cannot ride in
+/// under an already-approved argv.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Template {
     pub spawn: Option<Vec<String>>,
     pub resume: Option<Vec<String>>,
+    /// Launch directly (GUI app) vs terminal-wrapped.
+    pub gui: bool,
+    /// CLI flag carrying an initial launch message, if any.
+    pub message_flag: Option<String>,
 }
 
 /// The store: `label -> approved templates`. Read by everyone (corrald and both
@@ -86,6 +92,8 @@ pub fn candidate(record: &RegistryEntry) -> Template {
     Template {
         spawn: record.spawn_command.as_ref().map(norm),
         resume: record.resume_command.as_ref().map(norm),
+        gui: record.gui,
+        message_flag: record.message_flag.clone(),
     }
 }
 
@@ -97,20 +105,9 @@ pub fn registered(record: &RegistryEntry, approved: &Approved) -> bool {
     let Some(label) = record.label.as_deref() else {
         return false; // no kind to register against
     };
-    let Some(tmpl) = approved.get(label) else {
-        return false; // kind never registered
-    };
-    let cand = candidate(record);
-    // Each command the record carries must equal the stored counterpart. A
-    // command present in the record but absent (or different) in the template
-    // is a deviation, so the record does not fit.
-    if cand.spawn.is_some() && cand.spawn != tmpl.spawn {
-        return false;
-    }
-    if cand.resume.is_some() && cand.resume != tmpl.resume {
-        return false;
-    }
-    true
+    // The whole launch set must match the stored one exactly: any change to
+    // argv, gui, or message_flag is a different set and is not registered.
+    approved.get(label) == Some(&candidate(record))
 }
 
 /// Whether a specific launch mode of a record is approved to execute. Stricter
@@ -120,10 +117,9 @@ pub fn mode_approved(record: &RegistryEntry, approved: &Approved, mode: Mode) ->
     if !registered(record, approved) {
         return false;
     }
-    let cand = candidate(record);
     match mode {
-        Mode::Spawn => cand.spawn.is_some(),
-        Mode::Resume => cand.resume.is_some(),
+        Mode::Spawn => record.spawn_command.is_some(),
+        Mode::Resume => record.resume_command.is_some(),
     }
 }
 
@@ -161,6 +157,8 @@ pub fn parse_approved(text: &str) -> Approved {
                 Template {
                     spawn: cmd(t, "spawn"),
                     resume: cmd(t, "resume"),
+                    gui: t.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
+                    message_flag: t.get("messageFlag").and_then(|x| x.as_str()).map(String::from),
                 },
             )
         })
@@ -180,6 +178,12 @@ pub fn approved_json(approved: &Approved) -> String {
             }
             if let Some(r) = &t.resume {
                 m.insert("resume".into(), r.clone().into());
+            }
+            if t.gui {
+                m.insert("gui".into(), true.into());
+            }
+            if let Some(f) = &t.message_flag {
+                m.insert("messageFlag".into(), f.clone().into());
             }
             (label.clone(), serde_json::Value::Object(m))
         })
@@ -291,6 +295,23 @@ mod tests {
         with_resume.spawn_command = Some(vec!["pi".into()]);
         with_resume.resume_command = Some(vec!["pi".into(), "--session".into(), "s1".into()]);
         assert!(!registered(&with_resume, &approved));
+    }
+
+    #[test]
+    fn flipping_gui_or_message_flag_is_a_new_set() {
+        let mut r = rec(Some("pi"), "s1", None);
+        r.spawn_command = Some(vec!["pi".into()]);
+        let approved = register(Approved::new(), &r);
+        // Same argv but gui flipped -> different set -> not registered.
+        let mut gui = rec(Some("pi"), "s2", None);
+        gui.spawn_command = Some(vec!["pi".into()]);
+        gui.gui = true;
+        assert!(!registered(&gui, &approved));
+        // Same argv but a messageFlag added -> different set -> not registered.
+        let mut mf = rec(Some("pi"), "s3", None);
+        mf.spawn_command = Some(vec!["pi".into()]);
+        mf.message_flag = Some("--prompt".into());
+        assert!(!registered(&mf, &approved));
     }
 
     #[test]

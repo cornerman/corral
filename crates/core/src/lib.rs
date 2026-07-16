@@ -6,6 +6,7 @@
 
 pub mod approved_commands;
 pub mod click;
+pub mod curation;
 pub mod discovery;
 pub mod engine;
 pub mod focus;

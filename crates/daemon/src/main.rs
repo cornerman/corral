@@ -21,6 +21,7 @@ use corral_core::launch::TerminalLauncher;
 use corral_core::paths;
 
 mod control;
+mod curator;
 mod icon;
 mod mailbox;
 mod notify;
@@ -36,14 +37,23 @@ use tray::{Tray, TrayCommand};
 const TICK: Duration = Duration::from_millis(200);
 
 fn main() {
-    let (Some(registry_dir), Some(socket), Some(whitelist)) = (
-        paths::registry_dir(),
+    let (
+        Some(index_file),
+        Some(state_registry),
+        Some(audit_log),
+        Some(socket),
+        Some(whitelist),
+    ) = (
+        paths::registry_index_file(),
+        paths::state_registry_dir(),
+        paths::audit_log(),
         paths::control_socket(),
         paths::whitelist_file(),
     ) else {
         eprintln!("corrald: set $HOME or the CORRAL_* path overrides");
         std::process::exit(1);
     };
+    let _ = &audit_log; // wired into decisions in the registration phase
 
     // Singleton guard: one corrald owns the control socket. A live listener
     // means another daemon is already running; refuse rather than hijack it.
@@ -56,9 +66,11 @@ fn main() {
     }
 
     let (msg_tx, msg_rx) = mpsc::channel();
+    // Recipient resolution reads the VETTED registry corrald itself curates,
+    // never agent-writable records.
     if let Err(e) = control::serve(
         socket.clone(),
-        registry_dir.clone(),
+        state_registry.clone(),
         whitelist.clone(),
         msg_tx,
     ) {
@@ -87,9 +99,12 @@ fn main() {
             router.enqueue(m);
         }
 
-        // Route whatever is authorized; a fresh registry scan is the daemon's
+        // Curate the untrusted raw index into the vetted state/registry the
+        // viewers and our own routing read (parse, don't validate).
+        curator::refresh(&index_file, &state_registry);
+        // Route whatever is authorized; the vetted registry is the daemon's
         // whole view of who is live (socket set) and dormant (socket cleared).
-        let entries = discovery::scan_registry(&registry_dir);
+        let entries = discovery::scan_registry(&state_registry);
         if let Some(status) = router.poll(&entries, &launcher) {
             eprintln!("corrald: {status}");
         }
