@@ -47,25 +47,32 @@ The registry record, workdir-local socket, and ACP surface are a harness-neutral
 convention specified in `CONVENTION.md` (implement from that alone, no source
 reading). This section is the architecture view of the same contract.
 
-Discovery works through a per-session registry on the filesystem, not a
-registry service. One record per session names a workdir-local socket:
+Discovery works through per-workdir records plus a filesystem index, curated by
+corrald into a sealed, vetted store the boards read. Security rests on physical
+location = identity (see SECURITY.md, CONVENTION.md v2):
 
 ```
-$HOME/.corral/registry/<sessionId>.json   (dir 0700; override $CORRAL_REGISTRY_DIR)
-  { sessionId, cwd, title, label, socket, spawnCommand, resumeCommand, lastSeen }
-<cwd>/.corral/<label>-<pid>.sock           (dir 0700; override $CORRAL_SOCKET_DIR)
+<cwd>/.corral/registry/<sessionId>.json    (dirs 0700; override $CORRAL_SOCKET_DIR)
+  { sessionId, title, label, socket, spawnCommand, resumeCommand, lastSeen, … }   ← NO cwd field
+<cwd>/.corral/<label>-<pid>.sock           (dir 0700)
+$HOME/.corral/registry                     (agent-appendable dir-index FILE; override $CORRAL_REGISTRY_INDEX)
+$HOME/.corral/state/registry/<id>.json     (corrald-written, VETTED; the boards read only this)
+$HOME/.corral/state/{whitelist,approved-commands.json,audit.log}   (sealed, daemon-only)
 ```
 
-A pi extension writes the record and binds the socket on `session_start`, then
-on clean shutdown unlinks the socket and clears the record's `socket` to null
-(leaving a dormant, resumable entry). The socket lives inside the session's own
-working directory, so only that session (and unsandboxed tools like corral) can
-reach it; that workdir-local isolation is the primitive a later messaging layer
-relies on. Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it. Corral scans
-the registry to find each socket (it could never scan the scattered workdirs
-directly), then talks plain ACP (JSON-RPC, newline-delimited, as on stdio) to
-that agent. A record with `socket == null` is dormant (rendering dormant
-sessions is a later stage).
+An adapter writes its record inside its own workdir and appends the workdir to
+the index file on `session_start`; on clean shutdown it unlinks the socket and
+clears the record's `socket` to null (dormant, resumable). Because a sandboxed
+agent can write only inside its own workdir, a record's physical location
+*proves* its directory: **corrald is the sole reader of the agent-writable
+index+records**, canonicalizes each listed dir from a directory fd, derives the
+trusted `cwd` from where each record physically lives (ignoring any content
+`cwd` — there is none), validates every field (sessionId charset, socket must
+resolve under `<cwd>/.corral/`), applies the registration gate, and writes the
+survivors to `state/registry/`. The **boards read only `state/registry/`** (via
+an inotify watch), never an agent-written file, and talk plain ACP to each live
+socket for state. Not $XDG_RUNTIME_DIR: sandboxed agents cannot reach it. A
+record with `socket == null` is dormant.
 
 ## Data Flow
 
@@ -109,12 +116,24 @@ binaries share, so no UI links another's dependencies (board + gui keep
 ratatui / iced, the daemon keeps ksni).
 
 - `crates/core` — `corral-core` (lib): the shared foundation, UI-free
-  (`serde_json` only).
-  - `src/discovery.rs` — scan the registry dir, parse each `<sessionId>.json`
-    record, and resolve a live record to its socket (parsing the
-    `<label>-<pid>.sock` filename). Liveness is read straight from the record
-    (`socket` set = live, cleared = dormant); the optional `hidden` field marks
-    a session running headless. Pure, unit-tested.
+  (`serde_json`, `libc`, `inotify`).
+  - `src/discovery.rs` — parse a `<sessionId>.json` record and resolve a live
+    record to its socket (parsing the `<label>-<pid>.sock` filename);
+    `scan_registry` is a plain trusted read of a dir of records (used by the
+    boards over the **vetted** `state/registry/`, and by corrald over its own
+    output). Also `valid_session_id` (charset gate) and the `cwd_from_*`
+    physical-path derivations. Pure, unit-tested.
+  - `src/curation.rs` — corrald's parsing boundary (security). `read_index`
+    (the dir-index file), `canonical_dir` (race-safe dir-fd canonicalize),
+    `vet` (per-field validation: sessionId, socket-under-`<cwd>/.corral/`, cwd
+    stamped from location, title/description sanitized), `curate` (scan every
+    listed workdir's `.corral/registry/`), `partition` (the registration gate:
+    split vetted into registered vs pending), and `resolve_submission` (open an
+    outbox file non-blocking, size-capped, derive the trusted `fromCwd` from
+    its physical location). Pure/IO-thin, unit-tested.
+  - `src/approved_commands.rs` — the harness-registration store: `normalize`
+    (sessionId/cwd → placeholders), the `registered` predicate (full launch-set
+    match: spawn/resume/gui/messageFlag), `write_approved`. Pure, unit-tested.
   - `src/launch.rs` — `Launcher` seam. `TerminalLauncher::launch(cwd, command,
     message, mode)` takes a `LaunchMode { gui, message_flag, hidden }` bundling
     the record-derived launch options (built by callers via `Agent::launch_mode`
@@ -194,11 +213,13 @@ ratatui / iced, the daemon keeps ksni).
     seeding `Upsert` (a `SetState` for a not-yet-present agent would be
     dropped); without this a Running/blocked agent showed Idle until its next
     transition. A stateless agent still defaults to Idle.
-  - `src/engine.rs` — the shared registry-reflect loop: on a ~1s cadence
-    scan + prune the registry, spawn a watcher per live socket, fold updates
-    into the `Board`, and track per-agent age timers. A shell calls `tick`
-    then renders `board()` + the age maps. Both shells (TUI and GUI) run on
-    this engine, so reflect behavior cannot drift between them.
+  - `src/engine.rs` — the shared registry-reflect loop the boards run on: it
+    reads the **vetted `state/registry/`** (an inotify watch on that dir
+    triggers an immediate rescan, so a viewer reacts to corrald's writes
+    without a second poll; a ~1s safety poll backs it up), spawns a watcher per
+    live socket, folds updates into the `Board`, and tracks age timers. A shell
+    calls `tick` then renders `board()` + the age maps. Both shells run on this
+    engine, so reflect behavior cannot drift.
   - `src/nav.rs` — pure selection math over the per-column counts. Down/Up
     (`move_selection`) flow across the flat index, crossing a column's last
     card into the next column's first; `at_board_edge` / `board_entry` ring the
@@ -338,15 +359,15 @@ ratatui / iced, the daemon keeps ksni).
     adds `cwd` + `description`, an unreachable one hides both, and no entry
     carries a title or activity. Pure, unit-tested.
   - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
-    `$CORRAL_CONTROL_SOCKET`). A background thread accepts one submission per
-    connection: read the request line; a `{"op":"list"}` roster query is
-    answered synchronously and never routed; else parse the message, find the
-    recipient (registry scan for a session, dir-exists for a directory), ack the
-    verdict, and (if routable) hand the message to the router over a channel. `serve` fails loud
-    on a bind error and `is_serving` is the singleton guard (a live listener
-    means another corrald owns the socket, so the second refuses to start).
-    Ack is synchronous; delivery and the approval gate run later. Unit-tested
-    against a throwaway socket.
+    `$CORRAL_CONTROL_SOCKET`). Each connection carries a `{"submit":path}`
+    envelope; corrald resolves the outbox file (`curation::resolve_submission`)
+    to the authenticated `fromCwd` + content, then dispatches: a `{"op":"list"}`
+    roster query answered synchronously, else parse the message/stop, **force
+    `fromCwd` to the authenticated value**, find the recipient (vetted-registry
+    scan), ack the verdict, and (if routable) hand it to the router. Accepts are
+    bounded and each read is timed out (slowloris/flood defense, T15). `serve`
+    fails loud on bind error; `is_serving` is the singleton guard. Ack is
+    synchronous; delivery + approval run later. Unit-tested.
   - `src/router.rs` — `Router`: routes agent-initiated messages (enqueued from
     the control socket) using a fresh registry scan as its whole view of who is
     live and dormant. A directory target reuses a live agent over its socket or
@@ -376,11 +397,21 @@ ratatui / iced, the daemon keeps ksni).
     the board and quit. The tray thread cannot touch the router, so each action
     becomes a `TrayCommand` on a channel the main loop drains. Best-effort: no
     StatusNotifierHost means notification-only approval, nothing else changes.
+  - `src/curator.rs` — the registry curator (the parsing boundary in action):
+    each tick `curation::refresh` reads the raw index, curates + partitions on
+    the approved store, and syncs the **registered** survivors into the sealed
+    `state/registry/` (write-on-change), returning the pending `(label,
+    launch-set)` list; also the `audit.log` appender.
+  - `src/registrations.rs` — `Registrar`: the peer of the router's message
+    approvals for **harness registration** (a separate consent, H3). Holds
+    pending/denied kinds, surfaces one on the tray, and on approve writes the
+    launch-set to `approved-commands.json`. Unit-tested.
   - `src/main.rs` — the headless loop: refuse to start if another corrald is
     live (`is_serving`), else bind the control socket (fail loud), then each
-    tick drain accepted messages, scan the registry, route, reflect a new
-    pending approval to the tray + a notification (once), and apply decisions
-    from either (guarded on the current pending id).
+    tick curate → `state/registry/`, drain accepted messages, route, and
+    reflect a pending **message** approval (tray + notification) and a pending
+    **registration** (tray) — two separate approval surfaces — applying
+    decisions from either (guarded on the current pending id).
 
 ## Extensions
 
@@ -771,11 +802,11 @@ message/tool updates) is ACP v1.
 
 - More than pi. The board core is agent-agnostic; the only pi-specific piece is
   the `corral-pi` adapter. The stable contract any ACP agent joins by:
-  (1) write `~/.corral/registry/<sessionId>.json` with `label` set to the agent
-  kind, `socket` pointing at (2) a workdir-local `<label>-<pid>.sock` speaking
-  ACP (initialize, session/list, session/prompt), a `spawnCommand`/
-  `resumeCommand` argv corral runs verbatim to launch/resume the kind, and (3)
-  broadcast `state_update`. A non-cooperating agent can be wrapped by a generic
+  (1) write `<cwd>/.corral/registry/<sessionId>.json` (no `cwd` field) with
+  `label` set to the agent kind and `socket` pointing at (2) a workdir-local
+  `<label>-<pid>.sock` speaking ACP (initialize, session/list, session/prompt),
+  a `spawnCommand`/`resumeCommand` argv corral runs verbatim, append the workdir
+  to the `~/.corral/registry` index, and (3) broadcast `state_update`. A non-cooperating agent can be wrapped by a generic
   stdio-to-socket-plus-registry shim instead of a bespoke extension. Missing
   `state_update` just defaults the card to Idle; a missing `label` renders as
   `agent`; a missing `spawnCommand`/`resumeCommand` leaves the kind
