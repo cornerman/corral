@@ -73,6 +73,41 @@ tray, which also shows the daemon's status:
   <img src="docs/screenshot-tray.png" alt="corrald tray" width="300">
 </p>
 
+## Security: the Filesystem Is the Authority
+
+Corral has no ports and no network surface. Every channel is a unix socket or a
+file under `~/.corral` and each workdir's `.corral/` (both `0700`), and the only
+credential is **directory permissions** — so the security model rides on one
+idea: **physical location is identity.**
+
+Each agent runs sandboxed to its own working directory, so it can write files
+*only* there. It therefore writes its registry record and its outbox messages
+inside its own `<cwd>/.corral/`. `corrald` — the single trusted broker — never
+trusts what a file *says* about who wrote it; it derives that from **where the
+file physically lives**. A record found under `evil/` is attributed to `evil/`,
+full stop; an agent cannot claim another directory it cannot write, nor aim a
+message's sender at a box it does not own.
+
+From that one primitive the rest follows:
+
+- **corrald curates.** It is the only reader of the agent-writable registry
+  index; it authenticates and validates every field, then publishes a sealed,
+  vetted `~/.corral/state/registry/` that the boards read. Boards render only
+  vetted data.
+- **A harness must be registered before it runs.** The exact launch command of
+  each agent kind is approved by you once (corrald shows it); an unapproved or
+  altered command is quarantined, never executed. So a planted record cannot
+  turn into code execution.
+- **The private side is sealed.** Agents may append to the registry index and
+  connect to the socket; the whitelist, the approved-command store, the vetted
+  registry, and the audit log live in `~/.corral/state/` and are never on an
+  agent's sandbox allowlist — unwritable by construction.
+
+The load-bearing precondition: each agent is boxed to its workdir (whole-process
+sandbox). Without that, corral's gates are a convenience, not a boundary. The
+full threat model, every mitigation, and the accepted risks are in
+[SECURITY.md](SECURITY.md).
+
 ## Learn More
 
 - [CONVENTION.md](CONVENTION.md) — the filesystem convention any agent joins by
