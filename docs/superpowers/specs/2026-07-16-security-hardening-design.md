@@ -16,9 +16,10 @@ The four findings and their fixes:
 
 1. **Spoofable sender identity.** `fromCwd` / `fromSession` are self-reported
    over `corrald.sock`, so the whitelist, roster, and stop gates are
-   bypassable. Fix: physical-location identity — a symlinked registry and an
-   outbox-file submission, so a claim of "I act in directory D" is proven by the
-   act of writing inside D, which only D's sandboxed agent can do.
+   bypassable. Fix: physical-location identity — corrald curates a vetted
+   registry from per-workdir records, and submissions ride an outbox file, so a
+   claim of "I act in directory D" is proven by the act of writing inside D,
+   which only D's sandboxed agent can do.
 2. **Attacker-chosen launch argv.** Registry records carry `spawnCommand` /
    `resumeCommand` that corral runs verbatim and unsandboxed. Fix: a
    trust-on-first-use store of approved command templates, with corrald as the
@@ -78,53 +79,58 @@ design applies it consistently to identity and submission. Directory
 permissions are the only credential, and they already exist, so no tokens and
 no signatures are introduced.
 
-## Mechanism 1: Physical-Location Identity
+## Mechanism 1: Physical-Location Identity (corrald Curates)
 
-### Symlinked Registry (Authenticates Announcements)
+### The Curator Model
 
-The record moves into the workdir it describes; the registry becomes an index
-of symlinks pointing at those records.
+corrald is the single reader of the agent-writable raw index and the single
+writer of a vetted registry the viewers read. "Parse, don't validate":
+untrusted records in, trusted records out.
 
-- The agent writes the real record to `<cwd>/.corral/<sessionId>.json`
-  (atomic: temp file, then rename), beside its socket.
-- The agent creates `~/.corral/registry/<sessionId>.json` as a **symlink** to
-  that real file.
-- A consumer **opens** the symlink target, then derives `cwd` from that open
-  file descriptor's real path via `/proc/self/fd/<n>`, requiring the path to
-  match `<cwd>/.corral/<sessionId>.json` and stripping the suffix. It reads the
-  record content **from the same fd**. It **ignores any `cwd` field in the
-  content**; the physical location is authoritative.
-- **`sessionId` MUST match a strict charset** (`[A-Za-z0-9._-]`, no leading
-  `-`) and equal the symlink filename; a record violating either is rejected.
-  This is load-bearing for Mechanism 3, where `sessionId` is substituted into a
-  launch argv (finding C3): a value like `--config=/evil` would otherwise inject
-  an argument into the launched command.
+- **Raw index (agent-writable).** The agent writes its record to
+  `<D>/.corral/registry/<sessionId>.json` (atomic temp+rename), beside its
+  socket, and appends its directory `D` to the newline-delimited
+  `~/.corral/registry` index file (append-if-absent). The record carries **no
+  `cwd`** field; location is identity.
+- **Curation (corrald only).** corrald reads the index, and for each `D`
+  canonicalizes it race-safely from a directory fd (open `O_DIRECTORY`, derive
+  the real path via `/proc/self/fd`, never realpath-then-reopen), scans
+  `<D>/.corral/registry/*.json`, and for every record attributes `cwd = D`
+  (ignoring any content cwd). It then validates each field (see below) and, for
+  a registered kind (Mechanism 3), writes the vetted record to
+  `~/.corral/state/registry/<sessionId>.json` (sealed).
+- **Consumption (viewers + corrald).** Viewers read only
+  `~/.corral/state/registry/` — trusted, already authenticated and validated —
+  and watch live sockets directly for state. corrald reads its own vetted output
+  for message routing.
 
-**Never `realpath`-then-reopen.** Resolving to a path string and opening it
-again is a time-of-check/time-of-use race: an agent swaps the symlink between
-the two steps, so `realpath` returns a victim-looking path (cwd = victim) while
-the reopen reads the attacker's file, attributing attacker content to the
-victim's directory. Opening once and deriving `cwd` from that same fd closes
-it. Records and outbox submissions share **one** `resolve(fd) -> cwd` function,
-both for correctness and so a reviewer checks the derivation in one place.
+### Per-Field Validation (Every Field Is Adversarial)
 
-The registry stays the single discovery store: a consumer scans the symlink
-farm, never the scattered workdirs.
+Location authenticates *who wrote the record*, not *what it says*. corrald
+validates before emitting a vetted record; a failure quarantines it (never
+written to `state/registry`):
+
+| Field | Rule |
+|---|---|
+| `cwd` | absent by contract; if present, ignored — `cwd = D` (the scanned dir) |
+| `sessionId` | charset `[A-Za-z0-9._-]`, no leading `-`, equals the filename (load-bearing for C3/T16) |
+| `socket` | must resolve **inside `<D>/.corral/`**, else rejected (T17): a card can only drive a session in its own box |
+| `spawnCommand`/`resumeCommand`/`gui`/`messageFlag` | the registered launch-set (Mechanism 3) |
+| `title`/`description` | display only; sanitized (strip control chars) and length-capped |
+| `lastSeen` | parsed as a timestamp or ignored; never drives a security decision |
+| `hidden` | self-scoped; kept as-is |
 
 Attacker analysis (agent boxed to `evil/`):
 
-- A symlink into `victim/.corral/` at a file the attacker authored: impossible,
-  the attacker cannot write there.
-- A symlink at the victim's existing record under a new name: a duplicate card
-  at worst; the content is the victim's honest record, no authority is gained.
-  Consumers deduplicate by resolved path and require the record's own
-  `sessionId` to equal the symlink filename.
-- A symlink chain that looks like the victim but physically resolves into
-  `evil/` or `/tmp`: canonicalization derives `evil/` or `/tmp` as the cwd, so
-  the record is attributed honestly to the attacker.
-- Overwriting or deleting another session's symlink in `~/.corral/registry/`:
-  denial of service only, already possible in a shared directory, and it grants
-  no identity. See the accepted edge below.
+- Writing a record into `victim/.corral/registry/`: impossible, the attacker
+  cannot write there.
+- Adding `victim/` to the `~/.corral/registry` index: only causes corrald to
+  discover the victim's *genuine* records (attributed to victim); no forgery.
+- Listing `evil/link` where `link` symlinks to `victim/`: corrald canonicalizes
+  the dir from its fd, so records resolve to `victim/` and are attributed there,
+  not to the attacker's path.
+- Corrupting or truncating the index file: denial of service only (live agents
+  re-append), no identity gained.
 
 ### Outbox-File Submission (Authenticates Messages)
 
@@ -148,17 +154,6 @@ workdir.
 One rule explains both halves: nothing in `~/.corral` is trusted as content;
 only physical location under a workdir's `.corral/` is.
 
-### Accepted Edge: Registry-Symlink Overwrite
-
-Because `~/.corral/registry/` is agent-writable, an agent can overwrite another
-session's symlink to point at its own record bearing the victim's `sessionId`,
-hijacking that id's routing. This is bounded and accepted: **identity is always
-the resolved directory**, which the authorization gate re-checks and the
-operator sees on approval. A hijacked `sessionId` resolves to the attacker's own
-directory, so it can never forge a *directory*, only redirect a routing key to a
-directory the gate still independently authorizes. It is the same class as the
-deletion denial-of-service already possible in a shared directory.
-
 ## Mechanism 2: The Sandbox Surface (Directory Split)
 
 Every agent runs as the same OS user, so file permissions isolate nothing here;
@@ -167,17 +162,20 @@ a clean, self-documenting directory rule. The layout:
 
 ```
 ~/.corral/
-  corrald.sock           # root-level: agents connect, corrald binds
-  registry/              # PUBLIC  — agent-writable (session symlinks)
-  state/                 # PRIVATE — daemon-only (whitelist, approved-commands.json)
+  corrald.sock           # root-level: agents connect (one file), corrald binds
+  registry              # PUBLIC  — agent-appendable dir-index FILE
+  state/                # PRIVATE — daemon-only (whitelist, approved-commands.json,
+                        #           registry/ vetted records, audit.log)
 ```
 
-The agent sandbox profile becomes three self-evident lines:
+Records themselves live in each workdir (`<D>/.corral/registry/`), already
+writable as part of the agent's own sandbox. The agent sandbox profile becomes
+three self-evident lines:
 
 ```
-allow write:   ~/.corral/registry/
+allow append:  ~/.corral/registry        # the dir-index file
 allow connect: ~/.corral/corrald.sock     # one file, connect only
-deny:          everything else (state/ fully sealed, root not writable)
+deny:          everything else (state/ fully sealed, no other ~/.corral writes)
 ```
 
 This closes two holes the current "grant all of `~/.corral`" opens:
@@ -195,13 +193,12 @@ This closes two holes the current "grant all of `~/.corral`" opens:
 The connect line is not extra structure; it is the one channel that makes
 agent-to-corrald messaging exist at all. `state/` is never exposed to an agent.
 
-**Profile precision (finding M4).** The write grant is on the *contents* of
-`registry/`, not on `~/.corral` itself: if the root were writable, an agent
-could replace the `registry/` directory or unlink and rebind `corrald.sock`,
-reopening the hijack. The whole model also presumes the sandbox confines the
-agent's writes to its own workdir and `registry/` only; a shared writable
-bind-mount into another workdir silently breaks physical-location identity, so
-the deployment MUST NOT create one.
+**Profile precision (finding M4).** The grant is *append* to the
+`~/.corral/registry` index file, not write to `~/.corral` itself: if the root
+were writable, an agent could unlink and rebind `corrald.sock`, reopening the
+hijack. The model also presumes the sandbox confines the agent's writes to its
+own workdir; a shared writable bind-mount into another workdir silently breaks
+physical-location identity, so the deployment MUST NOT create one.
 
 **Enforcement boundary.** Corral cannot apply the sandbox profile itself.
 CONVENTION states the requirement; the `~/nixos` deployment glue implements it
@@ -221,12 +218,12 @@ consume registered kinds.
 
 ### Registration Is the Gate to Usability
 
-The unit is the `label` (harness kind) plus its normalized command templates.
-corrald assures registration: watching the registry, on a first-seen `(label,
-template)` it raises **one** "register harness `X`?" approval showing the
-literal `spawnCommand` / `resumeCommand` argv, and on approval writes the
-template to the sealed store. From then on every agent of that label whose
-commands match is a full citizen.
+The unit is the `label` (harness kind) plus its normalized **launch set**
+(`spawnCommand`, `resumeCommand`, `gui`, `messageFlag`). corrald assures
+registration: while curating, on a first-seen or changed set it raises **one**
+"register harness `X`?" approval showing the full set, and on approval writes it
+to the sealed store. From then on every agent of that label whose set matches is
+a full citizen; any change to the set is a new approval.
 
 An **unregistered** kind (or a record whose argv deviates from its label's
 registered template) is **fully quarantined**: not launchable, not focusable,
@@ -401,51 +398,53 @@ part of the model, not an afterthought.
 ## What Changes Where
 
 - **`crates/core`**
-  - `discovery.rs`: one `resolve(fd) -> cwd` that opens the registry symlink
-    target and derives `cwd` from `/proc/self/fd` (never realpath-then-reopen);
-    validate the `sessionId` charset and require it to equal the symlink
-    filename; deduplicate by resolved path. `RegistryEntry.cwd` becomes a
-    derived, trusted value rather than parsed content.
-  - `paths.rs`: the new layout (`registry/`, `state/`, root `corrald.sock`) and
-    the `state/` accessors (`whitelist_file`, `approved_commands_file`); env
-    overrides retained plus a state-dir override.
-  - New `approved_commands.rs`: `normalize` a record's argv to a template, the
-    `registered(record)` predicate (shared by corrald and both viewers),
-    denormalize with guarded substitution to build the launch argv, and read of
-    the JSON store (write is corrald-only). Pure and unit-tested.
-  - Submission helper: write an outbox file and send `{"submit": path}`; the
-    shared parse/derive lives where corrald can reuse it.
+  - `paths.rs`: the layout (`registry` index file, `state/`, `state/registry/`,
+    `state/audit.log`, root `corrald.sock`) and the `state/` accessors; env
+    overrides retained. **(done)**
+  - `approved_commands.rs`: `normalize`, the `registered(record)` predicate, and
+    the store read; the `Template` pins the **full launch set**
+    (`spawn`/`resume`/`gui`/`messageFlag`), so any change is a new set. Pure,
+    unit-tested. **(store done; extend to the full set)**
+  - `discovery.rs`: `scan_registry` becomes a **plain trusted read** of
+    `state/registry/*.json` (corrald already vetted them) — used by viewers and
+    by corrald's own routing. The `sessionId` charset gate and the
+    `cwd_from_*` derivations stay. **(revert the symlink-authentication scan)**
+  - New `curation.rs`: the corrald-only pipeline — read the `~/.corral/registry`
+    index, canonicalize each dir from a directory fd, scan
+    `<D>/.corral/registry/*.json`, attribute `cwd = D`, run the per-field
+    validation (incl. socket-under-`D`, T17) and `registered`, and return vetted
+    entries. Pure core given an injected reader; corrald does the IO + writes
+    `state/registry/`.
 - **`crates/daemon`**
+  - New curation loop: each tick run `curation`, write the vetted
+    `state/registry/`, prune vanished entries, and append registration/authz
+    events to `state/audit.log`. Raise a registration approval for each new or
+    deviating launch set (shown in full).
   - `control.rs`: accept `{"submit": path}` with the H1 validation (canonical
     `outbox` path, regular file, non-blocking, size cap), derive `fromCwd` from
     the validated fd, read then delete; bounded accepts + read timeout (M3).
-    Keep the synchronous ack.
-  - `router.rs`: apply `registered` before any spawn or resume; watch the
-    registry and raise a registration for each never-seen template; keep the
-    message gate entirely separate (two approvals, never combined).
-  - `mailbox.rs`: `classify` gate-reason cleanup; the positional leading tag in
-    the delivered text (no fence); outbox-path submission parsing.
-  - `tray.rs` / `notify.rs`: the registration prompt showing the full argv, and
-    the message-approval prompt, as two distinct pull-based lists.
-- **`crates/board` and `crates/gui`**
-  - Read `approved-commands.json` and apply the shared `registered` predicate to
-    filter the registry: only fitting records are taken as actionable cards; an
-    unregistered/deviating one is fully quarantined (surfaced, if at all, as a
-    "pending verification" hint, not an actionable card). No approval UI
-    (corrald is the sole registrar).
+  - `router.rs`: route against the vetted registry; keep the message gate and
+    the registration gate entirely separate (two approvals, never combined).
+  - `mailbox.rs`: `classify` gate-reason cleanup; the positional leading tag
+    (no fence); outbox-path submission parsing.
+  - `tray.rs` / `notify.rs`: the registration prompt (full launch set), the
+    message-approval prompt, and "open audit log", as distinct pull-based items.
+- **`crates/board` and `crates/gui`** (via `core::engine`)
+  - Read only `state/registry/` (trusted); render and act. No authentication,
+    no `registered` predicate, no dir scan — corrald already filtered. An
+    unregistered kind simply never appears.
 - **Extensions**
-  - **All four adapters (announce side):** write the real record to
-    `<cwd>/.corral/<sessionId>.json` and create the
-    `~/.corral/registry/<sessionId>.json` symlink to it.
-  - **pi and opencode only (send side):** submit inter-agent messages by writing
-    `<cwd>/.corral/outbox/<id>.json` and sending `{"submit": path}` instead of
-    the inline message. `corral-claude` and `corral-cursor` have no send side
-    (no `corral_message_agent`), so no submission change applies to them.
-- **`CONVENTION.md`**: bump to v2. Rewrite the registry section (symlink into
-  the workdir, physical location authoritative, ignore the content `cwd`); the
-  submission appendix (outbox file, `{"submit": path}`); a new sandbox-surface
-  requirement section; and note approved-commands as consumer policy in the
-  appendix.
+  - **All four adapters (announce side):** write the record to
+    `<D>/.corral/registry/<sessionId>.json` (**no `cwd` field**) and
+    append `D` to the `~/.corral/registry` index file. No symlink.
+  - **pi and opencode only (send side):** submit by writing
+    `<cwd>/.corral/outbox/<id>.json` and sending `{"submit": path}`.
+    `corral-claude`/`corral-cursor` have no send side, so no submission change.
+- **`CONVENTION.md`**: bump to v2. Rewrite the registry section (per-project
+  records + the dir-index file, physical location authoritative, no `cwd`
+  field); the submission appendix (outbox file, `{"submit": path}`); the
+  sandbox-surface requirement; and note curation + registration as consumer
+  policy in the appendix.
 - **`AGENTS.md`, `README.md`, `TODO.md`**: reflect the new layout, the auth
   model, and the approval flow.
 
@@ -453,8 +452,8 @@ part of the model, not an afterthought.
 
 This is a breaking convention change, so CONVENTION goes to v2 and all four
 adapters update in-repo together. A legacy flat record (a regular file in the
-registry, not a symlink) cannot be location-authenticated, so it is treated as
-unverified and **fully quarantined**, exactly like an unregistered kind: not a
+registry, not under a workdir's `.corral/registry/`, or of an unregistered
+kind) is not written to `state/registry`, so it is **fully quarantined**: not a
 trusted identity, not actionable, messaging to or from it fails closed. Old
 records age out by the existing prune. The env overrides keep existing
 deployments running while the layout moves.
@@ -473,26 +472,24 @@ silent assumption.
 
 The pure core stays unit-tested; the IO wrappers stay thin.
 
-- Symlink resolution to a derived `cwd`, including a nested symlink and a
-  `/tmp` target (attacker attributed honestly); a mismatched record
-  `sessionId` versus filename rejected; duplicate resolved paths deduplicated.
-- Outbox-path canonicalization via the fd readlink, including a symlink swapped
-  after open (must not redirect); `fromSession` verified against the record's
-  physical directory.
-- The `resolve(fd)` derivation: a symlink swapped after open must not redirect
-  the derived cwd (the realpath-then-reopen race must be absent); a
-  charset-violating or filename-mismatched `sessionId` rejected.
+- Curation: a record under `<D>/.corral/registry/` is attributed `cwd = D`; a
+  listed dir that is a symlink resolves (via its dir fd) to the real target and
+  is attributed there; a content `cwd` is ignored; a charset-violating or
+  filename-mismatched `sessionId` is dropped; a `socket` outside `<D>/.corral/`
+  is rejected (T17); duplicate resolved dirs deduplicated.
 - Submit-path validation (H1): a non-`outbox` canonical path, a FIFO, and an
-  oversize file are each rejected as malformed, not read.
-- `normalize` and the `registered` predicate: the `{sessionId}`/`{cwd}`
-  placeholders; a buried `bash -c` deviating (quarantined); an unregistered
-  label quarantined; a registered label with matching argv taken; guarded
-  substitution of a `-`-leading cwd.
+  oversize file are each rejected as malformed, not read; `fromCwd` derived from
+  the validated fd; `fromSession` verified against the vetted registry.
+- `normalize` and the `registered` predicate over the full launch set: the
+  `{sessionId}`/`{cwd}` placeholders; a buried `bash -c` deviating
+  (quarantined); a flipped `gui`/`messageFlag` counted as a new set; an
+  unregistered label quarantined; guarded substitution of a `-`-leading cwd.
 - `classify` with the explicit gate reason across every ack (parity with the
   current table, minus the `hidden` contortion).
 - The positional tag: a forged inner `[from …]` after the first line does not
   occupy position zero; the leading tag is corrald-constructed and unchanged.
-- Adapter unit tests: the record is written as a symlink pair; submission emits
+- Adapter unit tests: the record is written under `<D>/.corral/registry/` with
+  no `cwd` field and the dir appended to the index; submission emits
   `{"submit": path}` with the file present.
 
 ## Open v2 Directions
