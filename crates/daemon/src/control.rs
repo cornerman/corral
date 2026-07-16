@@ -54,12 +54,34 @@ pub fn serve(
     }
     let listener = UnixListener::bind(&socket)?;
     std::thread::spawn(move || {
+        // Bound concurrent handlers and time out each read, so a flood of
+        // connections or a slow/silent client (slowloris) cannot exhaust the
+        // daemon or block the accept loop (security design T15). Each
+        // connection is handled on its own short-lived thread.
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         for conn in listener.incoming().flatten() {
-            handle(conn, &registry_dir, &whitelist, &tx);
+            if active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONCURRENT {
+                continue; // at capacity: drop (closes the connection)
+            }
+            let _ = conn.set_read_timeout(Some(READ_TIMEOUT));
+            active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (registry_dir, whitelist, tx, active) =
+                (registry_dir.clone(), whitelist.clone(), tx.clone(), active.clone());
+            std::thread::spawn(move || {
+                handle(conn, &registry_dir, &whitelist, &tx);
+                active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            });
         }
     });
     Ok(())
 }
+
+/// Max concurrent control-socket handlers; beyond this a new connection is
+/// dropped, so a connection flood cannot exhaust threads (T15).
+const MAX_CONCURRENT: usize = 64;
+/// Per-connection read timeout, so a client that connects and never sends a
+/// full request line cannot hold a handler open (T15).
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One connection: read a request line, ack the verdict, enqueue if routable.
 fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<Message>) {
