@@ -4,8 +4,11 @@
  *
  * Binds an ACP socket inside this session's own workdir at
  * <cwd>/.corral/pi-<pid>.sock (override the dir with $CORRAL_SOCKET_DIR) and
- * writes a registry record at $HOME/.corral/registry/<sessionId>.json
- * (override with $CORRAL_REGISTRY_DIR) pointing at that socket. The socket is
+ * writes the real registry record inside this workdir at
+ * <cwd>/.corral/<sessionId>.json and points a symlink at it from
+ * $HOME/.corral/registry/<sessionId>.json (override with $CORRAL_REGISTRY_DIR),
+ * so a consumer authenticates identity by where the record physically resolves.
+ * The record points at that socket. The socket is
  * workdir-local so only this session (and unsandboxed tools like corral) can
  * reach it; the registry is corral's single discovery store. On clean
  * shutdown the socket is unlinked and the record's `socket` is cleared to
@@ -54,7 +57,12 @@ import { Type } from "typebox";
 export default function (pi: ExtensionAPI) {
 	let server: net.Server | undefined;
 	let socketPath: string | undefined;
-	let registryFile: string | undefined;
+	// The REAL record file, in the session's own workdir (`<cwd>/.corral/
+	// <sessionId>.json`), beside the socket. The registry holds only a symlink
+	// to it, so a consumer authenticates identity by the record's physical
+	// location (it can only be written by this workdir's sandboxed agent). See
+	// the corral security model (physical-location identity).
+	let recordFile: string | undefined;
 	let currentCtx: ExtensionContext | undefined;
 	// Last title pushed to clients, so we broadcast a session_info_update only
 	// when it actually changes. pi fires session_info_changed on an explicit
@@ -569,33 +577,43 @@ export default function (pi: ExtensionAPI) {
 		return home ? path.join(home, ".corral", "registry") : undefined;
 	}
 
-	// corral's single discovery store: `<sessionId>.json` names the live socket
-	// (or null when dormant) plus enough to resume. Written atomically
-	// (tmp + rename) so a scanning corral never reads a half-written file.
+	// The workdir-local `.corral` directory holding the real record and socket
+	// (`$CORRAL_SOCKET_DIR`, else `<cwd>/.corral`). Same place as the socket, so
+	// both share the workdir-isolation the sandbox enforces.
+	function recordDirFor(ctx: ExtensionContext): string {
+		return process.env.CORRAL_SOCKET_DIR ?? path.join(ctx.cwd, ".corral");
+	}
+
 	// Mark the session dormant by clearing the live socket, without any ctx:
-	// reads the known registry file and rewrites `socket: null`. Used by stop(),
-	// which may run when the captured ctx is stale (session replacement), where
-	// touching ctx.sessionManager would throw and crash pi. Best-effort.
+	// rewrites the REAL record file with `socket: null` (the registry symlink
+	// keeps pointing at it). Used by stop(), which may run when the captured ctx
+	// is stale (session replacement), where touching ctx.sessionManager would
+	// throw and crash pi. Best-effort.
 	function clearSocketInRegistry() {
-		if (!registryFile) return;
+		if (!recordFile) return;
 		try {
-			const rec = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+			const rec = JSON.parse(fs.readFileSync(recordFile, "utf8"));
 			rec.socket = null;
-			const tmp = `${registryFile}.${process.pid}.tmp`;
+			const tmp = `${recordFile}.${process.pid}.tmp`;
 			fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), { mode: 0o600 });
-			fs.renameSync(tmp, registryFile);
+			fs.renameSync(tmp, recordFile);
 		} catch {
 			// Record already gone or unreadable: nothing to clear.
 		}
 	}
 
+	// Announce: write the real record into the workdir's `.corral/` and point a
+	// registry symlink at it. A consumer derives the trusted cwd from where the
+	// record physically resolves, so the record cannot claim another directory.
 	function writeRegistry(ctx: ExtensionContext, socket: string | null) {
 		try {
 		const dir = registryDir();
 		if (!dir) return;
 		const sessionId = ctx.sessionManager.getSessionId();
+		const recordDir = recordDirFor(ctx);
+		fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-		registryFile = path.join(dir, `${sessionId}.json`);
+		recordFile = path.join(recordDir, `${sessionId}.json`);
 		// Launch commands corral runs verbatim (it never parses them): the argv
 		// to spawn a fresh pi and to resume this exact session. This is where
 		// pi's CLI grammar lives, so corral stays agent-neutral. A second agent
@@ -633,9 +651,18 @@ export default function (pi: ExtensionAPI) {
 			hidden,
 			lastSeen: new Date().toISOString(),
 		};
-		const tmp = `${registryFile}.${process.pid}.tmp`;
+		const tmp = `${recordFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
-		fs.renameSync(tmp, registryFile);
+		fs.renameSync(tmp, recordFile);
+		// The registry entry is a symlink to the real record. Recreate it so a
+		// re-announce (same id) repoints cleanly.
+		const link = path.join(dir, `${sessionId}.json`);
+		try {
+			fs.rmSync(link, { force: true });
+		} catch {
+			// No prior link, or not removable: symlink below will surface it.
+		}
+		fs.symlinkSync(recordFile, link);
 		} catch {
 			// A stale ctx (after session replacement/reload) throws on
 			// sessionManager access; announcing is best-effort and must never
