@@ -357,15 +357,17 @@ after approval without a further ack.
 
 Over the same control socket, an agent MAY send a read-only roster query
 (`{"op":"list","fromCwd":"<dir>"}`) and read one reply line
-(`{"status":"ok","agents":[…]}`). It is ungated: it exposes only what the caller
-could already reach. Each agent entry is one of two shapes:
+(`{"status":"ok","agents":[…]}`). It is ungated: any listed session is
+messsageable (the operator may be asked to approve an unwhitelisted pair). Every
+session is one per-session entry, always addressable by `sessionId`:
 
-- **Visible** (the caller's own directory, or a whitelisted `(fromCwd -> dir)`
-  pair): `kind`, `description`, `cwd`, `sessionId`, `live`, `canMessage: true`.
-  The `sessionId` is a `targetSession` the caller may message.
-- **Anonymous** (every directory the caller may not reach, folded by kind):
-  `kind`, `description`, `canMessage: false`, no `cwd` / `sessionId`. So a
-  caller learns which agent kinds exist without learning who runs where.
+- Every entry carries `kind`, `sessionId`, `live`. The `sessionId` is a
+  `targetSession` the caller may message.
+- A **reachable** session (the caller's own directory, or a whitelisted
+  `(fromCwd -> dir)` pair) additionally carries `cwd` and `description`.
+- An **unreachable** session (a directory the caller may not reach) hides `cwd`
+  and `description`, so the caller can message it without learning where it runs
+  or what kind of work it does.
 
 A roster entry never carries a session's `title` or activity: messaging is not
 reading. A charter prepended to a freshly spawned agent's first prompt teaches

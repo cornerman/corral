@@ -188,21 +188,21 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// list_corral_agents: read-only capability roster. Ungated (it exposes only
-	// what this agent could already reach), and corral withholds every
-	// unreachable directory's identity — an unreachable session collapses to an
-	// anonymous kind entry, never a directory, session id, title, or activity.
+	// list_corral_agents: read-only capability roster. Ungated — any session is
+	// messageable (operator approval may be asked). Every session is a
+	// per-session entry addressable by sessionId; corral hides an unreachable
+	// directory's cwd and description, and never a title or activity.
 	pi.registerTool({
 		name: "list_corral_agents",
 		label: "List agents",
 		description:
 			"List the coding-agent sessions corral knows about, so you can choose whom to message " +
-			"or which kind to spawn. Returns two kinds of entry: a full entry (kind, description, " +
-			"cwd, sessionId, live, canMessage:true) for each agent in a directory you may reach, " +
-			"and an anonymous kind entry (kind + description only) folding every directory you may " +
-			"not reach — so you learn which agent kinds exist without seeing who runs where. Use a " +
-			"full entry's sessionId as the target_session for corral_message_agent. It never reveals " +
-			"a session's title or activity.",
+			"or which kind to spawn. You can message any of them via target_session (the operator " +
+			"may be asked to approve if the directory pair is not whitelisted). Every session is an " +
+			"entry with kind, sessionId and live; a session in a directory you may reach also carries " +
+			"its cwd and description, an unreachable one hides both (so you learn a session exists and " +
+			"can message it, without learning where it runs). Use an entry's sessionId as the " +
+			"target_session for corral_message_agent. It never reveals a session's title or activity.",
 		parameters: Type.Object({}),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const home = process.env.HOME;

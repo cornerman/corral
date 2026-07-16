@@ -4,7 +4,6 @@
 //! message. Parsing, classification, and authorization are pure and
 //! unit-tested; the IO wrappers are thin.
 
-use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -167,75 +166,50 @@ pub fn parse_message(text: &str) -> Option<Message> {
     })
 }
 
-/// One line in the capability roster a `list` query returns. Either a full
-/// entry for an agent the caller may reach (its own directory or a whitelisted
-/// pair, so dir / session / liveness are exposed) or an anonymous kind entry
-/// that folds every unreachable directory to the distinct harness kinds present
-/// (kind + description only). It never carries a title, name, or activity:
-/// messaging is not reading, so the roster reveals that a kind of agent exists
-/// and whether the caller may message it, never what any agent is doing.
+/// One line in the capability roster a `list` query returns. Every session is a
+/// per-session entry the caller can address by `sessionId` (approval still
+/// gates an unwhitelisted target). A reachable agent (its own directory or a
+/// whitelisted pair) also exposes `description` and `cwd`; an unreachable one
+/// hides both, so the caller gets an addressable handle without learning who
+/// runs where. It never carries a title, name, or activity: messaging is not
+/// reading, so the roster reveals that a session exists and lets the caller
+/// message it, never what any agent is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterEntry {
     /// The harness kind (the record `label`, or `agent` if unlabeled).
     pub kind: String,
+    /// Set only on a reachable entry (hidden on an unreachable one).
     pub description: Option<String>,
-    /// Set only on a visible entry (`None` on an anonymous kind entry).
+    /// Set only on a reachable entry (hidden on an unreachable one).
     pub cwd: Option<String>,
-    pub session_id: Option<String>,
-    /// Liveness, meaningful only on a visible entry.
+    pub session_id: String,
     pub live: bool,
-    /// Whether the caller may message this without an approval popup.
-    pub can_message: bool,
 }
 
 /// Build the capability roster for a caller. `visible(target_cwd)` reports
 /// whether the caller may reach that directory (its own dir, or a whitelisted
-/// `(from -> target)` pair). A visible agent becomes a full per-session entry
-/// (so the caller can address a precise `target_session`); every other agent is
-/// folded, by harness kind, into one anonymous entry (latest-seen description
-/// wins), so a caller learns which kinds exist without learning who runs where.
+/// `(from -> target)` pair). Every session yields a per-session entry addressed
+/// by `sessionId`; a reachable one also carries `description` and `cwd`, an
+/// unreachable one hides both.
 pub fn build_roster(entries: &[RegistryEntry], visible: impl Fn(&str) -> bool) -> Vec<RosterEntry> {
-    let mut roster = Vec::new();
-    // kind -> (description, its last_seen) for the anonymous fold; the latest
-    // last_seen wins the description, matching "latest description per kind".
-    let mut anon: BTreeMap<String, (Option<String>, Option<String>)> = BTreeMap::new();
-    for e in entries {
-        let kind = e.label.clone().unwrap_or_else(|| "agent".into());
-        if e.cwd.as_deref().is_some_and(&visible) {
-            roster.push(RosterEntry {
-                kind,
-                description: e.description.clone(),
-                cwd: e.cwd.clone(),
-                session_id: Some(e.session_id.clone()),
+    entries
+        .iter()
+        .map(|e| {
+            let reachable = e.cwd.as_deref().is_some_and(&visible);
+            RosterEntry {
+                kind: e.label.clone().unwrap_or_else(|| "agent".into()),
+                description: reachable.then(|| e.description.clone()).flatten(),
+                cwd: reachable.then(|| e.cwd.clone()).flatten(),
+                session_id: e.session_id.clone(),
                 live: e.socket.is_some(),
-                can_message: true,
-            });
-        } else {
-            let slot = anon.entry(kind).or_insert((None, None));
-            // None (no timestamp) sorts below any Some, so a timestamped record
-            // wins over an undated one, and later wins over earlier.
-            if e.last_seen >= slot.1 {
-                *slot = (e.description.clone(), e.last_seen.clone());
             }
-        }
-    }
-    roster.extend(
-        anon.into_iter()
-            .map(|(kind, (description, _))| RosterEntry {
-                kind,
-                description,
-                cwd: None,
-                session_id: None,
-                live: false,
-                can_message: false,
-            }),
-    );
-    roster
+        })
+        .collect()
 }
 
-/// Serialize a roster as the `list` reply line. A visible entry carries
-/// `cwd`/`sessionId`; an anonymous entry omits them, so nothing identifies an
-/// unreachable session.
+/// Serialize a roster as the `list` reply line. Every entry carries `sessionId`
+/// and `live`; a reachable entry adds `description`/`cwd`, an unreachable one
+/// omits them so nothing identifies where it runs.
 pub fn roster_json(roster: &[RosterEntry]) -> String {
     let agents: Vec<serde_json::Value> = roster
         .iter()
@@ -248,11 +222,8 @@ pub fn roster_json(roster: &[RosterEntry]) -> String {
             if let Some(c) = &r.cwd {
                 m.insert("cwd".into(), c.clone().into());
             }
-            if let Some(s) = &r.session_id {
-                m.insert("sessionId".into(), s.clone().into());
-            }
+            m.insert("sessionId".into(), r.session_id.clone().into());
             m.insert("live".into(), r.live.into());
-            m.insert("canMessage".into(), r.can_message.into());
             serde_json::Value::Object(m)
         })
         .collect();
@@ -407,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn roster_exposes_visible_dirs_and_folds_the_rest_anonymously() {
+    fn roster_exposes_every_session_and_hides_unreachable_cwd_and_description() {
         let entries = [
             rec("s1", "/a", "pi", true, Some("terminal agent")),
             rec("s2", "/a", "pi", false, Some("terminal agent")),
@@ -416,34 +387,39 @@ mod tests {
         ];
         // Caller sees only /a.
         let roster = build_roster(&entries, |cwd| cwd == "/a");
-        // Two visible per-session entries for /a (live + dormant), addressable.
-        let visible: Vec<_> = roster.iter().filter(|r| r.cwd.is_some()).collect();
-        assert_eq!(visible.len(), 2);
-        assert!(visible
+        // Every session is a per-session entry addressable by sessionId.
+        assert_eq!(roster.len(), 4);
+        assert!(roster.iter().all(|r| !r.session_id.is_empty()));
+        // Reachable /a entries expose cwd + description; liveness is preserved.
+        let reachable: Vec<_> = roster.iter().filter(|r| r.cwd.is_some()).collect();
+        assert_eq!(reachable.len(), 2);
+        assert!(reachable
             .iter()
-            .all(|r| r.can_message && r.cwd.as_deref() == Some("/a")));
-        assert_eq!(visible[0].session_id.as_deref(), Some("s1"));
-        assert!(visible[0].live && !visible[1].live);
-        // /secret and /other fold to distinct anonymous kinds: pi + quine, one
-        // each, no cwd/session, not messageable.
-        let anon: Vec<_> = roster.iter().filter(|r| r.cwd.is_none()).collect();
-        assert_eq!(anon.len(), 2, "pi and quine, folded once each");
-        assert!(anon
+            .all(|r| r.cwd.as_deref() == Some("/a") && r.description.is_some()));
+        assert_eq!(reachable[0].session_id, "s1");
+        assert!(reachable[0].live && !reachable[1].live);
+        // Unreachable /secret and /other still yield per-session entries, but
+        // hide cwd and description; live stays exposed.
+        let unreachable: Vec<_> = roster.iter().filter(|r| r.cwd.is_none()).collect();
+        assert_eq!(unreachable.len(), 2);
+        assert!(unreachable
             .iter()
-            .all(|r| !r.can_message && r.session_id.is_none()));
-        let kinds: Vec<_> = anon.iter().map(|r| r.kind.as_str()).collect();
-        assert!(kinds.contains(&"pi") && kinds.contains(&"quine"));
+            .all(|r| r.description.is_none() && !r.session_id.is_empty()));
+        let sids: Vec<_> = unreachable.iter().map(|r| r.session_id.as_str()).collect();
+        assert!(sids.contains(&"s3") && sids.contains(&"s4"));
     }
 
     #[test]
-    fn roster_json_hides_title_and_omits_cwd_for_anonymous() {
+    fn roster_json_hides_title_cwd_and_description_for_unreachable() {
         let entries = [rec("s1", "/secret", "pi", true, Some("terminal agent"))];
         let json = roster_json(&build_roster(&entries, |_| false));
         assert!(!json.contains("secret title"), "never leak the title");
         assert!(!json.contains("/secret"), "never leak an unreachable cwd");
-        assert!(!json.contains("s1"), "never leak an unreachable session id");
-        assert!(json.contains("\"kind\":\"pi\"") && json.contains("terminal agent"));
-        assert!(json.contains("\"canMessage\":false"));
+        assert!(!json.contains("terminal agent"), "hide unreachable description");
+        // The sessionId is the addressable handle, so it is exposed.
+        assert!(json.contains("\"sessionId\":\"s1\""));
+        assert!(json.contains("\"kind\":\"pi\"") && json.contains("\"live\":true"));
+        assert!(!json.contains("canMessage"));
     }
 
     #[test]

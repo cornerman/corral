@@ -70,8 +70,9 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
     }
     let mut conn = reader.into_inner();
     // A read-only roster query is answered synchronously and never routed. It
-    // is ungated (it exposes only what the caller could already reach), but the
-    // roster itself withholds every unreachable directory's identity.
+    // is ungated (any session is messageable subject to operator approval), but
+    // the roster withholds an unreachable directory's cwd and description,
+    // exposing only its sessionId as an addressable handle.
     if let Some(from_cwd) = mailbox::parse_list(line.trim()) {
         let entries = discovery::scan_registry(registry_dir);
         let visible =
@@ -211,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn list_query_exposes_whitelisted_dir_and_folds_the_rest() {
+    fn list_query_exposes_whitelisted_dir_and_hides_unreachable_paths() {
         let (tmp, socket, registry, whitelist) = setup();
         let reachable = tmp.path().join("reach");
         std::fs::create_dir(&reachable).unwrap();
@@ -227,8 +228,10 @@ mod tests {
         assert!(reply.contains("\"status\":\"ok\""));
         // The whitelisted dir is fully exposed and addressable.
         assert!(reply.contains("visible-1") && reply.contains(reach));
-        // The unlisted dir leaks neither its path nor its session id.
-        assert!(!reply.contains("/secret/dir") && !reply.contains("hidden-1"));
+        // An unreachable session is still addressable by its id, but its path
+        // stays hidden.
+        assert!(reply.contains("hidden-1"), "sessionId is the addressable handle");
+        assert!(!reply.contains("/secret/dir"), "never leak an unreachable cwd");
     }
 
     #[test]

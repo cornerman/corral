@@ -326,9 +326,10 @@ ratatui / iced, the daemon keeps ksni).
     provenance/reply-handle tag, and read/append the `(sender -> target)`
     whitelist. `classify` also forces the approval gate on a visible spawn
     (`hidden:false`) regardless of the whitelist. It also builds the read-only
-    capability roster (`build_roster` + `roster_json`): reachable directories
-    become full per-session entries, the rest fold into anonymous kind entries,
-    never a title or activity. Pure, unit-tested.
+    capability roster (`build_roster` + `roster_json`): every session is a
+    per-session entry addressable by `sessionId`; a reachable directory's entry
+    adds `cwd` + `description`, an unreachable one hides both, and no entry
+    carries a title or activity. Pure, unit-tested.
   - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
     `$CORRAL_CONTROL_SOCKET`). A background thread accepts one submission per
     connection: read the request line; a `{"op":"list"}` roster query is
@@ -409,9 +410,9 @@ ratatui / iced, the daemon keeps ksni).
   surfaced as "corrald not running" (fail loud, no silent queue). It also
   registers `list_corral_agents` (no args), a read-only roster query
   (`{"op":"list"}` over the same socket) returning the capability picture:
-  full per-session entries (kind, description, cwd, sessionId, live,
-  `canMessage`) for reachable directories, anonymous kind-only entries folding
-  the rest, never a session title or activity. The record now carries a
+  every session as a per-session entry (kind, sessionId, live) addressable by
+  `target_session`, a reachable directory's entry adding cwd + description and
+  an unreachable one hiding both, never a session title or activity. The record now carries a
   one-line adapter-authored `description` of the harness kind (CONVENTION §1),
   surfaced in that roster. Install:
   symlink into
@@ -593,13 +594,14 @@ gets no charter (its transcript already carries context).
 Before messaging, an agent can survey the board with **`list_corral_agents`**, a
 read-only, ungated roster query (`{"op":"list","fromCwd":..}` over the control
 socket, served synchronously by `corrald` from `whitelist ∩ registry`). It
-returns the capability picture without leaking: a reachable directory (the
-caller's own, or a whitelisted pair) yields full per-session entries (kind,
-description, cwd, sessionId, liveness, `canMessage`) the caller can address by
-`target_session`; every unreachable directory folds, by harness kind, into one
-anonymous entry (kind + description only), so the caller learns which kinds
-exist without learning who runs where. A roster never carries a session title
-or activity — messaging is not reading. The `description` is a one-line,
+returns the capability picture without leaking: every session is a per-session
+entry (kind, sessionId, liveness) the caller can address by `target_session`
+(any session is messageable, the operator gates an unwhitelisted pair); a
+reachable directory's entry (the caller's own, or a whitelisted pair)
+additionally carries cwd + description, an unreachable one hides both, so the
+caller can message a session without learning where it runs or what work it
+does. A roster never carries a session title or activity — messaging is not
+reading. The `description` is a one-line,
 adapter-authored string in the record (CONVENTION §1; latest-seen per label
 wins), so a caller can pick a kind (GUI review → a GUI agent, terminal coding →
 pi/opencode) before spawning. Kill of a peer is deferred: the settled rule

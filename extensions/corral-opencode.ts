@@ -651,17 +651,18 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					return describeAck(status, String(dest));
 				},
 			},
-			// list_corral_agents: read-only capability roster. Ungated; corral
-			// withholds every unreachable directory's identity (kind-only anonymous
-			// entries), and never a session's title or activity.
+			// list_corral_agents: read-only capability roster. Ungated — any session
+			// is messageable (operator approval may be asked). Every session is a
+			// per-session entry by sessionId; corral hides an unreachable directory's
+			// cwd and description, and never a session's title or activity.
 			list_corral_agents: {
 				description:
 					"List the coding-agent sessions corral knows about, so you can choose whom to message " +
-					"or which kind to spawn. Returns a full entry (kind, description, cwd, sessionId, live, " +
-					"canMessage:true) for each agent in a directory you may reach, and an anonymous kind " +
-					"entry (kind + description only) folding every directory you may not reach. Use a full " +
-					"entry's sessionId as target_session for corral_message_agent. Never reveals a session's " +
-					"title or activity.",
+					"or which kind to spawn. You can message any of them via target_session (the operator may " +
+					"be asked to approve if the directory pair is not whitelisted). Every session is an entry " +
+					"with kind, sessionId and live; a session in a directory you may reach also carries its " +
+					"cwd and description, an unreachable one hides both. Use an entry's sessionId as " +
+					"target_session for corral_message_agent. Never reveals a session's title or activity.",
 				args: {},
 				async execute() {
 					const home = process.env.HOME;
