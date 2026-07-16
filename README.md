@@ -77,6 +77,8 @@ tray, which also shows the daemon's status:
 
 - [CONVENTION.md](CONVENTION.md) — the filesystem convention any agent joins by
   (so corral is not tied to any one harness).
+- [SECURITY.md](SECURITY.md) — the threat model, mitigations, and accepted
+  risks. Read it before trusting corral between mutually untrusted agents.
 - [AGENTS.md](AGENTS.md) — architecture, crates, and the messaging daemon.
 - [extensions/](extensions/) — the per-harness adapters (pi, opencode, Claude
   Code, Cursor).

@@ -542,6 +542,11 @@ reveals on demand.
 
 ## Inter-Agent Messaging
 
+The threat model, trust boundaries, and every risk/mitigation/accepted-risk are
+specified in [SECURITY.md](SECURITY.md); the hardening design behind them is
+[docs/superpowers/specs/2026-07-16-security-hardening-design.md](docs/superpowers/specs/2026-07-16-security-hardening-design.md).
+This section describes the messaging mechanics.
+
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
 the `corrald` daemon is the sole trusted cross-workdir router. An agent calls
 `corral_message_agent`, which submits the message over `~/.corral/corrald.sock`
