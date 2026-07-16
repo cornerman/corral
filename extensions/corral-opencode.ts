@@ -74,7 +74,10 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 	// A Bun.listen server (unix socket) plus the registry file it announces.
 	let server: { stop: () => void } | undefined;
 	let socketPath: string | undefined;
-	let registryFile: string | undefined;
+	// The REAL record file, in the session's own workdir
+	// (`<cwd>/.corral/<sessionId>.json`); the registry holds only a symlink to
+	// it, so a consumer authenticates identity by physical location.
+	let recordFile: string | undefined;
 	// The single active opencode session this window drives. Multi-session
 	// multiplexing is deferred (YAGNI): we track only the latest active id.
 	let activeSessionId: string | undefined;
@@ -359,32 +362,34 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		return home ? path.join(home, ".corral", "registry") : undefined;
 	}
 
-	// Mark the session dormant by clearing the live socket, without any session
-	// lookup: read the known registry file and rewrite `socket: null`. Used by
-	// stop() on process exit. Best-effort.
+	// Mark the session dormant by clearing the live socket: rewrite the REAL
+	// record file (in the workdir) with `socket: null`. The registry symlink
+	// keeps pointing at it. Used by stop() on process exit. Best-effort.
 	function clearSocketInRegistry() {
-		if (!registryFile) return;
+		if (!recordFile) return;
 		try {
-			const rec = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+			const rec = JSON.parse(fs.readFileSync(recordFile, "utf8"));
 			rec.socket = null;
-			const tmp = `${registryFile}.${process.pid}.tmp`;
+			const tmp = `${recordFile}.${process.pid}.tmp`;
 			fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), { mode: 0o600 });
-			fs.renameSync(tmp, registryFile);
+			fs.renameSync(tmp, recordFile);
 		} catch {
 			// Record already gone or unreadable: nothing to clear.
 		}
 	}
 
-	// corral's single discovery store: `<sessionId>.json` names the live socket
-	// (or null when dormant) plus enough to resume. Written atomically
-	// (tmp + rename) so a scanning corral never reads a half-written file. No-op
-	// until the active session id is known.
+	// Announce: write the real record into the workdir's `.corral/`
+	// (`<cwd>/.corral/<sessionId>.json`) and point a registry symlink at it, so a
+	// consumer authenticates identity by where the record physically resolves.
+	// No-op until the active session id is known.
 	function writeRegistry() {
 		try {
 			const dir = registryDir();
 			if (!dir || !activeSessionId) return;
+			const recordDir = process.env.CORRAL_SOCKET_DIR ?? path.join(activeCwd, ".corral");
+			fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
 			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-			registryFile = path.join(dir, `${activeSessionId}.json`);
+			recordFile = path.join(recordDir, `${activeSessionId}.json`);
 			// Launch commands corral runs verbatim (it never parses them): the argv
 			// to spawn a fresh opencode and to resume this exact session. opencode
 			// auto-persists sessions, so resumeCommand is always set once the id is
@@ -410,9 +415,18 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				hidden: process.env.CORRAL_HIDDEN === "1",
 				lastSeen: new Date().toISOString(),
 			};
-			const tmp = `${registryFile}.${process.pid}.tmp`;
+			const tmp = `${recordFile}.${process.pid}.tmp`;
 			fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
-			fs.renameSync(tmp, registryFile);
+			fs.renameSync(tmp, recordFile);
+			// The registry entry is a symlink to the real record; recreate it so a
+			// re-announce (same id) repoints cleanly.
+			const link = path.join(dir, `${activeSessionId}.json`);
+			try {
+				fs.rmSync(link, { force: true });
+			} catch {
+				// No prior link; the symlink below will surface any real error.
+			}
+			fs.symlinkSync(recordFile, link);
 		} catch {
 			// Announcing is best-effort and must never crash opencode.
 		}

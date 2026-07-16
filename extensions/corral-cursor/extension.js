@@ -27,7 +27,7 @@ function readProc(pid) {
 }
 
 let servers = [];
-let registryFile;
+let recordFile;
 let state = "idle";
 let title = null;
 const clients = new Set();
@@ -168,36 +168,44 @@ function writeRegistry(acpPath) {
   try {
     const dir = lib.registryDir(process.env);
     if (!dir) return;
+    // Real record in the workdir's .corral/ (beside the socket); the registry
+    // holds only a symlink, so a consumer authenticates identity by physical
+    // location.
+    const sockDir = lib.socketDir(ctx.cwd, process.env);
+    fs.mkdirSync(sockDir, { recursive: true, mode: 0o700 });
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    registryFile = path.join(dir, `${ctx.sessionId}.json`);
+    recordFile = path.join(sockDir, `${ctx.sessionId}.json`);
     const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1" });
-    const tmp = `${registryFile}.${process.pid}.tmp`;
+    const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, registryFile);
+    fs.renameSync(tmp, recordFile);
+    const link = path.join(dir, `${ctx.sessionId}.json`);
+    try { fs.rmSync(link, { force: true }); } catch {}
+    fs.symlinkSync(recordFile, link);
   } catch {}
 }
 let lastTouch = 0;
 function touchRegistry() {
   const now = Date.now();
-  if (now - lastTouch < 2000 || !registryFile) return;
+  if (now - lastTouch < 2000 || !recordFile) return;
   lastTouch = now;
   try {
-    const rec = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+    const rec = JSON.parse(fs.readFileSync(recordFile, "utf8"));
     rec.lastSeen = new Date().toISOString();
     rec.title = title;
-    const tmp = `${registryFile}.${process.pid}.tmp`;
+    const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, registryFile);
+    fs.renameSync(tmp, recordFile);
   } catch {}
 }
 function clearSocketInRegistry() {
-  if (!registryFile) return;
+  if (!recordFile) return;
   try {
-    const rec = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+    const rec = JSON.parse(fs.readFileSync(recordFile, "utf8"));
     rec.socket = null;
-    const tmp = `${registryFile}.${process.pid}.tmp`;
+    const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, registryFile);
+    fs.renameSync(tmp, recordFile);
   } catch {}
 }
 

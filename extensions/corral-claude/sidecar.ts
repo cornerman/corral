@@ -19,9 +19,11 @@
  *   .claude-ctl-<sessionId>.sock    control channel the hook shim (hook.ts)
  *                                   connects to once per hook event.
  *
- * Registry record at $HOME/.corral/registry/<sessionId>.json (override
- * $CORRAL_REGISTRY_DIR) points at the ACP socket; cleared to socket:null on
- * SessionEnd, leaving a dormant, resumable entry.
+ * Real registry record inside the workdir at <cwd>/.corral/<sessionId>.json,
+ * with a symlink at $HOME/.corral/registry/<sessionId>.json (override
+ * $CORRAL_REGISTRY_DIR) so a consumer authenticates identity by where the
+ * record physically resolves. It points at the ACP socket; cleared to
+ * socket:null on SessionEnd, leaving a dormant, resumable entry.
  *
  * Served ACP surface (see handleAcp):
  *   initialize      identity (agentInfo name "claude")
@@ -84,7 +86,9 @@ const controlSocketPath = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 let title: string | null = null;
 let lastTitle: string | null | undefined;
 let currentState: "running" | "idle" | "requires_action" = "idle";
-let registryFile: string | undefined;
+// Real record file in the workdir's .corral/; the registry holds a symlink to
+// it (physical-location identity).
+let recordFile: string | undefined;
 
 // Unix-socket servers (Node net). A connection is our Sock surface.
 type Sock = { write: (s: string) => void; end?: () => void };
@@ -346,8 +350,12 @@ function writeRegistry() {
 	try {
 		const dir = registryDir();
 		if (!dir) return;
+		fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-		registryFile = path.join(dir, `${sessionId}.json`);
+		// Real record in the workdir's .corral/ (beside the socket); the registry
+		// holds only a symlink, so a consumer authenticates identity by physical
+		// location.
+		recordFile = path.join(socketDir, `${sessionId}.json`);
 		const record = {
 			sessionId,
 			cwd,
@@ -368,9 +376,14 @@ function writeRegistry() {
 			hidden: process.env.CORRAL_HIDDEN === "1",
 			lastSeen: new Date().toISOString(),
 		};
-		const tmp = `${registryFile}.${process.pid}.tmp`;
+		const tmp = `${recordFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
-		fs.renameSync(tmp, registryFile);
+		fs.renameSync(tmp, recordFile);
+		const link = path.join(dir, `${sessionId}.json`);
+		try {
+			fs.rmSync(link, { force: true });
+		} catch {}
+		fs.symlinkSync(recordFile, link);
 	} catch {}
 }
 // Refresh lastSeen at each hook event without a full rewrite race.
@@ -382,13 +395,13 @@ function touchRegistry() {
 	writeRegistry();
 }
 function clearSocketInRegistry() {
-	if (!registryFile) return;
+	if (!recordFile) return;
 	try {
-		const rec = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+		const rec = JSON.parse(fs.readFileSync(recordFile, "utf8"));
 		rec.socket = null;
-		const tmp = `${registryFile}.${process.pid}.tmp`;
+		const tmp = `${recordFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), { mode: 0o600 });
-		fs.renameSync(tmp, registryFile);
+		fs.renameSync(tmp, recordFile);
 	} catch {}
 }
 
