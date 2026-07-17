@@ -67,20 +67,34 @@ pub fn resolve_submission(path: &Path) -> Option<(String, String)> {
     Some((cwd, content))
 }
 
-/// Read the raw dir-index file into a deduplicated list of directory paths.
-/// Blank lines are skipped; a missing file is empty. The paths are still
-/// untrusted (an agent appended them); [`canonical_dir`] authenticates each.
-pub fn read_index(index_file: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(index_file) else {
+/// Read the raw pointer store (`~/.corral/input/registry/`) into a deduplicated
+/// list of the directories agents announced from. Each file is one session's
+/// pointer, named `<sessionId>`, whose content is the cwd it runs in; we take
+/// its first non-blank line. A missing dir is empty. The paths are still
+/// untrusted (an agent wrote them); [`canonical_dir`] authenticates each. Only
+/// the distinct set of cwds matters here — corrald scans each pointed-at
+/// `<cwd>/.corral/registry/` for every session's real record.
+pub fn read_pointers(pointer_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(pointer_dir) else {
         return Vec::new();
     };
     let mut seen = std::collections::BTreeSet::new();
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .filter(|l| seen.insert(l.to_string()))
-        .map(String::from)
-        .collect()
+    let mut out = Vec::new();
+    for e in entries.filter_map(Result::ok) {
+        if !e.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(e.path()) else {
+            continue;
+        };
+        let Some(cwd) = text.lines().map(str::trim).find(|l| !l.is_empty()) else {
+            continue;
+        };
+        if seen.insert(cwd.to_string()) {
+            out.push(cwd.to_string());
+        }
+    }
+    out
 }
 
 /// Canonicalize a listed directory race-safely: open it as a directory
@@ -169,14 +183,14 @@ pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
         .collect()
 }
 
-/// Curate the whole registry: read the index, canonicalize each listed dir, and
-/// vet every record under it. Deduplicated by canonical dir. The result is the
-/// authenticated + field-validated set; corrald then applies the registration
-/// gate before writing `state/registry/`.
-pub fn curate(index_file: &Path) -> Vec<RegistryEntry> {
+/// Curate the whole registry: read the pointer store, canonicalize each listed
+/// dir, and vet every record under it. Deduplicated by canonical dir. The
+/// result is the authenticated + field-validated set; corrald then applies the
+/// registration gate before writing `state/registry/`.
+pub fn curate(pointer_dir: &Path) -> Vec<RegistryEntry> {
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for listed in read_index(index_file) {
+    for listed in read_pointers(pointer_dir) {
         let Some(dir) = canonical_dir(&listed) else {
             continue;
         };
@@ -192,6 +206,34 @@ pub fn curate(index_file: &Path) -> Vec<RegistryEntry> {
 /// agent writes `<sessionId>.json`. A helper so producers and corrald agree.
 pub fn record_dir(cwd: &str) -> PathBuf {
     Path::new(cwd).join(".corral").join("registry")
+}
+
+/// Forget a dormant session (the board's `d`): delete both its authoritative
+/// workdir record (`<cwd>/.corral/registry/<id>.json`) and its home pointer
+/// (`~/.corral/input/registry/<id>`). corrald reflects the removal out of
+/// `state/registry/` on its next scan (deleting the vetted copy directly would
+/// be futile — it would be re-curated). Both deletions are idempotent: an
+/// already-missing file is not an error, so a double `d` is harmless. Returns
+/// the first genuine IO error for the shell to surface.
+pub fn forget_dormant(cwd: &str, session_id: &str) -> std::io::Result<()> {
+    let record = record_dir(cwd).join(format!("{session_id}.json"));
+    let pointer = crate::paths::input_registry_dir().map(|d| d.join(session_id));
+    let mut first_err = remove_if_present(&record);
+    if let Some(p) = pointer {
+        let e = remove_if_present(&p);
+        if first_err.is_ok() {
+            first_err = e;
+        }
+    }
+    first_err
+}
+
+/// Remove a file, treating "already gone" as success (idempotent dismiss).
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// The result of applying the registration gate to the vetted set: the
@@ -290,13 +332,39 @@ mod tests {
     }
 
     #[test]
-    fn read_index_dedups_and_skips_blanks() {
+    fn read_pointers_dedups_by_cwd_and_skips_non_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("registry");
-        std::fs::write(&f, "/a\n\n/b\n/a\n  /c  \n").unwrap();
-        assert_eq!(read_index(&f), vec!["/a", "/b", "/c"]);
-        // Missing file is empty.
-        assert!(read_index(&tmp.path().join("nope")).is_empty());
+        let dir = tmp.path().join("registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two sessions in the same cwd, one in another; content is the cwd.
+        std::fs::write(dir.join("sid-a"), "/a\n").unwrap();
+        std::fs::write(dir.join("sid-b"), "  /b  \n").unwrap();
+        std::fs::write(dir.join("sid-c"), "/a\n").unwrap();
+        // A subdir is not a pointer file and is skipped.
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let mut got = read_pointers(&dir);
+        got.sort();
+        assert_eq!(got, vec!["/a", "/b"]);
+        // Missing dir is empty.
+        assert!(read_pointers(&tmp.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn forget_dormant_deletes_record_and_pointer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("proj");
+        let rec = record_dir(cwd.to_str().unwrap());
+        std::fs::create_dir_all(&rec).unwrap();
+        std::fs::write(rec.join("sid-7.json"), "{}").unwrap();
+        let ptrdir = tmp.path().join("input-registry");
+        std::fs::create_dir_all(&ptrdir).unwrap();
+        std::fs::write(ptrdir.join("sid-7"), cwd.to_str().unwrap()).unwrap();
+        // Point CORRAL_INPUT_REGISTRY at our temp pointer dir for the duration.
+        std::env::set_var("CORRAL_INPUT_REGISTRY", &ptrdir);
+        forget_dormant(cwd.to_str().unwrap(), "sid-7").unwrap();
+        std::env::remove_var("CORRAL_INPUT_REGISTRY");
+        assert!(!rec.join("sid-7.json").exists());
+        assert!(!ptrdir.join("sid-7").exists());
     }
 
     #[test]
@@ -359,10 +427,12 @@ mod tests {
         // A filename/sessionId mismatch is quarantined.
         std::fs::write(regdir.join("s2.json"), r#"{"sessionId":"nope"}"#).unwrap();
 
-        let index = tmp.path().join("registry");
-        std::fs::write(&index, format!("{}\n", boxd.to_string_lossy())).unwrap();
+        // The pointer store: one per-session file naming the workdir.
+        let ptrdir = tmp.path().join("input-registry");
+        std::fs::create_dir_all(&ptrdir).unwrap();
+        std::fs::write(ptrdir.join("s1"), format!("{}\n", boxd.to_string_lossy())).unwrap();
 
-        let vetted = curate(&index);
+        let vetted = curate(&ptrdir);
         assert_eq!(vetted.len(), 1);
         assert_eq!(vetted[0].session_id, "s1");
         // cwd is the real canonical dir, not the content lie.

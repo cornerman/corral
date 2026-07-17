@@ -19,19 +19,19 @@ use std::path::Path;
 use corral_core::approved_commands::{self, Template};
 use corral_core::curation;
 
-/// Refresh `state_registry_dir` from the raw `index_file`, gated by the
+/// Refresh `state_registry_dir` from the raw `pointer_dir`, gated by the
 /// `approved_file` registration store: curate + partition, publish only the
 /// **registered** records (add/update present, delete vanished), and return the
 /// deduplicated `(label, launch-set)` pairs still **pending** operator
 /// approval. Only registered records are published, so corrald routes and
 /// viewers render approved kinds only. Best-effort per file.
 pub fn refresh(
-    index_file: &Path,
+    pointer_dir: &Path,
     state_registry_dir: &Path,
     approved_file: &Path,
 ) -> Vec<(String, Template)> {
     let approved = approved_commands::read_approved(approved_file);
-    let split = curation::partition(curation::curate(index_file), &approved);
+    let split = curation::partition(curation::curate(pointer_dir), &approved);
     if std::fs::create_dir_all(state_registry_dir).is_err() {
         return split.pending;
     }
@@ -56,7 +56,7 @@ pub fn refresh(
             let _ = std::fs::rename(&tmp, &target);
         }
     }
-    // Prune vetted records that no longer exist in the raw index.
+    // Prune vetted records that no longer exist in the raw pointer store.
     if let Ok(entries) = std::fs::read_dir(state_registry_dir) {
         for e in entries.filter_map(Result::ok) {
             let p = e.path();
@@ -73,6 +73,44 @@ pub fn refresh(
         }
     }
     split.pending
+}
+
+/// Ensure the raw dir-index file and its parent (`~/.corral`) exist, so an
+/// agent's sandbox can be granted append on an already-present file. The
+/// hardened sandbox grants the agent write on this single file only (never on
+/// `~/.corral` itself, or it could rebind the control socket — SECURITY.md T6);
+/// a Landlock file rule binds to the inode at sandbox-build time and is silently
+/// Ensure the agent-writable pointer store (`~/.corral/input/registry/`) and its
+/// parents exist, so the agent sandbox can be granted `filesystem.write` on the
+/// `input/` DIRECTORY: a Landlock dir rule binds to the dir's inode at
+/// sandbox-build time and is silently skipped if the path is absent, so the dir
+/// MUST pre-exist before any agent launches. corrald owns this layout (it
+/// starts before agents), keeping perms in one place with `state/`.
+///
+/// The rule binds the DIR inode, so files inside may be created, overwritten,
+/// or removed freely (agents write their own pointer, the board deletes it on
+/// dismiss) without the grant ever going stale — the robustness the directory
+/// grant buys over a per-file rule.
+///
+/// Deliberately does NOT touch anything else. In particular it does NOT delete
+/// the obsolete pre-`input/` path `~/.corral/registry` left by an earlier
+/// layout: corrald curates, it does not run migrations, and a daemon silently
+/// deleting a directory it does not own is surprising and destructive. The old
+/// path is harmless (never read — corrald reads only `input/registry/`); the
+/// operator removes it by hand if they want it gone.
+pub fn ensure_input(pointer_dir: &Path) -> std::io::Result<()> {
+    // 0700 on input/registry/, input/, and ~/.corral (same-user only, defense
+    // in depth; the sandbox is the real seal). Only input/ is granted to the
+    // agent. Stop at ~/.corral — never chmod the user's $HOME.
+    std::fs::create_dir_all(pointer_dir)?;
+    let _ = set_mode_700(pointer_dir);
+    if let Some(input) = pointer_dir.parent() {
+        let _ = set_mode_700(input);
+        if let Some(corral) = input.parent() {
+            let _ = set_mode_700(corral);
+        }
+    }
+    Ok(())
 }
 
 /// Serialize a vetted entry back to the record JSON shape the viewers parse.

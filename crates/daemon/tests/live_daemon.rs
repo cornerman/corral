@@ -31,7 +31,7 @@ fn env_for(root: &Path) -> Vec<(&'static str, PathBuf)> {
     vec![
         ("CORRAL_CONTROL_SOCKET", root.join("corrald.sock")),
         ("CORRAL_STATE_REGISTRY", root.join("state/registry")),
-        ("CORRAL_REGISTRY_INDEX", root.join("index")),
+        ("CORRAL_INPUT_REGISTRY", root.join("input/registry")),
         ("CORRAL_APPROVED_COMMANDS", root.join("state/approved.json")),
         ("CORRAL_AUDIT_LOG", root.join("state/audit.log")),
         ("CORRAL_WHITELIST", root.join("state/whitelist")),
@@ -155,7 +155,8 @@ fn live_whitelisted_message_delivered_with_positional_tag_and_audited() {
     std::fs::create_dir_all(root.join("state/registry")).unwrap();
 
     // A live agent: bind its ACP socket inside its own .corral (T17), write a
-    // raw record pointing at it, list its dir in the index, register kind pi.
+    // raw record pointing at it, drop a pointer to its dir in the pointer store,
+    // register kind pi.
     let agent = root.join("agent");
     std::fs::create_dir_all(agent.join(".corral").join("registry")).unwrap();
     let agent_cwd = canon(&agent);
@@ -171,7 +172,8 @@ fn live_whitelisted_message_delivered_with_positional_tag_and_audited() {
         ),
     )
     .unwrap();
-    std::fs::write(root.join("index"), &agent_cwd).unwrap();
+    std::fs::create_dir_all(root.join("input/registry")).unwrap();
+    std::fs::write(root.join("input/registry/agent-1"), &agent_cwd).unwrap();
     std::fs::write(root.join("state/approved.json"), r#"{"pi":{}}"#).unwrap(); // default template
 
     // Sender, whitelisted to the agent's dir so delivery needs no approval.

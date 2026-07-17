@@ -7,16 +7,20 @@
 //!
 //! ```text
 //! ~/.corral/
-//!   corrald.sock     # root: agents connect (one file), corrald binds
-//!   registry/        # PUBLIC  — agent-writable (session symlinks)
-//!   state/           # PRIVATE — daemon-only (whitelist, approved-commands.json)
+//!   corrald.sock       # root: agents connect (one file), corrald binds
+//!   input/             # PUBLIC  — agent-writable (write-only)
+//!     registry/<id>    #   one per-session POINTER file, content = its cwd
+//!   state/             # PRIVATE — daemon-only (whitelist, approved-commands, vetted registry)
 //! ```
 //!
-//! The agent sandbox grants write to `registry/` and connect to `corrald.sock`
-//! only; `state/` is never on the allowlist, so a compromised agent cannot
-//! tamper with the whitelist or pre-register a command. corral cannot enforce
-//! the profile (that is deployment glue); these paths just keep every binary
-//! agreeing on the boundary.
+//! The agent sandbox grants write to `input/` and connect to `corrald.sock`
+//! only (`filesystem.write` on the dir, write-only: an agent creates/overwrites
+//! its own pointer but cannot read the dir, so it cannot enumerate peers' cwds).
+//! `state/` is never on the allowlist, so a compromised agent cannot tamper
+//! with the whitelist or pre-register a command, and `corrald.sock` sits at the
+//! root of `~/.corral` (not inside the writable dir), so it cannot be rebound.
+//! corral cannot enforce the profile (that is deployment glue); these paths
+//! just keep every binary agreeing on the boundary.
 
 use std::path::PathBuf;
 
@@ -31,11 +35,24 @@ pub fn corral_path(env: &str, name: &str) -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".corral").join(name))
 }
 
-/// The **raw dir-index** file (`~/.corral/registry`): a newline-delimited list
-/// of directories where agents have run. Agent-appendable; read only by
-/// corrald's curator, which then scans each `<D>/.corral/registry/`.
-pub fn registry_index_file() -> Option<PathBuf> {
-    corral_path("CORRAL_REGISTRY_INDEX", "registry")
+/// The agent-writable input root (`~/.corral/input`): the ONE directory the
+/// sandbox grants an agent write on. Holds only untrusted agent-authored data
+/// (today the pointer store below), kept apart from the sealed `state/` and the
+/// root control socket so the grant is a clean, safe directory rule.
+pub fn input_dir() -> Option<PathBuf> {
+    corral_path("CORRAL_INPUT_DIR", "input")
+}
+
+/// The **raw pointer store** (`~/.corral/input/registry/`): one file per
+/// announcing session, named `<sessionId>`, whose content is the cwd it runs
+/// in. Agent-written (create/overwrite own file, write-only); read only by
+/// corrald's curator, which scans each pointed-at `<cwd>/.corral/registry/`.
+/// Mirrors `state/registry/`: raw pointers here, vetted records there.
+pub fn input_registry_dir() -> Option<PathBuf> {
+    if let Some(v) = std::env::var_os("CORRAL_INPUT_REGISTRY") {
+        return Some(PathBuf::from(v));
+    }
+    input_dir().map(|d| d.join("registry"))
 }
 
 /// The **vetted registry** directory (`~/.corral/state/registry/`): the

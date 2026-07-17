@@ -935,13 +935,13 @@ fn dismiss_selected(
             };
         }
         Origin::Dormant => {
-            // Forget a dormant session by deleting its SOURCE record in the
-            // agent's own workdir (`<cwd>/.corral/registry/`); corrald's curator
-            // reflects the removal out of state/registry next tick. Deleting
-            // the state/registry copy directly would be futile (re-curated).
+            // Forget a dormant session: delete its SOURCE record in the agent's
+            // own workdir (`<cwd>/.corral/registry/`) AND its home input pointer
+            // (`~/.corral/input/registry/<id>`); corrald's curator reflects the
+            // removal out of state/registry next tick. Deleting the
+            // state/registry copy directly would be futile (re-curated).
             if let (Some(cwd), Some(id)) = (&agent.cwd, &agent.session_id) {
-                let file = corral_core::curation::record_dir(cwd).join(format!("{id}.json"));
-                if let Err(e) = std::fs::remove_file(&file) {
+                if let Err(e) = corral_core::curation::forget_dormant(cwd, id) {
                     *status = format!("dismiss: {e}");
                 }
             }

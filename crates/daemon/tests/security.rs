@@ -44,11 +44,15 @@ fn write_record(cwd: &str, sid: &str, fields: &[(&str, serde_json::Value)]) {
     .unwrap();
 }
 
-/// Write the newline-delimited raw index listing the given workdirs.
+/// Write the raw pointer store (`input/registry/`) with one file per workdir,
+/// content = the workdir path. Returns the pointer dir corrald curates from.
 fn write_index(root: &Path, dirs: &[&str]) -> PathBuf {
-    let idx = root.join("index");
-    fs::write(&idx, dirs.join("\n")).unwrap();
-    idx
+    let ptrdir = root.join("input/registry");
+    fs::create_dir_all(&ptrdir).unwrap();
+    for (i, dir) in dirs.iter().enumerate() {
+        fs::write(ptrdir.join(format!("p{i}")), dir).unwrap();
+    }
+    ptrdir
 }
 
 /// Persist an approved store registering `label` with the given launch set.

@@ -782,17 +782,15 @@ impl Board {
                     Err(e) => format!("close: {e}"),
                 }
             }
-            // Forget a dormant session by deleting its SOURCE record in the
-            // agent's own workdir; corrald reflects the removal out of
-            // state/registry (deleting the copy directly would be re-curated).
+            // Forget a dormant session: delete its SOURCE record in the agent's
+            // own workdir AND its home input pointer; corrald reflects the
+            // removal out of state/registry (deleting the copy directly would
+            // be re-curated).
             Origin::Dormant => match (&agent.cwd, &agent.session_id) {
-                (Some(cwd), Some(id)) => {
-                    let file = corral_core::curation::record_dir(cwd).join(format!("{id}.json"));
-                    match std::fs::remove_file(&file) {
-                        Ok(()) => "forgot dormant record".into(),
-                        Err(e) => format!("dismiss: {e}"),
-                    }
-                }
+                (Some(cwd), Some(id)) => match corral_core::curation::forget_dormant(cwd, id) {
+                    Ok(()) => "forgot dormant record".into(),
+                    Err(e) => format!("dismiss: {e}"),
+                },
                 _ => "dismiss: no session id/cwd".into(),
             },
         }

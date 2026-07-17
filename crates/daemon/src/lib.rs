@@ -48,14 +48,14 @@ const TICK: Duration = Duration::from_millis(200);
 /// on an operator Quit or a fatal bind error (which exits the process).
 pub fn run() {
     let (
-        Some(index_file),
+        Some(pointer_dir),
         Some(state_registry),
         Some(approved_commands_file),
         Some(audit_log),
         Some(socket),
         Some(whitelist),
     ) = (
-        paths::registry_index_file(),
+        paths::input_registry_dir(),
         paths::state_registry_dir(),
         paths::approved_commands_file(),
         paths::audit_log(),
@@ -73,6 +73,17 @@ pub fn run() {
         eprintln!(
             "corrald: already running (control socket {} is live)",
             socket.display()
+        );
+        std::process::exit(1);
+    }
+
+    // Pre-create the agent-writable pointer store before agents launch, so the
+    // sandbox's directory grant binds a live inode (fail loud: without it,
+    // agents silently cannot announce).
+    if let Err(e) = curator::ensure_input(&pointer_dir) {
+        eprintln!(
+            "corrald: cannot create pointer store {}: {e}",
+            pointer_dir.display()
         );
         std::process::exit(1);
     }
@@ -119,7 +130,7 @@ pub fn run() {
         // viewers and our own routing read (parse, don't validate). Only
         // registered kinds are published; the rest come back as pending
         // registrations for the operator to verify.
-        let pending_regs = curator::refresh(&index_file, &state_registry, &approved_commands_file);
+        let pending_regs = curator::refresh(&pointer_dir, &state_registry, &approved_commands_file);
         registrar.observe(pending_regs);
         // Surface a newly pending registration to the tray (once), and audit it.
         match registrar.current() {
