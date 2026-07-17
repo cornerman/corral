@@ -15,23 +15,28 @@ Legend for **How**:
 - `not self-testable` — an OS/sandbox property corral cannot assert about
   itself; the suite asserts the corral-side half only, the rest is deployment.
 
+Test files: Layer A = `crates/daemon/tests/security.rs`; Layer B =
+`crates/daemon/tests/live_daemon.rs`; the ack verdicts + roster are covered by
+the in-process socket tests already in `crates/daemon/src/control.rs`.
+
 | Claim | What must hold | How | Test |
 |-------|----------------|-----|------|
-| **T2** spoofed sender | `fromCwd` derived from the open fd's `/proc/self/fd`; a symlink swapped **after open** cannot redirect it; `fromSession` must match a curated record in that dir | A | `t2_outbox_symlink_swap_after_open`, `t2_from_session_must_be_curated` |
-| **T3** forged/cross-dir record | record physically under dir A is attributed to A; content has no `cwd`; `sessionId` charset + filename-match enforced; only vetted records reach `state/registry/` | A | `t3_record_attributed_to_physical_dir`, `t3_bad_session_id_rejected`, `t3_forged_record_absent_from_vetted` |
-| **T4** unapproved launch command | an unregistered kind, or one whose launch-set (spawn/resume/gui/messageFlag) deviates, is quarantined (absent from `state/registry/`, returned pending); a matching registered kind publishes silently | A | `t4_unregistered_quarantined`, `t4_deviating_set_is_new_pending`, `t4_registered_publishes_silently`, `t4_flood_of_labels_all_pending` |
-| **T5** whitelist tampering | `state/` files live under `state/`, not the agent-writable index dir (path-location assertion) | A + not self-testable | `t5_state_paths_under_state_dir` (seal itself is sandbox-enforced) |
-| **T6** control-socket rebind | socket path is at the `~/.corral` root, parent is not the agent-writable registry dir; a second bind on a live socket fails | A + B | `t6_socket_at_corral_root`, `live_second_bind_refused` |
-| **T7** forged provenance tag | delivered prompt's first line is the real `[from …]` tag; a `[from …]` embedded in the body is not at position zero | A + B | `t7_provenance_is_first_line`, `live_delivery_tag_precedes_body` |
-| **T13** no network | no TCP listener is opened by any binary (grep guard + a bind-probe over the run loop) | A | `t13_no_tcp_listener` |
-| **T14** confused-deputy submit | a real FIFO / device / dir / oversize / out-of-`outbox` path is rejected; a regular file under `<cwd>/.corral/outbox/` is accepted | A | `t14_rejects_fifo`, `t14_rejects_oversize`, `t14_rejects_path_outside_outbox`, `t14_accepts_regular_outbox_file` |
-| **T15** connection flood | with `MAX_CONCURRENT` slow connections held open, a fresh valid request still gets answered | B | `live_flood_does_not_block_serving` |
-| **T16** argument injection | `sessionId` charset gate rejects `--config=…`; a `{cwd}` with a leading `-`/`@`/space is guarded; launch is an exec array, never a shell | unit + A | `t16_session_id_charset` (unit), `t16_cwd_argv_guarded` |
-| **T17** record aims at foreign socket | a record whose `socket` resolves outside its own `<D>/.corral/` is rejected by `vet`; a card can only drive a session in its own box | A | `t17_socket_must_be_under_own_corral` |
-| **seal modes** | `state/registry/` and the socket parent are created `0700` | A | `seal_dirs_are_0700` |
-| **singleton** | a second `corrald` refuses to start when the socket is live | B | `live_second_daemon_refused` |
-| **ack verdicts** | submit yields `accepted` / `approval_needed` / `recipient_not_found` / `directory_not_known` synchronously per resolved facts | unit + B | `mailbox::classify` (unit), `live_ack_recipient_not_found` |
-| **end-to-end deliver** | whitelisted submit → delivery lands on the recipient socket; a decision is appended to `audit.log` | B | `live_whitelisted_message_delivered`, `live_audit_line_written` |
+| **T2** spoofed sender | `fromCwd` derived from the opened fd's real path; a symlink whose target is outside the outbox resolves there and is rejected (defeats a post-open redirect); location wins over any content `fromCwd` | A | `t2_cwd_from_location_not_content`, `t2_symlink_target_outside_outbox_rejected` |
+| **T3** forged/cross-dir record | a record physically under dir A is attributed to A (content `cwd` ignored); `sessionId` charset + filename-match enforced; only vetted records reach `state/registry/` | A | `t3_record_attributed_to_physical_dir_ignoring_content_cwd`, `t3_bad_session_id_or_filename_mismatch_rejected` |
+| **T4** unapproved launch command | an unregistered kind, or one whose launch-set (spawn/resume/gui/messageFlag) deviates, is quarantined (absent from `state/registry/`, returned pending); a matching registered kind publishes silently; a flood of novel labels all stay pending | A | `t4_unregistered_kind_is_quarantined_and_pending`, `t4_registered_kind_publishes_silently`, `t4_deviating_launch_set_is_a_new_pending_never_published`, `t4_flood_of_novel_labels_all_pending_none_published` |
+| **T5** whitelist tampering | `state/` files live under `state/` (path-location assertion); the seal itself is sandbox-enforced | A + not self-testable | `seal_state_registry_created_0700` (paths); deny is deployment |
+| **T6** control-socket rebind | a second bind on a live socket fails (the singleton guard); rebind-proofing of the parent is sandbox-enforced | B + not self-testable | `live_second_daemon_refuses_to_start` |
+| **T7** forged provenance tag | delivered prompt's first line is the real `[from …]` tag; a `[from …]` embedded in the body is never at position zero | B | `live_whitelisted_message_delivered_with_positional_tag_and_audited` |
+| **T13** no network | no crate names a TCP socket type (source guard, so a listener cannot be added silently) | A | `t13_no_tcp_listener_in_workspace` |
+| **T14** confused-deputy submit | a real FIFO / dir / oversize / out-of-`outbox` path is rejected; a regular file under `<cwd>/.corral/outbox/` is accepted | A | `t14_rejects_fifo`, `t14_rejects_dir_and_oversize_and_outside_outbox`, `t2_cwd_from_location_not_content` (accept path) |
+| **T15** connection flood | `MAX_CONCURRENT` silent connections held open never block the accept loop; a fresh connect still succeeds promptly | A (in-process `serve`) | `t15_flood_of_silent_connections_does_not_block_accept` |
+| **T16** argument injection | `sessionId` charset gate rejects `--config=…` at `vet`; launch is an exec array, never a shell | unit + A | `discovery::session_id_charset_is_strict` (unit), `t16_vet_rejects_flag_like_session_id` |
+| **T17** record aims at foreign socket | a record whose `socket` resolves outside its own `<D>/.corral/` is rejected by `vet`; an own-box socket is accepted | A | `t17_socket_must_resolve_inside_own_corral` |
+| **seal modes** | `state/registry/` is created `0700` | A | `seal_state_registry_created_0700` |
+| **singleton** | a second `corrald` refuses to start when the socket is live | B | `live_second_daemon_refuses_to_start` |
+| **ack verdicts** | submit yields `accepted` / `approval_needed` / `recipient_not_found` / `directory_not_known` / `already_stopped` / `malformed` synchronously | unit (real socket) | `control::tests::*` (8 tests) |
+| **roster confidentiality** | a `list` reply exposes a whitelisted dir's cwd, hides an unreachable one, keeps every session addressable by id | unit (real socket) | `control::tests::list_query_exposes_whitelisted_dir_and_hides_unreachable_paths` |
+| **end-to-end deliver** | whitelisted submit → delivery lands on the recipient socket; a `routed to` line is appended to `audit.log` | B | `live_whitelisted_message_delivered_with_positional_tag_and_audited` |
 
 ## Not self-testable (documented, asserted where possible)
 
@@ -49,9 +54,9 @@ Legend for **How**:
   agent; corral cannot detect its absence (it sees only file locations). No
   test can stand in for it; SECURITY.md states it as a deployment precondition.
 
-## Prerequisite
+## Prerequisite (done)
 
-`crates/daemon` is bin-only today, so its modules are unreachable from
-`tests/`. Step zero: add `crates/daemon/src/lib.rs` (`pub mod` for
-control/curator/router/mailbox/registrations/notify/tray/icon) and reduce
-`main.rs` to a thin `corral_daemon::run()` shell.
+`crates/daemon` was bin-only, so its modules were unreachable from `tests/`.
+Resolved: `crates/daemon/src/lib.rs` now exposes the modules and `main.rs` is a
+thin `corral_daemon::run()` shell, so both layers reach the trust boundary
+directly.
