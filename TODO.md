@@ -4,6 +4,30 @@ Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design. Only open, founded next steps live
 here; shipped work is described in AGENTS.md, not tracked here.
 
+## Harness Registration
+
+- [ ] Multiple approved launch sets per label (`Approved: label -> SET of
+      Template`). TODAY the store is `label -> one Template` and `approve`
+      OVERWRITES, so a kind with genuinely different commands per session
+      (e.g. `quine --model A` vs `quine --model B`, a real vetted choice, NOT
+      identity noise) can hold only one at a time: approving B silently drops
+      A, and switching back re-prompts. This is a present bug masked only
+      because no kind varies yet, and it contradicts approved_commands.rs's own
+      doc ("any change to any field is a new set that needs its own approval").
+      FIX: `registered` = the label's set CONTAINS the candidate; `register`
+      INSERTS; `approve` inserts the SPECIFIC surfaced template (`current()`),
+      so two pending variants approve independently. JSON becomes
+      `label -> [template, ...]`; parse the old `label -> {}` shape as a
+      one-element set for back-compat. The pending/deny machinery is ALREADY
+      keyed on `(label, Template)` pairs (partition dedups on the full pair,
+      Registrar.denied is a set of pairs), so the change is local. Keep the
+      flood defense (dedup + deny-remembers); a per-label cap is YAGNI for now.
+      COMPOSES WITH (does not replace) the {sessionId}/{cwd} placeholder work:
+      placeholders remove FAKE per-session variation so the set stays small;
+      the set handles REAL variation. Do this AFTER the resume-template branch
+      lands. Do NOT placeholder a vetted flag like --model (that would let any
+      value ride under one approval, defeating the gate).
+
 ## Inter-Agent Messaging
 
 - [ ] "Show details" -> full approval dialog (Mechanism B, needs its own
