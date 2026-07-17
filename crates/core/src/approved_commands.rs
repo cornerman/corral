@@ -50,29 +50,11 @@ pub enum Mode {
     Resume,
 }
 
-/// Replace the record's own `sessionId` and `cwd` in an argv with placeholders,
-/// so every session of a kind yields one template. Substitution is by exact
-/// arg equality: an arg equal to the session id becomes `{sessionId}`, an arg
-/// equal to the cwd becomes `{cwd}`. Session id is checked first (a cwd is
-/// never a bare session id).
-pub fn normalize(argv: &[String], session_id: &str, cwd: Option<&str>) -> Vec<String> {
-    argv.iter()
-        .map(|a| {
-            if a == session_id {
-                SESSION_PLACEHOLDER.to_string()
-            } else if cwd == Some(a.as_str()) {
-                CWD_PLACEHOLDER.to_string()
-            } else {
-                a.clone()
-            }
-        })
-        .collect()
-}
-
-/// Reverse of [`normalize`]: substitute the placeholders back to build the real
-/// launch argv from a registered template. The caller guards `cwd`/`session_id`
-/// values for argv-safety before this (see the launch path); an absent cwd
-/// substitutes empty, which a template without `{cwd}` never triggers.
+/// Substitute the reserved placeholders in a launch-command template with the
+/// real values: `{sessionId}` -> the record's session id, `{cwd}` -> its cwd.
+/// The caller guards `cwd`/`session_id` values for argv-safety before this (see
+/// the launch path); an absent cwd substitutes empty, which a template without
+/// `{cwd}` never triggers.
 pub fn denormalize(template: &[String], session_id: &str, cwd: Option<&str>) -> Vec<String> {
     template
         .iter()
@@ -84,15 +66,14 @@ pub fn denormalize(template: &[String], session_id: &str, cwd: Option<&str>) -> 
         .collect()
 }
 
-/// The candidate template a record proposes, built by normalizing whichever of
-/// its spawn/resume commands are present. corrald shows this for approval and
-/// stores it verbatim; a record with neither command proposes an empty
-/// template.
+/// The candidate template a record proposes: its spawn/resume commands taken
+/// **verbatim** (they are already stable templates carrying `{sessionId}`/`{cwd}`
+/// placeholders, not per-session values). corrald shows this for approval and
+/// stores it verbatim; a record with neither command proposes an empty template.
 pub fn candidate(record: &RegistryEntry) -> Template {
-    let norm = |argv: &Vec<String>| normalize(argv, &record.session_id, record.cwd.as_deref());
     Template {
-        spawn: record.spawn_command.as_ref().map(norm),
-        resume: record.resume_command.as_ref().map(norm),
+        spawn: record.spawn_command.clone(),
+        resume: record.resume_command.clone(),
         gui: record.gui,
         message_flag: record.message_flag.clone(),
     }
@@ -251,47 +232,44 @@ mod tests {
     }
 
     #[test]
-    fn normalize_substitutes_own_session_and_cwd() {
-        let argv = vec![
-            "pi".into(),
-            "--session".into(),
-            "abc-123".into(),
-            "/home/dev/x".into(),
-        ];
-        let n = normalize(&argv, "abc-123", Some("/home/dev/x"));
+    fn candidate_copies_commands_verbatim() {
+        let mut r = rec(Some("pi"), "s1", None);
+        r.spawn_command = Some(vec!["pi".into()]);
+        r.resume_command = Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]);
+        let c = candidate(&r);
+        assert_eq!(c.spawn, Some(vec!["pi".into()]));
         assert_eq!(
-            n,
-            vec!["pi", "--session", SESSION_PLACEHOLDER, CWD_PLACEHOLDER]
+            c.resume,
+            Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()])
         );
-        // A different session's argv normalizes identically -> one template.
-        let other = vec![
-            "pi".into(),
-            "--session".into(),
-            "zzz-999".into(),
-            "/home/dev/x".into(),
-        ];
-        assert_eq!(normalize(&other, "zzz-999", Some("/home/dev/x")), n);
+        // A different session carrying the SAME template yields the SAME candidate.
+        let mut r2 = rec(Some("pi"), "s2", None);
+        r2.spawn_command = r.spawn_command.clone();
+        r2.resume_command = r.resume_command.clone();
+        assert_eq!(candidate(&r2), c);
     }
 
     #[test]
-    fn denormalize_round_trips() {
+    fn denormalize_substitutes_placeholders() {
         let tmpl = vec!["pi".into(), "--session".into(), SESSION_PLACEHOLDER.into()];
         assert_eq!(
             denormalize(&tmpl, "abc-123", None),
             vec!["pi", "--session", "abc-123"]
         );
+        let tmpl2 = vec!["cursor".into(), CWD_PLACEHOLDER.into()];
+        assert_eq!(denormalize(&tmpl2, "x", Some("/w")), vec!["cursor", "/w"]);
     }
 
     #[test]
     fn registered_only_when_label_and_commands_match() {
         let mut r = rec(Some("pi"), "s1", Some("/w"));
         r.spawn_command = Some(vec!["pi".into()]);
-        r.resume_command = Some(vec!["pi".into(), "--session".into(), "s1".into()]);
+        r.resume_command = Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]);
         let approved = register(Approved::new(), &r);
-        // The same shape (any session) is registered.
+        // The same template (any session) is registered.
         let mut r2 = rec(Some("pi"), "s2", Some("/w2"));
         r2.spawn_command = Some(vec!["pi".into()]);
-        r2.resume_command = Some(vec!["pi".into(), "--session".into(), "s2".into()]);
+        r2.resume_command = Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]);
         assert!(registered(&r2, &approved));
         assert!(mode_approved(&r2, &approved, Mode::Spawn));
         assert!(mode_approved(&r2, &approved, Mode::Resume));
@@ -326,7 +304,8 @@ mod tests {
         let approved = register(Approved::new(), &r);
         let mut with_resume = rec(Some("pi"), "s1", None);
         with_resume.spawn_command = Some(vec!["pi".into()]);
-        with_resume.resume_command = Some(vec!["pi".into(), "--session".into(), "s1".into()]);
+        with_resume.resume_command =
+            Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]);
         assert!(!registered(&with_resume, &approved));
     }
 
@@ -351,7 +330,7 @@ mod tests {
     fn store_json_round_trips() {
         let mut r = rec(Some("pi"), "s1", None);
         r.spawn_command = Some(vec!["pi".into()]);
-        r.resume_command = Some(vec!["pi".into(), "--session".into(), "s1".into()]);
+        r.resume_command = Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]);
         let approved = register(Approved::new(), &r);
         let json = approved_json(&approved);
         assert_eq!(parse_approved(&json), approved);
