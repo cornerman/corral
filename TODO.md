@@ -6,14 +6,24 @@ here; shipped work is described in AGENTS.md, not tracked here.
 
 ## Inter-Agent Messaging
 
-- [ ] "Show details" proper window: today the tray's Show details pops a
-      `notify-send` notification (from / to / body). Replace it with a small,
-      clean native window. This is corral's first pixel surface, so it is gated
-      on the bigger "should the board become a GUI app / a launcher" decision.
-      Design branches if built standalone: an external dialog
-      (`zenity`/`kdialog`/`yad`, zero Rust deps, generic look) vs a tiny spawned
-      helper binary (`fltk` small / `egui` nicer, designed look, +dep +crate).
-      Do NOT embed a windowing toolkit in the headless `corrald` process.
+- [ ] "Show details" -> full approval dialog (Mechanism B, needs its own
+      plan). ONE shared dialog seam serving BOTH approval kinds: a **message**
+      (full body + provenance: from-dir, reply-handle session, target) and a
+      **harness registration** (the exact launch argvs: spawn / resume /
+      messageFlag / gui). Trigger: a "Show details" button in BOTH the tray menu
+      AND the desktop notification, which spawns the dialog; the dialog carries
+      the Approve/Deny (message: Allow once / always / Deny) buttons, so the
+      operator reads the full content and decides in one surface. Fixes today's
+      fragmentation: the actionable notification clips the message to 140 chars
+      while the button-less "Show details" notification shows the full body, and
+      registration has NO details view at all. Fallbacks: keep `notify-send`
+      buttons and the tray menu buttons when no dialog resolves.
+      Design branches: an external dialog (`zenity`/`kdialog`/`yad`, resolved by
+      a ladder + `$CORRAL_DIALOG` override, shipped on corrald's PATH via the
+      flake, zero Rust deps, generic look) vs a tiny spawned helper binary
+      (`fltk` small / `egui` nicer, designed look, +dep +crate). Do NOT embed a
+      windowing toolkit in the headless `corrald` process; run the dialog in its
+      own thread and return the choice on the existing approval channel.
 - [ ] v2: auto response channel — corral captures the target's final message
       and routes it back to the sender's session without the receiver having to
       call `corral_message_agent` itself. (The reply handle makes a manual reply
