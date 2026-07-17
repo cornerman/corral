@@ -377,12 +377,14 @@ function writeRegistry() {
 			// Adapter-authored, not model output.
 			description: "claude: Claude Code terminal agent",
 			socket: acpSocketPath,
-			// Run verbatim by corral. resumeCommand resumes this exact session; a
+			// resumeCommand is a stable TEMPLATE: corral substitutes the literal
+			// `{sessionId}` token at launch (CONVENTION.md), so the record shape never
+			// changes across sessions and the approved launch set does not flap. A
 			// trailing message (CONVENTION §2a) is appended by corral for
 			// launch-with-delivery. UNVERIFIED that `claude --resume <id> "msg"`
 			// accepts the trailing prompt in interactive mode.
 			spawnCommand: ["claude"],
-			resumeCommand: ["claude", "--resume", sessionId],
+			resumeCommand: ["claude", "--resume", "{sessionId}"],
 			// A hidden spawn runs inside a headless cage; corral sets
 			// CORRAL_HIDDEN=1 there. Record it so the board reveals by resume.
 			hidden: process.env.CORRAL_HIDDEN === "1",
