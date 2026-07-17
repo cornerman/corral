@@ -658,6 +658,7 @@ version = "0.1.0"
 dependencies = [
  "corral-core",
  "ksni",
+ "libc",
  "serde_json",
  "tempfile",
 ]
