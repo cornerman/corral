@@ -307,3 +307,35 @@ One per-session file drives discovery, isolation, and resume.
       wrapper binding `<label>-<pid>.sock`).
 - [ ] More compositors/terminals: new `WindowFocuser` / `Launcher`
       implementations behind the existing seams (sway/kitty are PoC).
+
+- [ ] Confine the broker (corrald) via **systemd unit hardening** in `~/nixos`
+      (deployment glue, defense-in-depth). corrald is unsandboxed same-user
+      today (SECURITY.md "out of scope"), so a parsing bug in the one process
+      that reads every untrusted record/message is full-authority RCE. It
+      cannot be boxed to one dir (it reads every workdir's `.corral/` at its
+      real physical location, writes sealed `state/`, connects every agent
+      socket, spawns/resumes agents), but a hardened user service still buys
+      real blast-radius reduction: no network (`IPAddressDeny=any` /
+      `RestrictAddressFamilies=AF_UNIX`), no reading `~/.ssh`/arbitrary home
+      (`ProtectHome` relaxed only where reads are needed), `SystemCallFilter`.
+      Not a new trust boundary — a compromised corrald still writes `state/`
+      and launches agents.
+      - **Coupled cost (the only corral-code change): spawn-escape.** systemd
+        sandboxing applies to the whole service cgroup, so agents corrald forks
+        would inherit its jail (network-deny, mount hiding) and break. Fix: a
+        new `core::launch::Launcher` that starts each agent as a fresh
+        transient unit (`systemd-run --user …`) outside corrald's
+        cgroup/namespaces, with the per-workdir sandbox applied there.
+      - REJECTED: a **dedicated OS user** for corrald (own `state/` as a real
+        uid boundary). Too invasive — splits `~/.corral` across two uids
+        (group/ACL sharing for the index + socket, group-read on operator
+        workdirs, a privilege hop to spawn agents back as the operator) to
+        defend only the unsandboxed-agent case the model already excludes.
+      - If ever pursued to maximum tightness, corrald's **D-Bus** dep (`ksni`
+        tray + `notify-send`, the approval surface) could be dropped to remove
+        session-bus access from the jail — but only by replacing the surface
+        (a Linux tray/notification *is* D-Bus; no non-bus equivalent): move
+        approvals into the boards (a sealed `state/pending.json` they render +
+        decide over the control socket) plus a `corrald approve <id>` CLI. Not
+        worth it on its own — the tray is good UX and fails gracefully to the
+        whitelist file already.

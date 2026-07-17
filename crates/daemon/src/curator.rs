@@ -7,10 +7,10 @@
 //! IO: read the index, and sync the vetted set into `state/registry/` (write
 //! present, remove vanished) atomically.
 //!
-//! NOTE: the registration gate (`approved_commands`) is layered on next — for
-//! now every authenticated + field-validated record is written, so discovery
-//! works end-to-end. Until registration lands, this store is not yet the
-//! "registered only" set the design specifies.
+//! The registration gate (`approved_commands`) is applied here: `refresh`
+//! partitions the field-validated records on the approved store and publishes
+//! only the **registered** set to `state/registry/`, returning the rest as
+//! pending operator approval (T4).
 
 use std::collections::BTreeSet;
 use std::io::Write;

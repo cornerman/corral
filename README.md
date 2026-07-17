@@ -47,66 +47,66 @@ automatically. That is the whole loop.
 | `d` | Close a live agent / forget a dormant one |
 | `q` | Quit |
 
-## The Three Binaries
-
-- **`corral`** — the attention board as a terminal TUI. The zero-friction path:
-  one small binary, runs over SSH, inherits the terminal's font and theme.
-- **`corral-gui`** — the same board as a desktop (iced) window, for when no
-  terminal is wanted. A pure viewer like `corral`; launch either as many times
-  as you like. Add `--launcher` to either for an ephemeral popup.
-- **`corrald`** — a headless singleton daemon that owns inter-agent messaging
-  (the control socket, the approval gate, the tray). The boards never talk to
-  it; both just reflect the shared filesystem registry.
-
 ## Messaging
 
-Press `m` to send a message to any agent. Agents can also message each other
-across sessions via the `corral_message_agent` tool; that cross-agent messaging
-goes through `corrald`, which asks you to approve each new sender→recipient pair
-(Allow once / always / Deny).
-
-The approval arrives as a desktop notification, and mirrors to the `corrald`
-tray, which also shows the daemon's status:
+Press `m` to message any agent. Agents can also message each other across
+sessions via the `corral_message_agent` tool; that path goes through `corrald`,
+which asks you to approve each new sender→recipient pair (Allow once / always /
+Deny) on a desktop notification mirrored to the tray.
 
 <p>
   <img src="docs/screenshot-message-approval.png" alt="message approval" width="300">
   <img src="docs/screenshot-tray.png" alt="corrald tray" width="300">
 </p>
 
+## How It Works
+
+For the curious and for contributors. Agents self-announce through a filesystem
+convention; the boards are pure viewers that reflect it; a daemon brokers
+cross-agent messages. No process drives an agent on its own.
+
+- **Agents announce.** Each session writes a record to
+  `<cwd>/.corral/registry/<id>.json`, binds a workdir-local ACP socket
+  `<cwd>/.corral/<label>-<pid>.sock`, and appends its dir to the
+  `~/.corral/registry` index. A tiny per-harness adapter does this (see
+  `extensions/`); the core is agent-agnostic and speaks the
+  [CONVENTION.md](CONVENTION.md) contract, not any one harness.
+- **Boards reflect.** `corral` (TUI) and `corral-gui` (desktop) read the vetted
+  registry, watch each live socket for state (running / idle / requires_action,
+  activity, title), and render the four columns. Pure viewers, launch as many as
+  you like; `--launcher` opens either as an ephemeral popup.
+- **The daemon routes.** `corrald` is a headless singleton: it curates the
+  untrusted registry into a sealed vetted store the boards read, and brokers
+  gated cross-agent messages. The boards never talk to it.
+
+Everything shared lives in `corral-core`; the three binaries differ only in
+shell (ratatui / iced / headless).
+
+## Repo Layout
+
+| Path | What |
+|------|------|
+| `crates/core` | `corral-core` — shared, UI-free logic: registry discovery, the reflect engine, the focus / launch / prompt seams. |
+| `crates/board` | `corral` — the TUI attention board (ratatui). |
+| `crates/gui` | `corral-gui` — the same board as a desktop window (iced). |
+| `crates/daemon` | `corrald` — the messaging daemon (control socket, whitelist gate, approval tray). |
+| `extensions/` | per-harness adapters: pi, opencode, Claude Code, Cursor. |
+
+Dev loop: `nix develop` then `just test` / `just lint` / `just board` / `just
+gui` / `just daemon`. Architecture depth is in [AGENTS.md](AGENTS.md).
+
 ## Security: the Filesystem Is the Authority
 
-Corral has no ports and no network surface. Every channel is a unix socket or a
-file under `~/.corral` and each workdir's `.corral/` (both `0700`), and the only
-credential is **directory permissions** — so the security model rides on one
-idea: **physical location is identity.**
-
-Each agent runs sandboxed to its own working directory, so it can write files
-*only* there. It therefore writes its registry record and its outbox messages
-inside its own `<cwd>/.corral/`. `corrald` — the single trusted broker — never
-trusts what a file *says* about who wrote it; it derives that from **where the
-file physically lives**. A record found under `evil/` is attributed to `evil/`,
-full stop; an agent cannot claim another directory it cannot write, nor aim a
-message's sender at a box it does not own.
-
-From that one primitive the rest follows:
-
-- **corrald curates.** It is the only reader of the agent-writable registry
-  index; it authenticates and validates every field, then publishes a sealed,
-  vetted `~/.corral/state/registry/` that the boards read. Boards render only
-  vetted data.
-- **A harness must be registered before it runs.** The exact launch command of
-  each agent kind is approved by you once (corrald shows it); an unapproved or
-  altered command is quarantined, never executed. So a planted record cannot
-  turn into code execution.
-- **The private side is sealed.** Agents may append to the registry index and
-  connect to the socket; the whitelist, the approved-command store, the vetted
-  registry, and the audit log live in `~/.corral/state/` and are never on an
-  agent's sandbox allowlist — unwritable by construction.
-
-The load-bearing precondition: each agent is boxed to its workdir (whole-process
-sandbox). Without that, corral's gates are a convenience, not a boundary. The
-full threat model, every mitigation, and the accepted risks are in
-[SECURITY.md](SECURITY.md).
+No ports, no network — every channel is a `0700` unix socket or file under
+`~/.corral` and each workdir's `.corral/`. The one credential is directory
+permissions, and the one idea is **physical location is identity**: a sandboxed
+agent can write only inside its own workdir, so `corrald` derives who wrote a
+record from *where it lives*, never from what it claims. From that, corrald
+curates untrusted records into a sealed vetted registry the boards read, and no
+launch command runs until you approve it once. Adding corral is **risk-neutral**
+— it grants an agent no privilege it did not already have. The load-bearing
+precondition (a whole-process workdir sandbox), the full threat model, and the
+accepted risks are in [SECURITY.md](SECURITY.md).
 
 ## Learn More
 

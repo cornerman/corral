@@ -37,7 +37,13 @@ boundary.
   unsandboxed as the same OS user can ptrace a peer, edit `~/.corral`, or wrap
   corral itself. The OS user is the trust boundary; corral adds nothing below
   it. When agents are unsandboxed, corral's gates are a convenience, not a
-  security control.
+  security control. This includes **corrald itself**, which runs unsandboxed
+  today — a parsing bug in the one process that reads every untrusted
+  record/message is full-authority RCE. Confining the broker (systemd unit
+  hardening, or a dedicated OS user owning `state/`) is a `[designed]`
+  blast-radius reduction, not a new boundary; see TODO.md "Confine the broker".
+  Being out of scope here is not a regression from adding corral — see "Adoption
+  Is Risk-Neutral" below.
 - **Multi-host or remote agents.** `[out of scope]` Physical-location identity
   is same-host. Message signing with a one-time location proof at enrollment is
   the clean path if remote agents ever appear.
@@ -47,6 +53,44 @@ agent process is boxed to its workdir (the nono / bwrap model, or a per-agent
 container), which is what makes a sibling's socket and workdir unreachable. A
 tool-level sandbox that boxes only the shell tool does **not** satisfy this, and
 corral's model does not map onto it.
+
+**Fails silently, so it is the deployment's job to guarantee.** Every identity
+gate below derives from "a file under `<D>/.corral/` was written by an agent
+boxed to `D`." If that boxing is wrong — an unsandboxed agent, a tool-level
+sandbox, or a shared writable bind-mount that lets one agent write into another
+workdir — physical-location identity is void, but **nothing errors**: corrald
+sees only where files live, not how each agent is jailed, so it cannot detect
+the breach and keeps curating and routing as if identities were sound. There is
+no in-band signal and no fail-loud path corral can offer for the sandbox itself
+(the one thing corrald *can* check is its own `state/` permissions). Treat the
+sandbox profile in Deployment Preconditions as security-critical: a
+misconfiguration downgrades every gate from a boundary to a convenience without
+announcing it.
+
+## Adoption Is Risk-Neutral
+
+Turning corral on grants an agent no privilege it does not already have, so it
+never moves you to a worse security position — whether or not you sandbox.
+
+- **If your agents already run unsandboxed** (as most do), they can already read
+  and write every directory, run arbitrary code as you, and reach the network.
+  corral adds a broker running as the same user that parses agent input — but
+  its socket is `0700`, reachable only by same-user processes, and a same-user
+  unsandboxed peer already has full power, so corrald is no new privilege, only
+  new code reachable solely by processes that are already all-powerful. What you
+  gain is pure: visibility of every session and operator-gated cross-project
+  messaging. (Functionally, plain subagents would already suffice in this mode;
+  corral adds the board.)
+- **If your agents are sandboxed** to their workdirs, corral is the *controlled*
+  channel that lets otherwise-isolated projects talk, with the operator gating
+  each `(sender -> recipient)` pair. The isolation you built is preserved; corral
+  only opens the specific, approved holes.
+
+The one channel corral genuinely introduces is cross-agent prompt injection
+(T8) — but it is operator-gated per pair and strictly weaker than what a
+co-resident unsandboxed process can already do to a peer (ptrace, overwriting
+its files, killing it). So sandboxing is the idea corral embraces, not a tax it
+imposes: skipping it loses you nothing corral was protecting.
 
 ## The Core Principle
 
@@ -76,7 +120,7 @@ to trust.
   actions. They do no authentication, resolution, or filtering of their own, so
   no agent-writable record ever reaches a viewer. They still watch live sockets
   directly for state/activity (low-severity display). Many may run at once.
-  `[designed]` (today they scan the agent-writable registry themselves).
+  `[in place]` (both shells read only `paths::state_registry_dir()`).
 - **corrald** is the single trusted broker and the **registry curator**. It is
   the only reader of the agent-writable raw index; it authenticates, validates
   every field, and emits the vetted, sealed `state/registry/` the viewers read
@@ -84,8 +128,7 @@ to trust.
   owns the control socket, the whitelist gate, the approval surface, and is the
   sole registrar of launch commands. Exactly one may run (singleton guard).
   Harness registration (T4) and message authorization (T2) are **two separate
-  consents** with separate stores and lifetimes, never bundled into one. `[in place]`
-  for the socket/whitelist/singleton; `[designed]` for curation + registration.
+  consents** with separate stores and lifetimes, never bundled into one. `[in place]`.
   **Tradeoff:** viewers now need corrald for discovery (no daemon ⇒ an empty
   board). Accepted for the trust concentration: the entire identity/argv attack
   surface lives in one process, and viewers render only sealed data.
@@ -381,8 +424,9 @@ corrald appends every security-relevant decision to a sealed, append-only
 harness registration (approved / denied, with the shown launch set), message
 authorization (allow-once / allow-always / deny), stops, deliveries, and records
 it quarantined (with the reason). Each line carries a timestamp and the
-directories / sessions involved. The tray offers an "open audit log" action.
-`[designed]`
+directories / sessions involved. `[in place]` (the log is written by
+`curator::audit`); a tray "open audit log" action is `[designed]`, not yet
+built — the file is opened by hand today.
 
 A file is chosen over a bespoke UI: it is durable across restarts, greppable,
 and trivially reviewed, and it cannot itself become an attack surface. The log
