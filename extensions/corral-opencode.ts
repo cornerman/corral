@@ -410,10 +410,10 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			const recordDir = path.join(corral, "registry");
 			fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
 			recordFile = path.join(recordDir, `${activeSessionId}.json`);
-			// Launch commands corral runs verbatim (it never parses them): the argv
-			// to spawn a fresh opencode and to resume this exact session. opencode
-			// auto-persists sessions, so resumeCommand is always set once the id is
-			// known (unlike pi, which gates on the session file existing).
+			// Launch commands: spawn a fresh opencode, and resume this exact session.
+			// resumeCommand is a stable TEMPLATE whose literal `{sessionId}` token
+			// corral substitutes at launch (see CONVENTION.md), so the record shape is
+			// identical across sessions and the approved launch set never flaps.
 			const record = {
 				sessionId: activeSessionId,
 				// No `cwd`: identity is the record's physical location (corrald derives it).
@@ -429,7 +429,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				// exits; its initial prompt rides a dedicated flag instead, so corral
 				// delivers a launch message as `--prompt "<text>"` (opencode.ai/docs/cli).
 				messageFlag: "--prompt",
-				resumeCommand: ["opencode", "--session", activeSessionId],
+				resumeCommand: ["opencode", "--session", "{sessionId}"],
 				// A hidden spawn runs inside a headless cage; corral sets
 				// CORRAL_HIDDEN=1 there. Record it so the board reveals by resume.
 				hidden: process.env.CORRAL_HIDDEN === "1",
