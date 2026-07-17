@@ -19,8 +19,9 @@ test("buildRecord fixes label/gui/commands and omits messageFlag", () => {
   const r = lib.buildRecord({ sessionId: "sid", cwd: "/w", title: "t", socket: "/w/.corral/cursor-42.sock", nowIso: "2026-07-15T00:00:00.000Z" });
   assert.equal(r.label, "cursor");
   assert.equal(r.gui, true);
-  assert.deepEqual(r.spawnCommand, ["cursor", "/w"]);
-  assert.deepEqual(r.resumeCommand, ["cursor", "/w"]);
+  // Commands carry the {cwd} template token; corral substitutes the trusted dir.
+  assert.deepEqual(r.spawnCommand, ["cursor", "{cwd}"]);
+  assert.deepEqual(r.resumeCommand, ["cursor", "{cwd}"]);
   assert.equal("messageFlag" in r, false);
   // No top-level cwd field: identity is physical location (corrald derives it).
   assert.equal("cwd" in r, false);

@@ -22,13 +22,14 @@ function acpSocketPath(cwd, electronPid, env) {
 function controlSocketPath(cwd, sessionId, env) {
   return path.join(socketDir(cwd, env), `.cursor-ctl-${sessionId}.sock`);
 }
-// The gui:true record corral runs verbatim. resume == spawn: for a GUI editor
-// "resume" is just reopening the workspace folder. No messageFlag: cursor <dir>
-// cannot carry prompt text (see spec Messaging/Future). No top-level `cwd`
-// field: identity is the record's physical location (corrald derives it); the
-// workspace path still rides in the launch argv, which corrald normalizes to
-// the {cwd} placeholder.
-function buildRecord({ sessionId, cwd, title, socket, nowIso, hidden }) {
+// The gui:true record. resume == spawn: for a GUI editor "resume" is just
+// reopening the workspace folder. No messageFlag: cursor <dir> cannot carry
+// prompt text (see spec Messaging/Future). No top-level `cwd` field: identity is
+// the record's physical location (corrald derives it). The launch argv carries
+// the literal `{cwd}` TEMPLATE token, which corral substitutes with the trusted
+// dir at launch (CONVENTION.md) — so a cursor kind is approved once for all
+// directories, not re-verified per workspace.
+function buildRecord({ sessionId, title, socket, nowIso, hidden }) {
   return {
     sessionId,
     title: title ?? null,
@@ -38,8 +39,8 @@ function buildRecord({ sessionId, cwd, title, socket, nowIso, hidden }) {
     description: "cursor: Cursor desktop IDE agent",
     socket,
     gui: true,
-    spawnCommand: ["cursor", cwd],
-    resumeCommand: ["cursor", cwd],
+    spawnCommand: ["cursor", "{cwd}"],
+    resumeCommand: ["cursor", "{cwd}"],
     // A hidden spawn runs inside a headless cage; corral sets CORRAL_HIDDEN=1
     // there. Recorded so the board reveals by resume. Passed in (not read from
     // env) to keep this record builder pure.
