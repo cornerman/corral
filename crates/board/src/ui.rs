@@ -239,7 +239,11 @@ pub fn render_menu(frame: &mut Frame, anchor: (u16, u16), selected: usize) {
             };
             // Pad the label to the inner width so the reversed highlight spans
             // the whole row, not just the text.
-            let text = format!(" {:<w$}", a.label(), w = inner.width.saturating_sub(1) as usize);
+            let text = format!(
+                " {:<w$}",
+                a.label(),
+                w = inner.width.saturating_sub(1) as usize
+            );
             Line::from(Span::styled(text, style))
         })
         .collect();
@@ -271,11 +275,19 @@ fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 8] {
     [
         (None, "arrows", "move"),
         (Some(FooterAction::Go), "enter", MenuAction::Go.label()),
-        (Some(FooterAction::New), "shift+enter", MenuAction::Spawn.label()),
+        (
+            Some(FooterAction::New),
+            "shift+enter",
+            MenuAction::Spawn.label(),
+        ),
         (Some(FooterAction::Jump), "/", "filter"),
         (Some(FooterAction::Msg), "m", MenuAction::Message.label()),
         (Some(FooterAction::Delete), "d", MenuAction::Dismiss.label()),
-        (Some(FooterAction::Toggle), "h", MenuAction::ToggleHidden.label()),
+        (
+            Some(FooterAction::Toggle),
+            "h",
+            MenuAction::ToggleHidden.label(),
+        ),
         (Some(FooterAction::Quit), "q", "quit"),
     ]
 }
@@ -632,14 +644,20 @@ pub fn render_move(frame: &mut Frame, source: Column, target: Column, moving_lab
         let is_target = col == target;
         let is_dest = DESTINATIONS.contains(&col) || col == source;
         let border_style = if is_target && cancels {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else if is_target {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else if is_dest {
             Style::default().add_modifier(Modifier::DIM)
         } else {
             // Requires Action (not the source): never a destination.
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM)
         };
         let title = if is_dest {
             format!(" {} ", col.title())

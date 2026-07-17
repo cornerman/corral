@@ -533,7 +533,10 @@ mod tests {
         assert!(!is_list(r#"{"id":"1","message":"hi"}"#));
         assert!(!is_list("nope"));
         // parse_submit reads the envelope path.
-        assert_eq!(parse_submit(r#"{"submit":"/w/.corral/outbox/m.json"}"#).as_deref(), Some("/w/.corral/outbox/m.json"));
+        assert_eq!(
+            parse_submit(r#"{"submit":"/w/.corral/outbox/m.json"}"#).as_deref(),
+            Some("/w/.corral/outbox/m.json")
+        );
         assert_eq!(parse_submit(r#"{"op":"list"}"#), None);
     }
 

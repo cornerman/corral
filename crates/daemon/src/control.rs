@@ -65,8 +65,12 @@ pub fn serve(
             }
             let _ = conn.set_read_timeout(Some(READ_TIMEOUT));
             active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let (registry_dir, whitelist, tx, active) =
-                (registry_dir.clone(), whitelist.clone(), tx.clone(), active.clone());
+            let (registry_dir, whitelist, tx, active) = (
+                registry_dir.clone(),
+                whitelist.clone(),
+                tx.clone(),
+                active.clone(),
+            );
             std::thread::spawn(move || {
                 handle(conn, &registry_dir, &whitelist, &tx);
                 active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -235,7 +239,10 @@ mod tests {
 
     /// The canonical sender dir string corrald will derive for `from`.
     fn from_str(from: &Path) -> String {
-        std::fs::canonicalize(from).unwrap().to_string_lossy().into_owned()
+        std::fs::canonicalize(from)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     }
 
     // The control socket reads corrald's VETTED registry (a plain dir of
@@ -448,7 +455,10 @@ mod tests {
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
-        assert_eq!(submit(&socket, &from, "not json"), r#"{"status":"malformed"}"#);
+        assert_eq!(
+            submit(&socket, &from, "not json"),
+            r#"{"status":"malformed"}"#
+        );
         assert!(rx.try_recv().is_err());
     }
 }

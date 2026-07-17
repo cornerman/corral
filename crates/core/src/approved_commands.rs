@@ -159,7 +159,10 @@ pub fn parse_approved(text: &str) -> Approved {
                     spawn: cmd(t, "spawn"),
                     resume: cmd(t, "resume"),
                     gui: t.get("gui").and_then(|x| x.as_bool()).unwrap_or(false),
-                    message_flag: t.get("messageFlag").and_then(|x| x.as_str()).map(String::from),
+                    message_flag: t
+                        .get("messageFlag")
+                        .and_then(|x| x.as_str())
+                        .map(String::from),
                 },
             )
         })
@@ -261,7 +264,12 @@ mod tests {
             vec!["pi", "--session", SESSION_PLACEHOLDER, CWD_PLACEHOLDER]
         );
         // A different session's argv normalizes identically -> one template.
-        let other = vec!["pi".into(), "--session".into(), "zzz-999".into(), "/home/dev/x".into()];
+        let other = vec![
+            "pi".into(),
+            "--session".into(),
+            "zzz-999".into(),
+            "/home/dev/x".into(),
+        ];
         assert_eq!(normalize(&other, "zzz-999", Some("/home/dev/x")), n);
     }
 

@@ -180,7 +180,8 @@ impl Board {
     /// focuses the filter so you can type to narrow immediately.
     pub fn new(launcher_mode: bool) -> (Self, Task<Message>) {
         // Viewers read only corrald's vetted registry (never agent-writable records).
-        let dir = paths::state_registry_dir().expect("state registry dir (set $HOME or $CORRAL_STATE_DIR)");
+        let dir = paths::state_registry_dir()
+            .expect("state registry dir (set $HOME or $CORRAL_STATE_DIR)");
         let mut b = Board {
             engine: Engine::new(dir),
             focuser: focus::detect(),
@@ -261,8 +262,9 @@ impl Board {
             .flatten()
             .map(|a| (a.move_key(), a.column()))
             .collect();
-        self.pending
-            .retain(|k, (target, since)| by_key.get(k) != Some(target) && since.elapsed() <= PENDING_TTL);
+        self.pending.retain(|k, (target, since)| {
+            by_key.get(k) != Some(target) && since.elapsed() <= PENDING_TTL
+        });
     }
 
     /// The destination column index under a cursor x (points), from the board
@@ -376,8 +378,7 @@ impl Board {
                 // Arm a possible drag from this card's column; a drag into
                 // another column begins a move (see CursorMoved), a plain
                 // release is just the click below.
-                self.drag_source =
-                    self.columns.iter().flatten().nth(idx).map(|a| a.column());
+                self.drag_source = self.columns.iter().flatten().nth(idx).map(|a| a.column());
                 // Single click selects; a double click on the same card goes
                 // (focus/reveal/resume).
                 match self.clicks.press(idx, Instant::now()) {
@@ -571,7 +572,8 @@ impl Board {
         if let Some((source, target)) = self.move_mode {
             match key {
                 keyboard::Key::Named(Named::ArrowLeft) => {
-                    self.move_mode = Some((source, transition::slide_target(source, target, false)));
+                    self.move_mode =
+                        Some((source, transition::slide_target(source, target, false)));
                 }
                 keyboard::Key::Named(Named::ArrowRight) => {
                     self.move_mode = Some((source, transition::slide_target(source, target, true)));
@@ -1222,11 +1224,19 @@ impl Board {
         row![
             hint("arrows", "move", None),
             hint("enter", MenuAction::Go.label(), Some(Message::Go)),
-            hint("shift+enter", MenuAction::Spawn.label(), Some(Message::Spawn)),
+            hint(
+                "shift+enter",
+                MenuAction::Spawn.label(),
+                Some(Message::Spawn)
+            ),
             hint("/", "filter", Some(Message::FocusFilter)),
             hint("m", MenuAction::Message.label(), Some(Message::OpenCompose)),
             hint("d", MenuAction::Dismiss.label(), Some(Message::Dismiss)),
-            hint("h", MenuAction::ToggleHidden.label(), Some(Message::ToggleHidden)),
+            hint(
+                "h",
+                MenuAction::ToggleHidden.label(),
+                Some(Message::ToggleHidden)
+            ),
             hint("q", "quit", Some(Message::Quit)),
             Space::new(Length::Fill, 0.0),
             canvas(Mark { color: dim })

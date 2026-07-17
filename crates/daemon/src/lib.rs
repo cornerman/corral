@@ -61,7 +61,8 @@ pub fn run() {
         paths::audit_log(),
         paths::control_socket(),
         paths::whitelist_file(),
-    ) else {
+    )
+    else {
         eprintln!("corrald: set $HOME or the CORRAL_* path overrides");
         std::process::exit(1);
     };
@@ -125,7 +126,10 @@ pub fn run() {
             Some((label, template)) if announced_reg.as_deref() != Some(label) => {
                 let desc = curator::describe(template);
                 tray.set_pending_registration(Some((label.clone(), desc.clone())));
-                curator::audit(&audit_log, &format!("registration pending: {label} [{desc}]"));
+                curator::audit(
+                    &audit_log,
+                    &format!("registration pending: {label} [{desc}]"),
+                );
                 announced_reg = Some(label.clone());
             }
             None if announced_reg.is_some() => {
@@ -221,7 +225,12 @@ pub fn run() {
 
 /// Apply an approval decision only if it still matches the pending message,
 /// and record it in the audit trail (who -> whom, allow/deny).
-fn apply_decision(router: &mut Router, id: &str, action: ApprovalAction, audit_log: &std::path::Path) {
+fn apply_decision(
+    router: &mut Router,
+    id: &str,
+    action: ApprovalAction,
+    audit_log: &std::path::Path,
+) {
     if router.pending().map(|m| m.id.as_str()) == Some(id) {
         let line = router
             .pending()

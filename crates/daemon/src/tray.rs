@@ -68,7 +68,9 @@ impl CorralTray {
     /// Report a decision on the current pending registration, then clear it.
     fn decide_registration(&mut self, approve: bool) {
         if let Some(r) = &self.pending_reg {
-            let _ = self.tx.send(TrayCommand::DecideRegistration(r.label.clone(), approve));
+            let _ = self
+                .tx
+                .send(TrayCommand::DecideRegistration(r.label.clone(), approve));
         }
         self.pending_reg = None;
     }

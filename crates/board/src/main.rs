@@ -33,9 +33,9 @@ mod ui;
 
 use corral_core::click::{ClickKind, ClickTracker};
 use corral_core::engine::Engine;
-use corral_core::menu::MenuAction;
 use corral_core::focus::{self, WindowFocuser};
 use corral_core::launch::{self, LaunchMode, Launcher, TerminalLauncher};
+use corral_core::menu::MenuAction;
 use corral_core::model::{Board, Column, Origin};
 use corral_core::placement::{apply_placement, kill_pid};
 use corral_core::prompt;
@@ -240,8 +240,11 @@ fn commit_move(
         MoveAction::Resume | MoveAction::ResumeAndNudge => {
             match (&agent.cwd, &agent.resume_command) {
                 (Some(cwd), Some(cmd)) => {
-                    let msg = matches!(transition::action_for(source, target), MoveAction::ResumeAndNudge)
-                        .then_some("continue");
+                    let msg = matches!(
+                        transition::action_for(source, target),
+                        MoveAction::ResumeAndNudge
+                    )
+                    .then_some("continue");
                     launcher
                         .launch(Path::new(cwd), cmd, msg, &agent.launch_mode())
                         .map_err(|e| format!("resume: {e}"))
@@ -347,12 +350,8 @@ fn run(
             dormant_age: engine.dormant_ages(),
             pending: &pending_labels,
         };
-        let move_label = move_mode.and_then(|_| {
-            board
-                .selectable()
-                .get(selected)
-                .map(|a| ui::focus_label(a))
-        });
+        let move_label =
+            move_mode.and_then(|_| board.selectable().get(selected).map(|a| ui::focus_label(a)));
         terminal.draw(|f| {
             ui::render(f, board, selected, &status, &mut list_states, &meta);
             // Move mode owns the screen (drop-boxes over the columns); the
@@ -422,9 +421,14 @@ fn run(
                 }
                 if commit {
                     if let Some(agent) = board.selectable().get(selected).copied() {
-                        if let Some((key, tgt)) =
-                            commit_move(source, target, agent, focuser.as_ref(), &launcher, &mut status)
-                        {
+                        if let Some((key, tgt)) = commit_move(
+                            source,
+                            target,
+                            agent,
+                            focuser.as_ref(),
+                            &launcher,
+                            &mut status,
+                        ) {
                             pending.insert(key, (tgt, Instant::now()));
                         }
                     }
@@ -452,8 +456,8 @@ fn run(
                     Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                         KeyCode::Esc => keep = false,
                         KeyCode::Up => {
-                            m.highlight = (m.highlight + MenuAction::ALL.len() - 1)
-                                % MenuAction::ALL.len();
+                            m.highlight =
+                                (m.highlight + MenuAction::ALL.len() - 1) % MenuAction::ALL.len();
                         }
                         KeyCode::Down => {
                             m.highlight = (m.highlight + 1) % MenuAction::ALL.len();
@@ -703,12 +707,9 @@ fn run(
                                     status.clear();
                                     overlay = open_compose(board, selected);
                                 }
-                                ui::FooterAction::Delete => dismiss_selected(
-                                    focuser.as_ref(),
-                                    board,
-                                    selected,
-                                    &mut status,
-                                ),
+                                ui::FooterAction::Delete => {
+                                    dismiss_selected(focuser.as_ref(), board, selected, &mut status)
+                                }
                                 ui::FooterAction::Toggle => toggle_selected(
                                     focuser.as_ref(),
                                     &launcher,
@@ -727,8 +728,7 @@ fn run(
                                 // Arm a possible drag: remember the card's
                                 // column so a drag into another column begins a
                                 // move (see the Drag arm).
-                                drag_source =
-                                    board.selectable().get(idx).map(|a| a.column());
+                                drag_source = board.selectable().get(idx).map(|a| a.column());
                                 if let ClickKind::Go = clicks.press(idx, Instant::now()) {
                                     if activate_selected(
                                         focuser.as_ref(),
@@ -948,5 +948,3 @@ fn dismiss_selected(
         }
     }
 }
-
-

@@ -69,10 +69,7 @@ mod tests {
         let mut t = ClickTracker::new(Duration::from_millis(400));
         let base = Instant::now();
         assert_eq!(t.press(2, base), ClickKind::Select);
-        assert_eq!(
-            t.press(2, base + Duration::from_millis(200)),
-            ClickKind::Go
-        );
+        assert_eq!(t.press(2, base + Duration::from_millis(200)), ClickKind::Go);
     }
 
     #[test]

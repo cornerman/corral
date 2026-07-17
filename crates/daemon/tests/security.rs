@@ -20,7 +20,10 @@ use corral_daemon::curator;
 fn workdir(root: &Path, name: &str) -> String {
     let cwd = root.join(name);
     fs::create_dir_all(cwd.join(".corral").join("registry")).unwrap();
-    fs::canonicalize(&cwd).unwrap().to_string_lossy().into_owned()
+    fs::canonicalize(&cwd)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Write a record JSON into a workdir's raw (agent-writable) registry.
@@ -30,8 +33,15 @@ fn write_record(cwd: &str, sid: &str, fields: &[(&str, serde_json::Value)]) {
     for (k, v) in fields {
         m.insert((*k).into(), v.clone());
     }
-    let path = Path::new(cwd).join(".corral").join("registry").join(format!("{sid}.json"));
-    fs::write(path, serde_json::to_string(&serde_json::Value::Object(m)).unwrap()).unwrap();
+    let path = Path::new(cwd)
+        .join(".corral")
+        .join("registry")
+        .join(format!("{sid}.json"));
+    fs::write(
+        path,
+        serde_json::to_string(&serde_json::Value::Object(m)).unwrap(),
+    )
+    .unwrap();
 }
 
 /// Write the newline-delimited raw index listing the given workdirs.
@@ -72,8 +82,14 @@ fn t2_cwd_from_location_not_content() {
     fs::write(&msg, r#"{"fromCwd":"/victim","message":"hi"}"#).unwrap();
 
     let (derived, content) = curation::resolve_submission(&msg).expect("regular outbox file");
-    assert_eq!(derived, cwd, "cwd is the real location, not the claimed /victim");
-    assert!(content.contains("/victim"), "content returned verbatim for the caller to override");
+    assert_eq!(
+        derived, cwd,
+        "cwd is the real location, not the claimed /victim"
+    );
+    assert!(
+        content.contains("/victim"),
+        "content returned verbatim for the caller to override"
+    );
 }
 
 #[test]
@@ -123,12 +139,20 @@ fn t14_rejects_dir_and_oversize_and_outside_outbox() {
     // Oversize (> 256 KiB cap).
     let big = outbox.join("big.json");
     fs::write(&big, vec![b'x'; 256 * 1024 + 1]).unwrap();
-    assert_eq!(curation::resolve_submission(&big), None, "oversize rejected");
+    assert_eq!(
+        curation::resolve_submission(&big),
+        None,
+        "oversize rejected"
+    );
 
     // A regular file NOT under .corral/outbox is rejected (wrong shape).
     let stray = corral.join("stray.json");
     fs::write(&stray, "{}").unwrap();
-    assert_eq!(curation::resolve_submission(&stray), None, "outside outbox rejected");
+    assert_eq!(
+        curation::resolve_submission(&stray),
+        None,
+        "outside outbox rejected"
+    );
 }
 
 // --- T3: forged / cross-directory records ----------------------------------
@@ -138,7 +162,11 @@ fn t3_record_attributed_to_physical_dir_ignoring_content_cwd() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = workdir(tmp.path(), "box");
     // The record lies about its cwd; curation stamps the physical location.
-    write_record(&cwd, "s1", &[("label", "pi".into()), ("cwd", "/victim".into())]);
+    write_record(
+        &cwd,
+        "s1",
+        &[("label", "pi".into()), ("cwd", "/victim".into())],
+    );
     let idx = write_index(tmp.path(), &[&cwd]);
     let state = tmp.path().join("state").join("registry");
     let approved = tmp.path().join("approved.json");
@@ -148,7 +176,11 @@ fn t3_record_attributed_to_physical_dir_ignoring_content_cwd() {
 
     let recs = discovery::scan_registry(&state);
     assert_eq!(recs.len(), 1);
-    assert_eq!(recs[0].cwd.as_deref(), Some(cwd.as_str()), "cwd is physical, not /victim");
+    assert_eq!(
+        recs[0].cwd.as_deref(),
+        Some(cwd.as_str()),
+        "cwd is physical, not /victim"
+    );
 }
 
 #[test]
@@ -156,7 +188,10 @@ fn t3_bad_session_id_or_filename_mismatch_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = workdir(tmp.path(), "box");
     // Filename stem is `x` but the content claims sessionId `y`: vet rejects.
-    let path = Path::new(&cwd).join(".corral").join("registry").join("x.json");
+    let path = Path::new(&cwd)
+        .join(".corral")
+        .join("registry")
+        .join("x.json");
     fs::write(&path, r#"{"sessionId":"y","label":"pi"}"#).unwrap();
     let idx = write_index(tmp.path(), &[&cwd]);
     let state = tmp.path().join("state").join("registry");
@@ -164,7 +199,10 @@ fn t3_bad_session_id_or_filename_mismatch_rejected() {
     approve(&approved, "pi", Template::default());
 
     curator::refresh(&idx, &state, &approved);
-    assert!(published(&state).is_empty(), "filename/sessionId mismatch quarantined");
+    assert!(
+        published(&state).is_empty(),
+        "filename/sessionId mismatch quarantined"
+    );
 }
 
 // --- T4: harness registration ----------------------------------------------
@@ -184,7 +222,10 @@ fn t4_unregistered_kind_is_quarantined_and_pending() {
 
     let pending = curator::refresh(&idx, &state, &approved);
 
-    assert!(published(&state).is_empty(), "unregistered kind not published");
+    assert!(
+        published(&state).is_empty(),
+        "unregistered kind not published"
+    );
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].0, "pi");
 }
@@ -202,7 +243,10 @@ fn t4_registered_kind_publishes_silently() {
     let pending = curator::refresh(&idx, &state, &approved);
 
     assert_eq!(published(&state), vec!["s1".to_string()]);
-    assert!(pending.is_empty(), "already-registered kind prompts nothing");
+    assert!(
+        pending.is_empty(),
+        "already-registered kind prompts nothing"
+    );
 }
 
 #[test]
@@ -213,26 +257,55 @@ fn t4_deviating_launch_set_is_a_new_pending_never_published() {
     write_record(
         &cwd,
         "s1",
-        &[("label", "pi".into()), ("spawnCommand", serde_json::json!(["bash", "-c", "rm -rf ~"]))],
+        &[
+            ("label", "pi".into()),
+            (
+                "spawnCommand",
+                serde_json::json!(["bash", "-c", "rm -rf ~"]),
+            ),
+        ],
     );
     let idx = write_index(tmp.path(), &[&cwd]);
     let state = tmp.path().join("state").join("registry");
     let approved = tmp.path().join("approved.json");
-    approve(&approved, "pi", Template { spawn: Some(vec!["pi".into()]), ..Default::default() });
+    approve(
+        &approved,
+        "pi",
+        Template {
+            spawn: Some(vec!["pi".into()]),
+            ..Default::default()
+        },
+    );
 
     let pending = curator::refresh(&idx, &state, &approved);
 
-    assert!(published(&state).is_empty(), "deviating argv never executed/published");
-    assert_eq!(pending.len(), 1, "surfaces as a fresh registration to verify");
-    assert_eq!(pending[0].1.spawn.as_deref(), Some(&["bash".to_string(), "-c".into(), "rm -rf ~".into()][..]));
+    assert!(
+        published(&state).is_empty(),
+        "deviating argv never executed/published"
+    );
+    assert_eq!(
+        pending.len(),
+        1,
+        "surfaces as a fresh registration to verify"
+    );
+    assert_eq!(
+        pending[0].1.spawn.as_deref(),
+        Some(&["bash".to_string(), "-c".into(), "rm -rf ~".into()][..])
+    );
 }
 
 #[test]
 fn t4_flood_of_novel_labels_all_pending_none_published() {
     let tmp = tempfile::tempdir().unwrap();
-    let dirs: Vec<String> = (0..6).map(|i| workdir(tmp.path(), &format!("box{i}"))).collect();
+    let dirs: Vec<String> = (0..6)
+        .map(|i| workdir(tmp.path(), &format!("box{i}")))
+        .collect();
     for (i, cwd) in dirs.iter().enumerate() {
-        write_record(cwd, &format!("s{i}"), &[("label", format!("kind{i}").into())]);
+        write_record(
+            cwd,
+            &format!("s{i}"),
+            &[("label", format!("kind{i}").into())],
+        );
     }
     let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
     let idx = write_index(tmp.path(), &refs);
@@ -259,10 +332,16 @@ fn t17_socket_must_resolve_inside_own_corral() {
     // A record aiming its socket at another box's session is rejected (T17);
     // one inside its own .corral is accepted.
     let foreign = mk_rec("s1", Some("/other/.corral/pi-1.sock"));
-    assert!(curation::vet("/box", "s1", foreign).is_none(), "foreign socket rejected");
+    assert!(
+        curation::vet("/box", "s1", foreign).is_none(),
+        "foreign socket rejected"
+    );
 
     let own = mk_rec("s1", Some("/box/.corral/pi-1.sock"));
-    assert!(curation::vet("/box", "s1", own).is_some(), "own-box socket accepted");
+    assert!(
+        curation::vet("/box", "s1", own).is_some(),
+        "own-box socket accepted"
+    );
 }
 
 fn mk_rec(sid: &str, socket: Option<&str>) -> RegistryEntry {
@@ -314,7 +393,11 @@ fn t13_no_tcp_listener_in_workspace() {
             if p.is_dir() {
                 // Scan shipped source only, not the test suite (which names the
                 // types in its own guard) or build artifacts.
-                let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 if matches!(name.as_str(), "tests" | "target" | ".git") {
                     continue;
                 }
@@ -328,7 +411,10 @@ fn t13_no_tcp_listener_in_workspace() {
         }
     }
     walk(crates, &mut offenders);
-    assert!(offenders.is_empty(), "TCP socket types found (network surface): {offenders:?}");
+    assert!(
+        offenders.is_empty(),
+        "TCP socket types found (network surface): {offenders:?}"
+    );
 }
 
 // --- viewer sees only vetted data ------------------------------------------

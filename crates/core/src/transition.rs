@@ -145,7 +145,10 @@ mod tests {
         assert_eq!(stops(Running), vec![Idle, Running, Dormant]);
         // Requires Action source: it is a stop too (so you can cancel by
         // dropping back home), in display order.
-        assert_eq!(stops(RequiresAction), vec![RequiresAction, Idle, Running, Dormant]);
+        assert_eq!(
+            stops(RequiresAction),
+            vec![RequiresAction, Idle, Running, Dormant]
+        );
     }
 
     #[test]
@@ -155,7 +158,7 @@ mod tests {
         assert_eq!(slide_target(Running, Idle, true), Running);
         assert_eq!(slide_target(Running, Running, true), Dormant);
         assert_eq!(slide_target(Running, Dormant, true), Dormant); // clamp right
-        // A Requires-Action-origin card can slide back onto Requires Action.
+                                                                   // A Requires-Action-origin card can slide back onto Requires Action.
         assert_eq!(slide_target(RequiresAction, Idle, false), RequiresAction);
         assert_eq!(slide_target(RequiresAction, RequiresAction, true), Idle);
     }
@@ -163,7 +166,10 @@ mod tests {
     #[test]
     fn can_rest_on_source_to_cancel() {
         // Sliding back to the source column yields a no-op action = cancel.
-        assert_eq!(action_for(Running, slide_target(Running, Idle, true)), MoveAction::NoOp);
+        assert_eq!(
+            action_for(Running, slide_target(Running, Idle, true)),
+            MoveAction::NoOp
+        );
         assert_eq!(
             action_for(RequiresAction, slide_target(RequiresAction, Idle, false)),
             MoveAction::NoOp
@@ -176,7 +182,7 @@ mod tests {
         assert_eq!(initial_target(Running, true), Dormant);
         assert_eq!(initial_target(Idle, true), Running);
         assert_eq!(initial_target(Idle, false), Idle); // clamp at left stop
-        // Requires Action steps right to Idle; left clamps onto itself (cancel).
+                                                       // Requires Action steps right to Idle; left clamps onto itself (cancel).
         assert_eq!(initial_target(RequiresAction, true), Idle);
         assert_eq!(initial_target(RequiresAction, false), RequiresAction);
     }

@@ -627,7 +627,10 @@ mod tests {
     #[test]
     fn upsert_then_set_state() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Running))));
+        b.apply(Update::Upsert(Box::new(agent(
+            "/s/pi-1.sock",
+            State::Running,
+        ))));
         assert_eq!(b.in_state(State::Running).len(), 1);
         b.apply(Update::SetState(PathBuf::from("/s/pi-1.sock"), State::Idle));
         assert_eq!(b.in_state(State::Running).len(), 0);
@@ -658,7 +661,10 @@ mod tests {
     #[test]
     fn gone_removes_agent() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Running))));
+        b.apply(Update::Upsert(Box::new(agent(
+            "/s/pi-1.sock",
+            State::Running,
+        ))));
         b.apply(Update::Gone(PathBuf::from("/s/pi-1.sock")));
         assert!(b.selectable().is_empty());
     }
@@ -732,9 +738,15 @@ mod tests {
     #[test]
     fn selectable_orders_by_attention_priority() {
         let mut b = Board::default();
-        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Running))));
+        b.apply(Update::Upsert(Box::new(agent(
+            "/s/pi-1.sock",
+            State::Running,
+        ))));
         b.apply(Update::Upsert(Box::new(agent("/s/pi-2.sock", State::Idle))));
-        b.apply(Update::Upsert(Box::new(agent("/s/pi-3.sock", State::RequiresAction))));
+        b.apply(Update::Upsert(Box::new(agent(
+            "/s/pi-3.sock",
+            State::RequiresAction,
+        ))));
         b.sync_registry(&[dormant_record("z", "/p9", "t")], &HashSet::new());
         let sel = b.selectable();
         assert_eq!(sel[0].state, State::RequiresAction);

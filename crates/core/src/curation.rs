@@ -266,10 +266,17 @@ mod tests {
         // Socket directly in <dir>/.corral -> accepted.
         assert!(vet("/w", "s1", rec("s1", Some("/w/.corral/pi-1.sock"))).is_some());
         // Socket in another box -> rejected (T17).
-        assert_eq!(vet("/w", "s1", rec("s1", Some("/victim/.corral/pi-1.sock"))), None);
+        assert_eq!(
+            vet("/w", "s1", rec("s1", Some("/victim/.corral/pi-1.sock"))),
+            None
+        );
         // `..` escape does not slip past the parent check.
         assert_eq!(
-            vet("/w", "s1", rec("s1", Some("/w/.corral/../../etc/pi-1.sock"))),
+            vet(
+                "/w",
+                "s1",
+                rec("s1", Some("/w/.corral/../../etc/pi-1.sock"))
+            ),
             None
         );
     }
@@ -301,10 +308,7 @@ mod tests {
         let msg = outbox.join("m1.json");
         std::fs::write(&msg, r#"{"id":"1","message":"hi"}"#).unwrap();
         let (cwd, content) = resolve_submission(&msg).unwrap();
-        assert_eq!(
-            cwd,
-            std::fs::canonicalize(&boxd).unwrap().to_string_lossy()
-        );
+        assert_eq!(cwd, std::fs::canonicalize(&boxd).unwrap().to_string_lossy());
         assert!(content.contains("\"message\":\"hi\""));
 
         // A file not under .corral/outbox is rejected (corrald never reads an
@@ -333,7 +337,11 @@ mod tests {
         let split = partition(vec![pi, oc1, oc2], &approved);
         assert_eq!(split.registered.len(), 1);
         assert_eq!(split.registered[0].session_id, "s1");
-        assert_eq!(split.pending.len(), 1, "one prompt per novel kind, not per session");
+        assert_eq!(
+            split.pending.len(),
+            1,
+            "one prompt per novel kind, not per session"
+        );
         assert_eq!(split.pending[0].0, "opencode");
     }
 
@@ -360,7 +368,12 @@ mod tests {
         // cwd is the real canonical dir, not the content lie.
         assert_eq!(
             vetted[0].cwd.as_deref(),
-            Some(std::fs::canonicalize(&boxd).unwrap().to_string_lossy().as_ref())
+            Some(
+                std::fs::canonicalize(&boxd)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
         );
     }
 }

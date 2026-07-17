@@ -211,7 +211,10 @@ mod tests {
             Some("/home/dev/x")
         );
         // Not under a .corral dir -> rejected (cannot be attributed).
-        assert_eq!(cwd_from_record_path(Path::new("/home/dev/x/abc.json")), None);
+        assert_eq!(
+            cwd_from_record_path(Path::new("/home/dev/x/abc.json")),
+            None
+        );
         assert_eq!(cwd_from_record_path(Path::new("/abc.json")), None);
     }
 
@@ -257,7 +260,6 @@ mod tests {
     fn scan_missing_dir_is_empty() {
         assert!(scan_registry(Path::new("/nonexistent/definitely-not-here")).is_empty());
     }
-
 
     #[test]
     fn parses_live_registry_record() {

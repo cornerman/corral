@@ -50,7 +50,8 @@ pub fn refresh(
             continue;
         }
         // Atomic write (tmp + rename) so a scanning viewer never reads a partial.
-        let tmp = state_registry_dir.join(format!(".{}.{}.tmp", rec.session_id, std::process::id()));
+        let tmp =
+            state_registry_dir.join(format!(".{}.{}.tmp", rec.session_id, std::process::id()));
         if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &target);
         }
@@ -60,7 +61,11 @@ pub fn refresh(
         for e in entries.filter_map(Result::ok) {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "json") {
-                let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 if !present.contains(&name) {
                     let _ = std::fs::remove_file(&p);
                 }
@@ -142,7 +147,11 @@ pub fn audit(log: &Path, line: &str) {
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

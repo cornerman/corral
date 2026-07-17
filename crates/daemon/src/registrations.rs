@@ -96,7 +96,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("approved-commands.json");
         let mut r = Registrar::new(file.clone());
-        r.observe(vec![("pi".into(), tmpl("pi")), ("opencode".into(), tmpl("opencode"))]);
+        r.observe(vec![
+            ("pi".into(), tmpl("pi")),
+            ("opencode".into(), tmpl("opencode")),
+        ]);
         assert_eq!(r.current().unwrap().0, "pi");
 
         assert!(r.approve("pi").unwrap());
