@@ -135,9 +135,15 @@ ratatui / iced, the daemon keeps ksni).
     split vetted into registered vs pending), and `resolve_submission` (open an
     outbox file non-blocking, size-capped, derive the trusted `fromCwd` from
     its physical location). Pure/IO-thin, unit-tested.
-  - `src/approved_commands.rs` — the harness-registration store: `normalize`
-    (sessionId/cwd → placeholders), the `registered` predicate (full launch-set
-    match: spawn/resume/gui/messageFlag), `write_approved`. Pure, unit-tested.
+  - `src/approved_commands.rs` — the harness-registration store. Records carry
+    launch commands already in TEMPLATE form (with `{sessionId}`/`{cwd}`
+    placeholders, CONVENTION.md), so `candidate` copies them verbatim and the
+    `registered` predicate is plain equality of the full launch set
+    (spawn/resume/gui/messageFlag). There is no `normalize` step: the template
+    is stable across sessions by construction, so the approved set never flaps
+    (the fix for corrald re-prompting the same kind forever). `denormalize`
+    substitutes the two placeholders with the validated `sessionId` / trusted
+    `cwd` at launch. `write_approved`. Pure, unit-tested.
   - `src/launch.rs` — `Launcher` seam. `TerminalLauncher::launch(cwd, command,
     message, mode)` takes a `LaunchMode { gui, message_flag, hidden }` bundling
     the record-derived launch options (built by callers via `Agent::launch_mode`
@@ -151,7 +157,11 @@ ratatui / iced, the daemon keeps ksni).
     via the child's working directory (no terminal-specific `--directory`
     flag), where `command` is the argv the registry record carried
     (`spawnCommand` for a fresh session, `resumeCommand` to resume an exact
-    one). A GUI agent (`mode.gui`, e.g. quine, from the record's `gui` field)
+    one), with the `{sessionId}`/`{cwd}` template placeholders already
+    substituted by the caller (`Agent::resume_argv`/`spawn_argv`,
+    `RegistryEntry::resume_argv`/`spawn_argv`, or `denormalize` for a dir
+    spawn) — so this seam runs a ready argv and stays model-free. A GUI agent
+    (`mode.gui`, e.g. quine, from the record's `gui` field)
     is launched directly as `setsid --fork <command…>` — no terminal resolved,
     since the app draws its own window; the pure `setsid_args` builder (which
     branch to take) is unit-tested. corral names
@@ -809,7 +819,8 @@ message/tool updates) is ACP v1.
   (1) write `<cwd>/.corral/registry/<sessionId>.json` (no `cwd` field) with
   `label` set to the agent kind and `socket` pointing at (2) a workdir-local
   `<label>-<pid>.sock` speaking ACP (initialize, session/list, session/prompt),
-  a `spawnCommand`/`resumeCommand` argv corral runs verbatim, write a
+  a `spawnCommand`/`resumeCommand` argv template (with `{sessionId}`/`{cwd}`
+  placeholders corral substitutes at launch), write a
   per-session pointer at `~/.corral/input/registry/<sessionId>` (content =
   the workdir), and (3) broadcast `state_update`. A non-cooperating agent can be wrapped by a generic
   stdio-to-socket-plus-registry shim instead of a bespoke extension. Missing

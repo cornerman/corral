@@ -92,16 +92,30 @@ Fields:
 | `label`     | string          | Agent kind (e.g. `"pi"`). Appears in the socket filename; a consumer MAY use it to identify a dormant session's kind. |
 | `description` | string \| null | Optional. A one-line, human-readable description of the agent kind (e.g. `"pi: terminal TUI coding agent"`), authored by the adapter. A consumer MAY surface it in a capability roster so a caller can pick a kind to spawn; latest-seen per `label` wins. The string is adapter code, not model output. |
 | `socket`    | string \| null  | Absolute path to the live socket, or `null` when the session is dormant (cleanly shut down, resumable). |
-| `spawnCommand`  | string[] \| null | argv a consumer runs (rooted at a chosen cwd, terminal-wrapped unless `gui`) to start a *fresh* session of this kind, e.g. `["pi"]`. `null` when the agent does not support consumer-launched spawn. |
-| `resumeCommand` | string[] \| null | argv a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "<sessionId>"]`. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
+| `spawnCommand`  | string[] \| null | argv **template** a consumer runs (rooted at a chosen cwd, terminal-wrapped unless `gui`) to start a *fresh* session of this kind, e.g. `["pi"]`. May carry the `{cwd}` placeholder (see below). `null` when the agent does not support consumer-launched spawn. |
+| `resumeCommand` | string[] \| null | argv **template** a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "{sessionId}"]`. Carries the `{sessionId}` (and/or `{cwd}`) placeholder rather than the literal id, so the argv is identical for every session of the kind. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
 | `lastSeen`  | string          | ISO-8601 timestamp, refreshed while the session runs. Lets a consumer age out stale dormant records. |
 | `gui`       | boolean         | Optional; default `false`. `true` when the agent draws its own window (a GUI app like quine), so the consumer launches `spawnCommand`/`resumeCommand` **directly** rather than wrapping them in a terminal. Absent or `false` means terminal-wrapped, so every existing terminal agent keeps its behavior unchanged. |
 | `messageFlag` | string \| null | Optional CLI flag that carries the initial launch message (see §2a), e.g. `"--message"` for quine. When set, the consumer passes the message as this flag's value (`… --message "<text>"`); absent/null means the message is a trailing positional argument. Lets a flag-based agent take a launch message without accepting a positional. |
 | `hidden`    | boolean         | Optional; default `false`. `true` when the session runs **hidden**: inside a headless compositor, so its window never maps on the host. A consumer reveals a hidden session by resume (see §2b) rather than by focusing a window, and MAY show it as hidden. The agent SHOULD set this from the `CORRAL_HIDDEN=1` environment variable a consumer exports when it launches a hidden session (see §2b). Absent/false is a normal, visible session. |
 
-The consumer runs `spawnCommand` / `resumeCommand` **verbatim and never parses
-them**, so it stays agent-neutral: pi's `--session` grammar, opencode's, and any
-other kind's live in the agent, not the consumer. For a terminal agent (`gui`
+The consumer runs `spawnCommand` / `resumeCommand` **verbatim except for
+substituting the two reserved placeholders** (below), so it stays agent-neutral:
+pi's `--session` grammar, opencode's, and any other kind's live in the agent, not
+the consumer.
+
+**Placeholder contract.** `spawnCommand`/`resumeCommand` are argv *templates*.
+Exactly two reserved tokens are substituted by the consumer at launch: an argv
+element equal to `{sessionId}` is replaced whole with the record's `sessionId`,
+and one equal to `{cwd}` with the record's working directory. Every other element
+runs verbatim. Because the templates carry no per-session value, a kind's launch
+set is byte-identical across sessions and directories — the property a consumer's
+registration/approval store relies on (an unstable argv would re-prompt forever).
+There are exactly two tokens; a literal `{sessionId}`/`{cwd}` argv element is
+unsupported (no real CLI has one). The substituted values are already trusted:
+`sessionId` is charset-validated `[A-Za-z0-9._-]`, and `cwd` is the dir the
+record physically lives in. Substitution feeds `execve` argv elements, never a
+shell. For a terminal agent (`gui`
 absent/false) the consumer wraps the argv in its own terminal
 (`<terminal> -e <argv…>`) rooted at `cwd`; for a GUI agent (`gui: true`) it runs
 the argv directly (the app opens its own window). Either way the consumer MAY
@@ -119,7 +133,7 @@ Example:
   "label": "pi",
   "socket": "/home/dev/projects/widget/.corral/pi-48213.sock",
   "spawnCommand": ["pi"],
-  "resumeCommand": ["pi", "--session", "6f1c2e7a-3b4d-4c5e-9a10-2f8b1d0e4c33"],
+  "resumeCommand": ["pi", "--session", "{sessionId}"],
   "lastSeen": "2026-07-13T09:41:07.512Z"
 }
 ```
@@ -131,7 +145,7 @@ terminal wrapper.)
 (illustrative GUI record fields: "label": "quine", "gui": true,
  "messageFlag": "--message",
  "spawnCommand": ["quine", "--corral"],
- "resumeCommand": ["quine", "--session", "<sessionId>", "--corral"])
+ "resumeCommand": ["quine", "--session", "{sessionId}", "--corral"])
 ```
 
 A record with `socket == null` denotes a **dormant** session: not running, but
