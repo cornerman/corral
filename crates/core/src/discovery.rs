@@ -74,6 +74,22 @@ impl RegistryEntry {
             hidden: self.hidden,
         }
     }
+
+    /// Resume argv with `{sessionId}`/`{cwd}` substituted (see
+    /// `Agent::resume_argv`). `None` when the record announced no resume command.
+    pub fn resume_argv(&self) -> Option<Vec<String>> {
+        self.resume_command
+            .as_ref()
+            .map(|c| crate::approved_commands::denormalize(c, &self.session_id, self.cwd.as_deref()))
+    }
+
+    /// Spawn argv with `{cwd}` substituted. `None` when the record announced no
+    /// spawn command.
+    pub fn spawn_argv(&self) -> Option<Vec<String>> {
+        self.spawn_command
+            .as_ref()
+            .map(|c| crate::approved_commands::denormalize(c, &self.session_id, self.cwd.as_deref()))
+    }
 }
 
 /// Parse one registry JSON document. Requires `sessionId`; everything else is
@@ -282,6 +298,16 @@ mod tests {
         assert_eq!(sock.label, "pi");
         assert_eq!(sock.pid, 42);
         assert_eq!(sock.path, PathBuf::from("/tmp/p/.corral/pi-42.sock"));
+    }
+
+    #[test]
+    fn resume_and_spawn_argv_substitute_placeholders() {
+        let json = r#"{"sessionId":"s9","cwd":"/p",
+            "spawnCommand":["cursor","{cwd}"],
+            "resumeCommand":["pi","--session","{sessionId}"]}"#;
+        let e = parse_registry_json(json).unwrap();
+        assert_eq!(e.resume_argv().unwrap(), vec!["pi", "--session", "s9"]);
+        assert_eq!(e.spawn_argv().unwrap(), vec!["cursor", "/p"]);
     }
 
     #[test]

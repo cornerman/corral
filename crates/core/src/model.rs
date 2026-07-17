@@ -119,6 +119,25 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// The resume argv to run, with `{sessionId}`/`{cwd}` substituted from this
+    /// agent's identity (the record carries the stable template). `None` when
+    /// the agent announced no resume command.
+    pub fn resume_argv(&self) -> Option<Vec<String>> {
+        let sid = self.session_id.as_deref().unwrap_or("");
+        self.resume_command
+            .as_ref()
+            .map(|c| crate::approved_commands::denormalize(c, sid, self.cwd.as_deref()))
+    }
+
+    /// The spawn argv to run, with `{cwd}` substituted (a fresh spawn has no
+    /// `{sessionId}`). `None` when the agent announced no spawn command.
+    pub fn spawn_argv(&self) -> Option<Vec<String>> {
+        let sid = self.session_id.as_deref().unwrap_or("");
+        self.spawn_command
+            .as_ref()
+            .map(|c| crate::approved_commands::denormalize(c, sid, self.cwd.as_deref()))
+    }
+
     /// The launch options this agent's kind declared (gui + message flag), for
     /// `Launcher::launch`.
     pub fn launch_mode(&self) -> crate::launch::LaunchMode {
@@ -444,6 +463,20 @@ mod tests {
             state_since: Instant::now(),
             last_activity: Instant::now(),
         }
+    }
+
+    #[test]
+    fn resume_argv_substitutes_session_and_cwd() {
+        let mut a = agent("x", State::Idle);
+        a.session_id = Some("sess-1".into());
+        a.cwd = Some("/w".into());
+        a.resume_command = Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]);
+        assert_eq!(a.resume_argv().unwrap(), vec!["pi", "--session", "sess-1"]);
+        a.resume_command = None;
+        assert_eq!(a.resume_argv(), None);
+        // spawn_argv substitutes {cwd} (a gui kind carries it).
+        a.spawn_command = Some(vec!["cursor".into(), "{cwd}".into()]);
+        assert_eq!(a.spawn_argv().unwrap(), vec!["cursor", "/w"]);
     }
 
     #[test]
