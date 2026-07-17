@@ -3,9 +3,10 @@
 Convention v2 — 2026-07-16
 
 > v2 changes (security hardening): records live **per-workdir** at
-> `<cwd>/.corral/registry/<sessionId>.json` with the directory listed in a
-> `~/.corral/registry` **index file** (no more one flat record dir, no
-> symlinks); the record **no longer carries a `cwd` field** (a consumer derives
+> `<cwd>/.corral/registry/<sessionId>.json` with a per-session **pointer file**
+> at `~/.corral/input/registry/<sessionId>` (content = the session's cwd) in an
+> agent-writable input directory (no more one flat record dir, no symlinks, no
+> shared append log); the record **no longer carries a `cwd` field** (a consumer derives
 > the trusted cwd from the record's physical location); inter-agent submissions
 > ride an **outbox file** (`{"submit":path}`) so the sender's directory is
 > proven, not self-reported. See SECURITY.md for the why.
@@ -33,9 +34,10 @@ Requirement levels use MUST / SHOULD / MAY as in RFC 2119.
 
 An agent publishes, all inside its own working directory: a **registry record**
 (how a consumer finds it) and a **workdir-local socket** (how a consumer talks
-to it). It also appends its directory to a small `~/.corral/registry` **index
-file** so the consumer knows where to look (it could never scan the scattered
-working directories otherwise).
+to it). It also drops a per-session **pointer file** at
+`~/.corral/input/registry/<sessionId>` (content = its working directory) so the
+consumer knows where to look (it could never scan the scattered working
+directories otherwise).
 
 **Physical location is identity.** Under a per-session sandbox that boxes the
 whole agent to its workdir, an agent can write files only inside its own
@@ -46,9 +48,11 @@ authentication relies on directory permissions alone; there are no ports and no
 network exposure. A workdir-local path is used rather than `$XDG_RUNTIME_DIR`
 precisely because a sandboxed session cannot reach the latter.
 
-The index file is agent-appendable and low-trust: adding a directory only causes
-the consumer to discover the *genuine* records already there (a consumer
-canonicalizes each listed directory and deduplicates). A consumer SHOULD treat
+The pointer store is agent-writable and low-trust: naming a directory only
+causes the consumer to discover the *genuine* records already there (a consumer
+canonicalizes each pointed-at directory and deduplicates). Each session owns its
+own pointer file, so there is no shared log to corrupt and no read-back needed
+(the sandbox grants the input directory **write-only**). A consumer SHOULD treat
 the records it finds as untrusted input, validate every field (see §2), and —
 if it drives launches — curate them into its own trusted store rather than let
 other readers touch agent-written files (corral does: see SECURITY.md).
@@ -61,10 +65,14 @@ consumer runs to relaunch it later.
 - Path: `<cwd>/.corral/registry/<sessionId>.json` (inside the session's own
   workdir). An agent MAY override the workdir `.corral` directory with
   `$CORRAL_SOCKET_DIR`.
-- The agent MUST also append its absolute working directory as a line to the
-  index file `$HOME/.corral/registry` (append-if-absent; a consumer
-  deduplicates, so a best-effort append is fine). Override with
-  `$CORRAL_REGISTRY_INDEX`.
+- The agent MUST also write a pointer file at
+  `$HOME/.corral/input/registry/<sessionId>` whose content is its absolute
+  working directory (create/overwrite its own file; a consumer deduplicates by
+  directory, so a best-effort write is fine). The input directory is
+  write-only under the sandbox, so the agent MUST NOT read it back. Override the
+  pointer directory with `$CORRAL_INPUT_REGISTRY`.
+  The pointer persists across a clean shutdown (so a dormant session stays
+  discoverable) and is removed only when the consumer forgets the session.
 - The `.corral` and `registry` directories MUST be created mode `0700`; the
   record file SHOULD be written mode `0600`.
 - The record MUST be written atomically (write a temp file, then rename over
@@ -311,8 +319,8 @@ MUST:
 
 - [ ] Write `<cwd>/.corral/registry/<sessionId>.json` (dirs `0700`, atomic
       write) with the fields of §2 (no `cwd` field), `sessionId` matching the
-      filename and its charset, and append the workdir to the
-      `$HOME/.corral/registry` index file.
+      filename and its charset, and write the workdir into the pointer file
+      `$HOME/.corral/input/registry/<sessionId>`.
 - [ ] Bind `<cwd>/.corral/<label>-<pid>.sock` (dir `0700`) speaking
       newline-delimited JSON-RPC 2.0.
 - [ ] Answer `initialize` with `agentInfo`.

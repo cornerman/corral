@@ -173,15 +173,16 @@ boundary.
 
 ### T3. Forged or Cross-Directory Registry Records
 
-An agent can write `~/.corral/registry/*`. A forged record can claim another
-directory, or plant attacker-chosen fields.
+An agent can write its own records and pointers. A forged record can claim
+another directory, or plant attacker-chosen fields.
 
 **Before this hardening: for discovery, unauthenticated:** records are plain
 files whose `cwd` is trusted content.
 
 **Mitigation `[in place]`: corrald curation.** Records live per-project at
-`<D>/.corral/registry/<sessionId>.json`; a newline-delimited `~/.corral/registry`
-file indexes the directories `D`. corrald is the only reader: it canonicalizes
+`<D>/.corral/registry/<sessionId>.json`; per-session pointer files under
+`~/.corral/input/registry/` name the directories `D` (one file per session,
+content = `D`). corrald is the only reader: it canonicalizes
 each `D` (race-safe, from a directory fd), attributes every record it finds
 there to that `D`, and **ignores any `cwd` in the content — the record does not
 carry one**. A record physically under `evil/` is attributed to `evil/`, so an
@@ -239,7 +240,7 @@ gate opens.
 `~/.corral` is on the sandbox allowlist).
 
 **Mitigation `[in place]`:** split `~/.corral` by trust. The only agent-writable
-surface is the `~/.corral/registry` dir-index file (append) and the socket
+surface is the `~/.corral/input/` directory (write-only) and the socket
 (connect); `state/` (holding `whitelist`, `approved-commands.json`,
 `state/registry/`, and `audit.log`) is daemon-only and never on the sandbox
 allowlist, so it is unwritable by construction.
@@ -253,10 +254,13 @@ message and forges every ack.
 **Before this hardening: hole:** the socket sits in an agent-writable
 directory.
 
-**Mitigation `[in place]`:** the socket lives at the root of `~/.corral` with a
-parent that is not agent-writable. A unix socket needs write on the socket file
-(bind-mounted into the sandbox), not on its parent, so the single connect
-capability lets an agent talk to corrald without being able to rebind it.
+**Mitigation `[in place]`:** the socket lives at the root of `~/.corral`, whose
+directory is not agent-writable (only `input/` is). Rebinding means
+`unlink(corrald.sock)` + `bind(new)`, which are writes on the *parent*
+directory `~/.corral` — denied. Connecting needs no write on the parent (on
+Linux, Landlock does not even mediate `connect()` to a pathname socket), so an
+agent can talk to corrald but cannot rebind it. Granting `input/` rather than
+`~/.corral` is what keeps the socket's parent unwritable.
 
 ### T17. Record Aiming corral at Another Session's Socket
 
@@ -354,17 +358,20 @@ below.
 An earlier design put per-session symlinks in an agent-writable
 `~/.corral/registry/`, which an agent could overwrite to hijack another
 session's id. The curator model removes that vector: there are no per-session
-symlinks. The only shared agent-writable surface is the `~/.corral/registry`
-*index file* of directories; appending to it merely points corrald at a
-directory whose records are still authenticated by physical location. There is
-nothing to overwrite for identity gain.
+symlinks. The only agent-writable surface is the `~/.corral/input/` directory,
+where each session drops its own pointer file (`registry/<sessionId>`, content =
+its cwd); a pointer merely points corrald at a directory whose records are still
+authenticated by physical location. There is nothing to overwrite for identity
+gain, and the directory is granted **write-only**, so an agent cannot even
+enumerate peers' cwds by reading it.
 
-### T11. Denial of Service in the Shared Index
+### T11. Denial of Service in the Shared Pointer Store
 
-An agent can append junk to, or truncate, the `~/.corral/registry` index file.
+An agent with write on `~/.corral/input/` can delete or corrupt another
+session's pointer file.
 
 **Accepted `[accepted]`:** this is denial of service only (at worst, discovery
-is delayed until live agents re-append their dirs) and grants no identity or
+is delayed until live agents re-announce) and grants no identity or
 code execution. It is inherent to a shared, same-user file, and an unsandboxed
 same-user process could do worse regardless. corrald ignores unparsable or
 nonexistent index lines.
@@ -441,20 +448,25 @@ Corral cannot enforce these; the deployment (for this project, `~/nixos`) must.
    does not satisfy this.
 2. **The agent sandbox profile (deployment glue in `~/nixos`, `[designed]`):**
    ```
-   allow append:  ~/.corral/registry          # the dir index (one file)
-   allow connect: ~/.corral/corrald.sock       # one file, connect only
+   allow write:   ~/.corral/input           # the input dir (write-only, recursive)
+   allow connect: ~/.corral/corrald.sock     # connect only (ungated on Linux)
    deny:          everything else (state/ sealed, no other ~/.corral writes)
    ```
    Records live in the agent's own workdir (`<D>/.corral/registry/`), already
    writable as part of the workdir; no `~/.corral` grant is needed for them.
-   The agent touches only two things under `~/.corral`: append its dir to the
-   index, and connect to the socket. This closes T5 and T6.
+   The agent touches only two things under `~/.corral`: write its per-session
+   pointer into `input/registry/`, and connect to the socket. A directory grant
+   (not a per-file rule) is used because a Landlock rule binds an inode at
+   sandbox-build time: the dir is created once by corrald and stable, while the
+   files inside churn freely (agents write pointers, the board deletes them on
+   dismiss). Write-only, so an agent cannot read the dir to enumerate peers'
+   cwds. This closes T5 and T6.
 3. **corrald as a kept singleton.** A systemd user service with
    restart-on-failure keeps the sole broker alive. Harness registration (T4)
    and messaging require it; "no daemon means no new registrations" is a
    deliberate property (already-registered kinds still work).
 
-The append grant in (2) is on the `~/.corral/registry` index file only, not on
+The write grant in (2) is on the `~/.corral/input` directory only, not on
 `~/.corral` itself, or an agent could rebind the socket (T6). The sandbox must
 also confine the agent's writes to its own workdir; a shared writable bind-mount
 into another workdir silently breaks physical-location identity (T2, T3).

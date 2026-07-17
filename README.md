@@ -67,8 +67,8 @@ cross-agent messages. No process drives an agent on its own.
 
 - **Agents announce.** Each session writes a record to
   `<cwd>/.corral/registry/<id>.json`, binds a workdir-local ACP socket
-  `<cwd>/.corral/<label>-<pid>.sock`, and appends its dir to the
-  `~/.corral/registry` index. A tiny per-harness adapter does this (see
+  `<cwd>/.corral/<label>-<pid>.sock`, and drops a per-session pointer at
+  `~/.corral/input/registry/<id>`. A tiny per-harness adapter does this (see
   `extensions/`); the core is agent-agnostic and speaks the
   [CONVENTION.md](CONVENTION.md) contract, not any one harness.
 - **Boards reflect.** `corral` (TUI) and `corral-gui` (desktop) read the vetted

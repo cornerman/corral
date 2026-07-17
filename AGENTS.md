@@ -55,17 +55,18 @@ location = identity (see SECURITY.md, CONVENTION.md v2):
 <cwd>/.corral/registry/<sessionId>.json    (dirs 0700; override $CORRAL_SOCKET_DIR)
   { sessionId, title, label, socket, spawnCommand, resumeCommand, lastSeen, … }   ← NO cwd field
 <cwd>/.corral/<label>-<pid>.sock           (dir 0700)
-$HOME/.corral/registry                     (agent-appendable dir-index FILE; override $CORRAL_REGISTRY_INDEX)
+$HOME/.corral/input/registry/<sessionId>   (agent-writable per-session POINTER, content=cwd; write-only dir; override $CORRAL_INPUT_REGISTRY)
 $HOME/.corral/state/registry/<id>.json     (corrald-written, VETTED; the boards read only this)
 $HOME/.corral/state/{whitelist,approved-commands.json,audit.log}   (sealed, daemon-only)
 ```
 
-An adapter writes its record inside its own workdir and appends the workdir to
-the index file on `session_start`; on clean shutdown it unlinks the socket and
+An adapter writes its record inside its own workdir and drops a per-session
+pointer file (`$HOME/.corral/input/registry/<sessionId>`, content = its cwd) on
+`session_start`; on clean shutdown it unlinks the socket and
 clears the record's `socket` to null (dormant, resumable). Because a sandboxed
 agent can write only inside its own workdir, a record's physical location
 *proves* its directory: **corrald is the sole reader of the agent-writable
-index+records**, canonicalizes each listed dir from a directory fd, derives the
+pointers+records**, canonicalizes each pointed-at dir from a directory fd, derives the
 trusted `cwd` from where each record physically lives (ignoring any content
 `cwd` — there is none), validates every field (sessionId charset, socket must
 resolve under `<cwd>/.corral/`), applies the registration gate, and writes the
@@ -83,7 +84,8 @@ the daemon (`corrald`) is the singleton that owns inter-agent messaging.
 ```
 your terminal (pi, interactive TUI)              another terminal
   pi -e extensions/corral-pi.ts              corral (attention board, launch many)
-    |  writes ~/.corral/registry/<id>.json           |  scans the registry (1s)
+    |  writes <cwd>/.corral/registry/<id>.json        |  scans the registry (1s)
+    |    + ~/.corral/input/registry/<id> pointer      |
     |  binds <cwd>/.corral/pi-<pid>.sock              |  one watch connection per live socket:
     |    on session_start                            |    initialize + session/list (seed)
     |  serves ACP beside the live TUI:               |    streams state_update -> column
@@ -123,8 +125,10 @@ ratatui / iced, the daemon keeps ksni).
     boards over the **vetted** `state/registry/`, and by corrald over its own
     output). Also `valid_session_id` (charset gate) and the `cwd_from_*`
     physical-path derivations. Pure, unit-tested.
-  - `src/curation.rs` — corrald's parsing boundary (security). `read_index`
-    (the dir-index file), `canonical_dir` (race-safe dir-fd canonicalize),
+  - `src/curation.rs` — corrald's parsing boundary (security). `read_pointers`
+    (the per-session pointer store → distinct cwds), `forget_dormant` (the
+    board's `d`: delete a session's workdir record + its home pointer),
+    `canonical_dir` (race-safe dir-fd canonicalize),
     `vet` (per-field validation: sessionId, socket-under-`<cwd>/.corral/`, cwd
     stamped from location, title/description sanitized), `curate` (scan every
     listed workdir's `.corral/registry/`), `partition` (the registration gate:
@@ -730,10 +734,10 @@ message/tool updates) is ACP v1.
   targets. Reads the same registry
   as the board.
 - pi extension `corral-pi` — see Extensions above.
-- Registry records in `$HOME/.corral/registry/` and unix sockets in each
-  `<cwd>/.corral/` (both created 0700; override with `$CORRAL_REGISTRY_DIR` /
-  `$CORRAL_SOCKET_DIR`). No TCP ports, no network exposure. Peer authentication
-  relies on the directory permissions.
+- Registry records and unix sockets in each `<cwd>/.corral/`, plus per-session
+  pointers in `$HOME/.corral/input/registry/` (all created 0700; override with
+  `$CORRAL_INPUT_REGISTRY` / `$CORRAL_SOCKET_DIR`). No TCP ports, no network
+  exposure. Peer authentication relies on the directory permissions.
 - Inter-agent messaging: `corral_message_agent` submits over
   `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`), the daemon's
   control socket; no TCP, peer auth by directory permissions. corrald authorizes
@@ -805,8 +809,9 @@ message/tool updates) is ACP v1.
   (1) write `<cwd>/.corral/registry/<sessionId>.json` (no `cwd` field) with
   `label` set to the agent kind and `socket` pointing at (2) a workdir-local
   `<label>-<pid>.sock` speaking ACP (initialize, session/list, session/prompt),
-  a `spawnCommand`/`resumeCommand` argv corral runs verbatim, append the workdir
-  to the `~/.corral/registry` index, and (3) broadcast `state_update`. A non-cooperating agent can be wrapped by a generic
+  a `spawnCommand`/`resumeCommand` argv corral runs verbatim, write a
+  per-session pointer at `~/.corral/input/registry/<sessionId>` (content =
+  the workdir), and (3) broadcast `state_update`. A non-cooperating agent can be wrapped by a generic
   stdio-to-socket-plus-registry shim instead of a bespoke extension. Missing
   `state_update` just defaults the card to Idle; a missing `label` renders as
   `agent`; a missing `spawnCommand`/`resumeCommand` leaves the kind
