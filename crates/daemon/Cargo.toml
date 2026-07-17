@@ -9,6 +9,10 @@ edition.workspace = true
 license.workspace = true
 description = "Headless message-routing daemon for corral (owns the control socket + tray)"
 
+[lib]
+name = "corral_daemon"
+path = "src/lib.rs"
+
 [[bin]]
 name = "corrald"
 path = "src/main.rs"
