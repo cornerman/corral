@@ -20,8 +20,8 @@
  *                                   connects to once per hook event.
  *
  * Registry record inside the workdir at <cwd>/.corral/registry/<sessionId>.json,
- * with this cwd appended to the $HOME/.corral/registry dir-index file (override
- * $CORRAL_REGISTRY_INDEX) so corrald authenticates identity by where the record
+ * plus a pointer file at $HOME/.corral/input/registry/<sessionId> (content =
+ * this cwd; override $CORRAL_INPUT_REGISTRY) so corrald authenticates identity by where the record
  * physically lives. It points at the ACP socket; cleared to socket:null on
  * SessionEnd, leaving a dormant, resumable entry.
  *
@@ -341,26 +341,25 @@ function applyTitle(raw: unknown) {
 }
 
 // --- registry store (identical record shape to the other adapters) ---
-// The raw dir-index file ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
-// a newline list of directories corrald scans. We append our cwd to it.
-function indexFile(): string | undefined {
-	if (process.env.CORRAL_REGISTRY_INDEX) return process.env.CORRAL_REGISTRY_INDEX;
+// The raw pointer store ($CORRAL_INPUT_REGISTRY, else
+// $HOME/.corral/input/registry): a directory corrald scans, one file per
+// session named <sessionId> whose content is that session's cwd. The sandbox
+// grants write-only on ~/.corral/input, so we create/overwrite our own file
+// and never read the directory.
+function pointerDir(): string | undefined {
+	if (process.env.CORRAL_INPUT_REGISTRY) return process.env.CORRAL_INPUT_REGISTRY;
 	const home = process.env.HOME;
-	return home ? path.join(home, ".corral", "registry") : undefined;
+	return home ? path.join(home, ".corral", "input", "registry") : undefined;
 }
-// Register our cwd in the dir-index (append once, idempotent). Best-effort.
-function appendToIndex(dir: string) {
-	const file = indexFile();
-	if (!file) return;
+// Drop our pointer (write our own <sessionId> file, content = cwd). corrald
+// pre-creates the dir; we overwrite in place (write-only, no read). The pointer
+// persists across a clean shutdown; only the board's `d` removes it. Best-effort.
+function writePointer(dir: string, sid: string) {
+	const store = pointerDir();
+	if (!store) return;
 	try {
-		fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-		let existing = "";
-		try {
-			existing = fs.readFileSync(file, "utf8");
-		} catch {}
-		if (!existing.split("\n").some((l) => l.trim() === dir)) {
-			fs.appendFileSync(file, `${dir}\n`);
-		}
+		fs.mkdirSync(store, { recursive: true, mode: 0o700 });
+		fs.writeFileSync(path.join(store, sid), `${dir}\n`);
 	} catch {}
 }
 function writeRegistry() {
@@ -392,7 +391,7 @@ function writeRegistry() {
 		const tmp = `${recordFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 		fs.renameSync(tmp, recordFile);
-		appendToIndex(cwd);
+		writePointer(cwd, sessionId);
 	} catch {}
 }
 // Refresh lastSeen at each hook event without a full rewrite race.

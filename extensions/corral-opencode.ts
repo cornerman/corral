@@ -11,7 +11,8 @@
  * <cwd>/.corral/opencode-<pid>.sock (override the dir with $CORRAL_SOCKET_DIR)
  * and writes its registry record inside this workdir at
  * <cwd>/.corral/registry/<sessionId>.json, appending this cwd to the
- * $HOME/.corral/registry dir-index file (override $CORRAL_REGISTRY_INDEX), so
+ * $HOME/.corral/input/registry/<sessionId> pointer file (content = this cwd;
+ * override $CORRAL_INPUT_REGISTRY), so
  * corrald authenticates identity by where the record physically lives. On clean process
  * exit the socket is unlinked and the record's `socket` is cleared to null,
  * leaving a dormant, resumable record. Served surface:
@@ -357,31 +358,29 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 
 	// --- registry store ---
 
-	// The raw dir-index file ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
-	// a newline list of directories corrald scans. We append our cwd to it.
-	function indexFile(): string | undefined {
-		if (process.env.CORRAL_REGISTRY_INDEX) return process.env.CORRAL_REGISTRY_INDEX;
+	// The raw pointer store ($CORRAL_INPUT_REGISTRY, else
+	// $HOME/.corral/input/registry): a directory corrald scans, one file per
+	// session named <sessionId> whose content is that session's cwd. The sandbox
+	// grants write-only on ~/.corral/input, so we create/overwrite our own file
+	// and never read the directory.
+	function pointerDir(): string | undefined {
+		if (process.env.CORRAL_INPUT_REGISTRY) return process.env.CORRAL_INPUT_REGISTRY;
 		const home = process.env.HOME;
-		return home ? path.join(home, ".corral", "registry") : undefined;
+		return home ? path.join(home, ".corral", "input", "registry") : undefined;
 	}
 
-	// Register our cwd in the dir-index (append once, idempotent). Best-effort.
-	function appendToIndex(cwd: string) {
-		const file = indexFile();
-		if (!file) return;
+	// Drop our pointer (write our own <sessionId> file, content = cwd). corrald
+	// pre-creates the dir; we overwrite in place (write-only, no read). The
+	// pointer persists across a clean shutdown; only the board's `d` removes it.
+	// Best-effort.
+	function writePointer(cwd: string, sessionId: string) {
+		const dir = pointerDir();
+		if (!dir) return;
 		try {
-			fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-			let existing = "";
-			try {
-				existing = fs.readFileSync(file, "utf8");
-			} catch {
-				// No index yet; created by the append below.
-			}
-			if (!existing.split("\n").some((l) => l.trim() === cwd)) {
-				fs.appendFileSync(file, `${cwd}\n`);
-			}
+			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+			fs.writeFileSync(path.join(dir, sessionId), `${cwd}\n`);
 		} catch {
-			// Index unreachable: announcing is best-effort.
+			// Pointer store unreachable: announcing is best-effort.
 		}
 	}
 
@@ -401,8 +400,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		}
 	}
 
-	// Announce: write the record into this workdir's `.corral/registry/` and add
-	// the cwd to the dir-index. corrald authenticates by physical location, so
+	// Announce: write the record into this workdir's `.corral/registry/` and drop
+	// our pointer in the store. corrald authenticates by physical location, so
 	// the record carries no `cwd` field. No-op until the active session id is known.
 	function writeRegistry() {
 		try {
@@ -439,7 +438,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			const tmp = `${recordFile}.${process.pid}.tmp`;
 			fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 			fs.renameSync(tmp, recordFile);
-			appendToIndex(activeCwd);
+			writePointer(activeCwd, activeSessionId);
 		} catch {
 			// Announcing is best-effort and must never crash opencode.
 		}

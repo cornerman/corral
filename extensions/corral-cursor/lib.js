@@ -4,11 +4,14 @@
 "use strict";
 const path = require("node:path");
 
-// The raw dir-index FILE ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
-// a newline list of directories corrald scans; the extension appends its cwd.
-function indexFile(env) {
-  if (env.CORRAL_REGISTRY_INDEX) return env.CORRAL_REGISTRY_INDEX;
-  return env.HOME ? path.join(env.HOME, ".corral", "registry") : undefined;
+// The raw pointer store ($CORRAL_INPUT_REGISTRY, else
+// $HOME/.corral/input/registry): a directory corrald scans, one file per
+// session named <sessionId> whose content is that session's cwd. The sandbox
+// grants write-only on ~/.corral/input, so the extension creates/overwrites its
+// own file and never reads the directory.
+function pointerDir(env) {
+  if (env.CORRAL_INPUT_REGISTRY) return env.CORRAL_INPUT_REGISTRY;
+  return env.HOME ? path.join(env.HOME, ".corral", "input", "registry") : undefined;
 }
 function socketDir(cwd, env) {
   return env.CORRAL_SOCKET_DIR || path.join(cwd, ".corral");
@@ -144,4 +147,4 @@ function isControlSocketFile(name) {
   return /^\.cursor-ctl-.*\.sock$/.test(name);
 }
 
-module.exports = { indexFile, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };
+module.exports = { pointerDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };

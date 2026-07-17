@@ -2,10 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert");
 const lib = require("./lib.js");
 
-test("indexFile honors override then HOME then undefined", () => {
-  assert.equal(lib.indexFile({ CORRAL_REGISTRY_INDEX: "/x" }), "/x");
-  assert.equal(lib.indexFile({ HOME: "/home/u" }), "/home/u/.corral/registry");
-  assert.equal(lib.indexFile({}), undefined);
+test("pointerDir honors override then HOME then undefined", () => {
+  assert.equal(lib.pointerDir({ CORRAL_INPUT_REGISTRY: "/x" }), "/x");
+  assert.equal(lib.pointerDir({ HOME: "/home/u" }), "/home/u/.corral/input/registry");
+  assert.equal(lib.pointerDir({}), undefined);
 });
 
 test("socket and control paths use socketDir override", () => {

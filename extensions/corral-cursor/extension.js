@@ -164,18 +164,15 @@ async function runCommand(cmd, arg) {
   try { await vscode.commands.executeCommand(cmd, arg); return true; } catch { return false; }
 }
 
-// Register our cwd in the dir-index file (append once, idempotent; corrald also
-// dedups on read). Best-effort.
-function appendToIndex(cwd) {
-  const file = lib.indexFile(process.env);
-  if (!file) return;
+// Drop our pointer (write our own <sessionId> file, content = cwd). corrald
+// pre-creates the dir; we overwrite in place (write-only, no read). The pointer
+// persists across a clean shutdown; only the board's `d` removes it. Best-effort.
+function writePointer(cwd, sessionId) {
+  const dir = lib.pointerDir(process.env);
+  if (!dir) return;
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    let existing = "";
-    try { existing = fs.readFileSync(file, "utf8"); } catch {}
-    if (!existing.split("\n").some((l) => l.trim() === cwd)) {
-      fs.appendFileSync(file, `${cwd}\n`);
-    }
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(dir, sessionId), `${cwd}\n`);
   } catch {}
 }
 function writeRegistry(acpPath) {
@@ -189,7 +186,7 @@ function writeRegistry(acpPath) {
     const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, recordFile);
-    appendToIndex(ctx.cwd);
+    writePointer(ctx.cwd, ctx.sessionId);
   } catch {}
 }
 let lastTouch = 0;

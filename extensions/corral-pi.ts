@@ -5,8 +5,9 @@
  * Binds an ACP socket inside this session's own workdir at
  * <cwd>/.corral/pi-<pid>.sock (override the dir with $CORRAL_SOCKET_DIR) and
  * writes its registry record inside this workdir at
- * <cwd>/.corral/registry/<sessionId>.json and appends this cwd to the
- * $HOME/.corral/registry dir-index file (override $CORRAL_REGISTRY_INDEX), so
+ * <cwd>/.corral/registry/<sessionId>.json and drops a pointer file at
+ * $HOME/.corral/input/registry/<sessionId> (content = this cwd; override
+ * $CORRAL_INPUT_REGISTRY), so
  * corrald authenticates identity by where the record physically lives. The
  * record points at that socket. The socket is
  * workdir-local so only this session (and unsandboxed tools like corral) can
@@ -569,12 +570,15 @@ export default function (pi: ExtensionAPI) {
 		return clean.length > MAX_TITLE ? `${clean.slice(0, MAX_TITLE - 1)}…` : clean;
 	}
 
-	// The raw dir-index file ($CORRAL_REGISTRY_INDEX, else $HOME/.corral/registry):
-	// a newline list of directories corrald scans. We append our cwd to it.
-	function indexFile(): string | undefined {
-		if (process.env.CORRAL_REGISTRY_INDEX) return process.env.CORRAL_REGISTRY_INDEX;
+	// The raw pointer store ($CORRAL_INPUT_REGISTRY, else
+	// $HOME/.corral/input/registry): a directory corrald scans, one file per
+	// session named <sessionId> whose content is that session's cwd. The sandbox
+	// grants write-only on ~/.corral/input, so we create/overwrite our own file
+	// and never read the directory.
+	function pointerDir(): string | undefined {
+		if (process.env.CORRAL_INPUT_REGISTRY) return process.env.CORRAL_INPUT_REGISTRY;
 		const home = process.env.HOME;
-		return home ? path.join(home, ".corral", "registry") : undefined;
+		return home ? path.join(home, ".corral", "input", "registry") : undefined;
 	}
 
 	// The per-project record store `<cwd>/.corral/registry/` (socket dir +
@@ -585,24 +589,18 @@ export default function (pi: ExtensionAPI) {
 		return path.join(corral, "registry");
 	}
 
-	// Register our cwd in the dir-index (append once). corrald then discovers
-	// this project's records. Best-effort and idempotent.
-	function appendToIndex(cwd: string) {
-		const file = indexFile();
-		if (!file) return;
+	// Drop our pointer (write our own <sessionId> file, content = cwd). corrald
+	// pre-creates the dir; we overwrite in place (write-only, no read). The
+	// pointer persists across a clean shutdown so a dormant session stays
+	// discoverable; only the board's `d` removes it. Best-effort.
+	function writePointer(cwd: string, sessionId: string) {
+		const dir = pointerDir();
+		if (!dir) return;
 		try {
-			fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-			let existing = "";
-			try {
-				existing = fs.readFileSync(file, "utf8");
-			} catch {
-				// No index yet; created by the append below.
-			}
-			if (!existing.split("\n").some((l) => l.trim() === cwd)) {
-				fs.appendFileSync(file, `${cwd}\n`);
-			}
+			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+			fs.writeFileSync(path.join(dir, sessionId), `${cwd}\n`);
 		} catch {
-			// Index unreachable: announcing is best-effort.
+			// Pointer store unreachable: announcing is best-effort.
 		}
 	}
 
@@ -624,8 +622,8 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// Announce: write the record into this workdir's `.corral/registry/` and add
-	// the cwd to the dir-index. corrald authenticates the record by where it
+	// Announce: write the record into this workdir's `.corral/registry/` and drop
+	// our pointer in the store. corrald authenticates the record by where it
 	// physically lives, so the record carries no `cwd` field (it cannot be
 	// trusted to name its own directory).
 	function writeRegistry(ctx: ExtensionContext, socket: string | null) {
@@ -675,7 +673,7 @@ export default function (pi: ExtensionAPI) {
 		const tmp = `${recordFile}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
 		fs.renameSync(tmp, recordFile);
-		appendToIndex(ctx.cwd);
+		writePointer(ctx.cwd, sessionId);
 		} catch {
 			// A stale ctx (after session replacement/reload) throws on
 			// sessionManager access; announcing is best-effort and must never
