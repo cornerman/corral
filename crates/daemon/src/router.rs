@@ -19,6 +19,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use corral_core::approved_commands;
 use corral_core::discovery::{self, RegistryEntry};
 use corral_core::launch::{LaunchMode, Launcher};
 use corral_core::placement;
@@ -277,7 +278,10 @@ fn deliver_dir(
     // through corral. A resume (deliver_session) already has its transcript, so
     // it gets no charter.
     let first_prompt = format!("{CHARTER}\n\n{}", msg.tagged());
-    match launcher.launch(Path::new(dir), command, Some(&first_prompt), &mode) {
+    // Substitute `{cwd}` in the spawn template with the target dir (a fresh
+    // spawn has no `{sessionId}`).
+    let launch_command = approved_commands::denormalize(command, "", Some(dir));
+    match launcher.launch(Path::new(dir), &launch_command, Some(&first_prompt), &mode) {
         Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
         Err(e) => format!("route spawn: {e}"),
     }
@@ -326,12 +330,12 @@ fn deliver_session(
         }
         // Socket present but dead: fall through and resume from the record.
     }
-    match (&entry.cwd, &entry.resume_command) {
+    match (entry.cwd.clone(), entry.resume_argv()) {
         (Some(cwd), Some(command)) => {
             let mut mode = entry.launch_mode();
             // Resume honors the requested visibility, same rationale as dir spawn.
             mode.hidden = msg.hidden;
-            match launcher.launch(Path::new(cwd), command, Some(&msg.tagged()), &mode) {
+            match launcher.launch(Path::new(&cwd), &command, Some(&msg.tagged()), &mode) {
                 Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
                 Err(e) => format!("route resume: {e}"),
             }

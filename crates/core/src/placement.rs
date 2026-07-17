@@ -47,8 +47,7 @@ pub fn apply_placement(
         .as_deref()
         .ok_or("placement: agent has no cwd to relaunch in")?;
     let command = agent
-        .resume_command
-        .as_deref()
+        .resume_argv()
         .ok_or("placement: agent has no resume command")?;
     // Target placement's launch mode: reveal -> visible, hide/start -> hidden.
     let mut mode = agent.launch_mode();
@@ -73,7 +72,7 @@ pub fn apply_placement(
         }
     }
     launcher
-        .launch(Path::new(cwd), command, None, &mode)
+        .launch(Path::new(cwd), &command, None, &mode)
         .map_err(|e| format!("placement resume: {e}"))
 }
 
@@ -112,7 +111,7 @@ mod tests {
             state: State::Idle,
             origin: Origin::Live,
             spawn_command: Some(vec!["pi".into()]),
-            resume_command: Some(vec!["pi".into(), "--session".into(), "s1".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]),
             activity: None,
             gui: false,
             message_flag: None,

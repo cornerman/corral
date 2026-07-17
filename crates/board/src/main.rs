@@ -238,7 +238,7 @@ fn commit_move(
         // Resume the dormant session; ResumeAndNudge also delivers the nudge as
         // its first prompt so it lands running rather than idle.
         MoveAction::Resume | MoveAction::ResumeAndNudge => {
-            match (&agent.cwd, &agent.resume_command) {
+            match (&agent.cwd, agent.resume_argv()) {
                 (Some(cwd), Some(cmd)) => {
                     let msg = matches!(
                         transition::action_for(source, target),
@@ -246,7 +246,7 @@ fn commit_move(
                     )
                     .then_some("continue");
                     launcher
-                        .launch(Path::new(cwd), cmd, msg, &agent.launch_mode())
+                        .launch(Path::new(cwd), &cmd, msg, &agent.launch_mode())
                         .map_err(|e| format!("resume: {e}"))
                 }
                 _ => Err("resume: dormant record missing cwd/command".into()),
@@ -845,9 +845,9 @@ fn activate(
             apply_placement(agent, focuser, launcher, &kill_pid).map_err(|e| format!("reveal: {e}"))
         }
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
-        Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
+        Origin::Dormant => match (&agent.cwd, agent.resume_argv()) {
             (Some(cwd), Some(command)) => launcher
-                .launch(Path::new(cwd), command, None, &agent.launch_mode())
+                .launch(Path::new(cwd), &command, None, &agent.launch_mode())
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume command".into()),
         },
@@ -859,10 +859,10 @@ fn open_compose(board: &Board, selected: usize) -> Option<Overlay> {
     let a = board.selectable().get(selected).copied()?;
     let target = match a.origin {
         Origin::Live => Some(ComposeTarget::Live(a.socket_path.clone())),
-        Origin::Dormant => match (&a.cwd, &a.resume_command) {
+        Origin::Dormant => match (&a.cwd, a.resume_argv()) {
             (Some(cwd), Some(command)) => Some(ComposeTarget::Dormant {
                 cwd: cwd.clone(),
-                resume_command: command.clone(),
+                resume_command: command,
                 mode: a.launch_mode(),
             }),
             _ => None,
@@ -885,14 +885,14 @@ fn spawn_new(launcher: &dyn Launcher, board: &Board, selected: usize, status: &m
         *status = "spawn: no agent selected (start the first agent from a terminal)".into();
         return false;
     };
-    let Some(command) = &agent.spawn_command else {
+    let Some(command) = agent.spawn_argv() else {
         *status = format!("spawn: {} announced no spawn command", agent.label);
         return false;
     };
     let cwd = launch::default_cwd(agent.cwd.as_deref());
     // agent.launch_mode() carries the selected card's `hidden`, so Shift+Enter
     // beside a hidden card spawns the new agent hidden too (same placement).
-    match launcher.launch(&cwd, command, None, &agent.launch_mode()) {
+    match launcher.launch(&cwd, &command, None, &agent.launch_mode()) {
         Ok(()) => true,
         Err(e) => {
             *status = format!("spawn: {e}");

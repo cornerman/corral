@@ -306,7 +306,7 @@ impl Board {
                 close.map_err(|e| format!("close: {e}"))
             }
             MoveAction::Resume | MoveAction::ResumeAndNudge => {
-                match (&agent.cwd, &agent.resume_command) {
+                match (&agent.cwd, agent.resume_argv()) {
                     (Some(cwd), Some(cmd)) => {
                         let msg = matches!(
                             transition::action_for(source, target),
@@ -314,7 +314,7 @@ impl Board {
                         )
                         .then_some("continue");
                         self.launcher
-                            .launch(Path::new(cwd), cmd, msg, &agent.launch_mode())
+                            .launch(Path::new(cwd), &cmd, msg, &agent.launch_mode())
                             .map_err(|e| format!("resume: {e}"))
                     }
                     _ => Err("resume: dormant record missing cwd/command".into()),
@@ -729,13 +729,13 @@ impl Board {
         let mut ok = false;
         self.status = match agent
             .as_ref()
-            .and_then(|a| a.spawn_command.as_ref().map(|c| (a, c)))
+            .and_then(|a| a.spawn_argv().map(|c| (a, c)))
         {
             Some((a, command)) => {
                 let cwd = launch::default_cwd(a.cwd.as_deref());
                 // a.launch_mode() carries the selected card's `hidden`, so a
                 // spawn beside a hidden card is hidden too (same placement).
-                match self.launcher.launch(&cwd, command, None, &a.launch_mode()) {
+                match self.launcher.launch(&cwd, &command, None, &a.launch_mode()) {
                     Ok(()) => {
                         ok = true;
                         format!("spawned in {}", tilde(&cwd.to_string_lossy()))
@@ -1437,7 +1437,7 @@ fn compose_for(agent: &Agent) -> Option<Compose> {
         Origin::Live => ComposeTarget::Live(agent.socket_path.clone()),
         Origin::Dormant => ComposeTarget::Dormant {
             cwd: agent.cwd.clone()?,
-            resume_command: agent.resume_command.clone()?,
+            resume_command: agent.resume_argv()?,
             mode: agent.launch_mode(),
         },
     };
@@ -1461,9 +1461,9 @@ fn activate(
             apply_placement(agent, focuser, launcher, &kill_pid).map_err(|e| format!("reveal: {e}"))
         }
         Origin::Live => focuser.focus(agent).map_err(|e| format!("focus: {e}")),
-        Origin::Dormant => match (&agent.cwd, &agent.resume_command) {
+        Origin::Dormant => match (&agent.cwd, agent.resume_argv()) {
             (Some(cwd), Some(command)) => launcher
-                .launch(Path::new(cwd), command, None, &agent.launch_mode())
+                .launch(Path::new(cwd), &command, None, &agent.launch_mode())
                 .map_err(|e| format!("resume: {e}")),
             _ => Err("resume: dormant record missing cwd/resume command".into()),
         },
