@@ -63,6 +63,10 @@ export default function (pi: ExtensionAPI) {
 	// by the record's physical location (only this workdir's sandboxed agent can
 	// write there). See the corral security model (physical-location identity).
 	let recordFile: string | undefined;
+	// Whether this session ever persisted its session file. A session that never
+	// did has nothing to resume, so on shutdown its record is dropped rather than
+	// left dormant (see writeRegistry / stop). Set once, never reset.
+	let everPersisted = false;
 	let currentCtx: ExtensionContext | undefined;
 	// Last title pushed to clients, so we broadcast a session_info_update only
 	// when it actually changes. pi fires session_info_changed on an explicit
@@ -294,11 +298,17 @@ export default function (pi: ExtensionAPI) {
 		clients.clear();
 		server?.close();
 		server = undefined;
-		// Clear the socket in the registry before unlinking it: the record stays
-		// a dormant, resumable entry. Done WITHOUT ctx: stop() can run during a
-		// session replacement (resume/fork/reload), when the captured currentCtx
-		// is stale and touching ctx.sessionManager throws — which would crash pi.
-		clearSocketInRegistry();
+		// A persisted session goes dormant (clear its socket, keep it resumable); a
+		// session that never wrote its file has nothing to resume, so drop its whole
+		// record instead of leaving a dormant card that resumes to `No session
+		// found`. Done WITHOUT ctx: stop() can run during a session replacement
+		// (resume/fork/reload), when the captured currentCtx is stale and touching
+		// ctx.sessionManager throws — which would crash pi.
+		if (everPersisted) {
+			clearSocketInRegistry();
+		} else {
+			forgetRecordAndPointer();
+		}
 		if (socketPath) {
 			fs.rmSync(socketPath, { force: true });
 			socketPath = undefined;
@@ -622,6 +632,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// Drop a never-persisted session's record and pointer entirely (see stop):
+	// with resumeCommand always set, an empty session must not linger as a
+	// resumable dormant card. Derives the sessionId from the record filename, so
+	// it needs no ctx (which may be stale). Best-effort.
+	function forgetRecordAndPointer() {
+		if (!recordFile) return;
+		try {
+			const sessionId = path.basename(recordFile, ".json");
+			fs.rmSync(recordFile, { force: true });
+			const dir = pointerDir();
+			if (dir) fs.rmSync(path.join(dir, sessionId), { force: true });
+		} catch {
+			// Already gone or unreachable: nothing to forget.
+		}
+	}
+
 	// Announce: write the record into this workdir's `.corral/registry/` and drop
 	// our pointer in the store. corrald authenticates the record by where it
 	// physically lives, so the record carries no `cwd` field (it cannot be
@@ -637,18 +663,20 @@ export default function (pi: ExtensionAPI) {
 		// pi's CLI grammar lives, so corral stays agent-neutral. A second agent
 		// kind ships its own adapter writing its own argv.
 		//
-		// resumeCommand uses the sessionId, not the session-file path: corral
-		// always resumes in the session's own cwd, so pi's per-project
-		// `--session <id>` lookup resolves it. The id is already the record key,
-		// so this avoids duplicating the file path.
+		// resumeCommand is a stable TEMPLATE: the literal `{sessionId}` token is
+		// substituted by corral at launch (see CONVENTION.md). Writing the template
+		// (not the concrete id) keeps the record shape identical for every session,
+		// so the approved launch set never flaps and corrald stops re-prompting to
+		// verify the pi harness. corral always resumes in the session's own cwd, so
+		// pi's per-project `--session <id>` lookup resolves it.
 		//
-		// Gate on the session file EXISTING, not just on getSessionFile()
-		// returning a path: pi hands back a path for an empty session it never
-		// persists, so trusting the path alone advertises a dormant card that
-		// resumes to `No session found` and a window that closes before the
-		// error can be read. An unpersisted (empty) session is not resumable.
+		// A never-persisted (empty) session must not leave a resumable dormant card
+		// (it would resume to `No session found`). Since resumeCommand is now always
+		// set, that concern moves to stop(): a session that never wrote its file has
+		// its whole record dropped rather than left dormant. Track persistence here.
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		const resumable = sessionFile != null && fs.existsSync(sessionFile);
+		if (resumable) everPersisted = true;
 		// A hidden spawn runs the agent inside a headless cage; corral sets
 		// CORRAL_HIDDEN=1 in that environment. Record it so the board reveals
 		// this session by resume instead of focusing a (non-existent) window.
@@ -666,7 +694,7 @@ export default function (pi: ExtensionAPI) {
 			description: "pi: terminal TUI coding agent",
 			socket,
 			spawnCommand: ["pi"],
-			resumeCommand: resumable ? ["pi", "--session", sessionId] : null,
+			resumeCommand: ["pi", "--session", "{sessionId}"],
 			hidden,
 			lastSeen: new Date().toISOString(),
 		};
