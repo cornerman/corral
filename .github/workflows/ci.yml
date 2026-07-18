@@ -6,6 +6,7 @@ on:
   pull_request:
 
 jobs:
+  # Fast path: build + unit tests on every push/PR.
   nix:
     runs-on: ubuntu-latest
     steps:
@@ -15,3 +16,21 @@ jobs:
         run: nix build
       - name: Tests
         run: nix develop --command cargo test
+
+  # Slow path: VM e2e smoke tests (need /dev/kvm; GitHub standard runners have
+  # it). Split out so the fast job is not blocked, and unfree is allowed only
+  # here (the claude/cursor scenarios import an allowUnfree nixpkgs internally).
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [e2e-pi, e2e-opencode, e2e-claude, e2e-cursor]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            system-features = kvm nixos-test benchmark big-parallel
+      - name: ${{ matrix.scenario }}
+        run: nix build -L ".#checks.x86_64-linux.${{ matrix.scenario }}"

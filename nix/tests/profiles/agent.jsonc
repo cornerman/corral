@@ -1,0 +1,42 @@
+// nono confinement profile for corral agents in the VM e2e tests.
+//
+// Every agent launch goes through `nono run --profile <this> -- <harness>`.
+// It proves SECURITY.md's premise: an agent can write only its own workdir
+// plus the ~/.corral allowlist, so a record's physical location proves its
+// directory. The e2e-pi sandbox-negative assertions rely on exactly these
+// grants (agent A cannot read agent B's workdir record, cannot write the
+// sealed state/registry).
+//
+// `default` is always merged in; it already grants rw on the session cwd and
+// read on the nix store, so <cwd>/.corral/ (record + workdir socket) is
+// covered. Below we add only the cross-workdir allowlist.
+//
+// VERIFY-IN-VM (see the design spec's Verify-in-VM list): the ${HOME}
+// expansion, the exact network fields Landlock honors for the localhost stub,
+// and that state/registry stays denied. Tighten from `nono why --scope` output
+// on first run.
+{
+  "meta": { "name": "corral-agent", "version": "0.1.0" },
+  "extends": "default",
+  "filesystem": {
+    // rw: the agent-writable pointer store (write-only dir by convention), the
+    // daemon control socket, and each harness's own state dir (pi writes
+    // sessions/trust/auth, opencode/claude their state). NOT ~/.corral/state
+    // (sealed, daemon-only) and NOT any other agent's workdir -- those
+    // denials are exactly what the sandbox-negative assertions check.
+    "allow": [
+      "${HOME}/.corral/input/registry",
+      "${HOME}/.corral/corrald.sock",
+      "${HOME}/.pi",
+      "${HOME}/.config/opencode",
+      "${HOME}/.claude"
+    ]
+  },
+  "network": {
+    // Reach the stub LLM on localhost only. Filesystem, not network, is the
+    // isolation axis under test, so this stays deliberately narrow.
+    "allow_domain": ["127.0.0.1", "localhost"],
+    "allow_port": [6556],
+    "port_allow": [6556]
+  }
+}

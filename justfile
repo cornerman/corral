@@ -25,6 +25,14 @@ fmt:
 nix-build:
     nix build
 
+# Run all VM e2e smoke tests (KVM required; slow). See nix/tests/.
+e2e:
+    nix build .#checks.x86_64-linux.e2e-pi .#checks.x86_64-linux.e2e-opencode .#checks.x86_64-linux.e2e-claude .#checks.x86_64-linux.e2e-cursor -L
+
+# Run one VM e2e scenario, e.g. `just e2e-one e2e-pi`
+e2e-one SCENARIO:
+    nix build .#checks.x86_64-linux.{{SCENARIO}} -L
+
 # Watch: recompile and re-run tests on change
 watch:
     cargo watch -x test

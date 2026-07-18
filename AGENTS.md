@@ -18,6 +18,26 @@ behavior is implemented in BOTH shells, always — never land a feature in one
 alone. Shared logic belongs in `corral-core` so both consume it; only the
 rendering (ratatui vs iced) differs.
 
+## VM E2E Smoke Test (Hard Rule)
+
+`nix/tests/` holds a living end-to-end smoke test: a NixOS VM installs corral
+through its real home-manager module and runs each adapter (pi, opencode,
+claude, cursor) confined under `nono`, taking real turns against a
+dependency-free stub LLM (`nix/tests/stub-llm.py`, OpenAI + Anthropic on
+127.0.0.1:6556). The Python test driver asserts the whole loop from adapter
+announce through board reflection, focus, operator + inter-agent messaging,
+stop, resume, and hidden agents — plus the sandbox-negative checks that prove
+SECURITY.md's location=identity premise. Four flake checks, one per harness
+(`checks.e2e-<harness>`); `just e2e` runs all, `just e2e-one <name>` runs one.
+Design: `docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md`.
+
+Any change to an adapter, the CONVENTION.md contract, or user-facing
+board/daemon behavior MUST update the matching `nix/tests/` scenario in the
+same change — the same discipline as TUI/GUI parity. A new harness kind ships
+with its own scenario. Keep the stub, the nono profile
+(`nix/tests/profiles/agent.jsonc`), and the pi pin
+(`nix/tests/npm/pi/`, see its README) current.
+
 ## What This Is
 
 An attention board for locally running ACP agent sessions, plus the discovery
@@ -862,11 +882,17 @@ message/tool updates) is ACP v1.
   runtime PATH of all three binaries (and in the devShell), the headless
   compositor hidden agents run inside. `just` commands: `test`, `lint`, `board`,
   `gui`, `daemon`, `watch` (cargo-watch tests), and `watch-board` / `watch-gui`
-  / `watch-daemon` (rebuild + rerun on change), `nix-build`. GUI builds need the
-  devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`.
+  / `watch-daemon` (rebuild + rerun on change), `nix-build`, and `e2e` /
+  `e2e-one <scenario>` (VM smoke tests). GUI builds need the
+  devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`. The e2e
+  checks need KVM and a test-only `home-manager` flake input; they build a
+  NixOS VM (`nix/tests/`) and are Linux-only.
 - Lifecycle is deployment glue in `~/nixos`, not corral code: a systemd user
   service runs `corrald` (restart-on-failure) so messaging survives a crash;
   a WM keybind summons a board window — either a floating/borderless `kitty -e
   corral` scratchpad (the TUI as a launcher popup) or `corral-gui`. corrald owns
   behavior; nixos/WM own keep-alive and visibility.
-- CI: GitHub Action runs `nix flake check` (build + tests via nix).
+- CI: GitHub Action (`.github/workflows/ci.yml`) has two jobs — a fast one
+  (`nix build` + `cargo test`) on every push/PR, and a slow `e2e` matrix job
+  building the four VM smoke checks (needs KVM; unfree allowed only there via
+  the tests' own allowUnfree nixpkgs import).

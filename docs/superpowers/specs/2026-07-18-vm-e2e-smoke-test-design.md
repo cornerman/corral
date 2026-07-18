@@ -48,21 +48,27 @@ All are `pkgs.testers.runNixOSTest` derivations under `nix/tests/`, sharing:
   `graphical-session.target` to `default.target` in the test only, because a
   tty-launched sway does not activate the systemd graphical session. OCR
   (`enableOCR`) is on for the two board render assertions.
-- `nix/tests/stub-llm/` — the deterministic model. `mock-llm`
-  (dwmkerr/mock-llm, OpenAI-compatible, YAML rules with JMESPath matching and
-  per-path sequences) runs as a systemd service on 127.0.0.1:6556 for pi and
-  opencode. Claude Code speaks the Anthropic `/v1/messages` API with SSE
-  streaming, which mock-llm does not emit, so a small dependency-free Python
-  stub (`anthropic-stub.py`, stdlib http.server) serves 127.0.0.1:6557 for the
-  claude scenario. Both select a canned script by matching the incoming user
-  message, so the test chooses agent behavior by the prompt it sends:
-  `smoke:reply` → plain text turn, `smoke:ask` → call the `question` tool,
-  `smoke:msg <dir>` → call `corral_message_agent`, etc.
-- `nix/tests/pkgs.nix` — test-only packages: pi and mock-llm built as npm
-  meta-packages (a local `package.json` + committed `package-lock.json`
-  depending on the published npm package, built with `buildNpmPackage`; this
-  mirrors the common `npm install -g` setup without coupling to any private
-  derivation), pinned by version + `npmDepsHash`.
+- `nix/tests/stub-llm.py` — the deterministic model, one dependency-free stdlib
+  Python service on 127.0.0.1:6556. It speaks BOTH the OpenAI Chat Completions
+  API (pi, opencode) and the Anthropic Messages API (claude-code), each in
+  streaming (SSE) and non-streaming form. A rule table selects a canned script
+  by matching a substring of the last request message, so the test chooses
+  agent behavior by the prompt it sends: `smoke:ask` → call the `question`
+  tool, `smoke:msg-b` → call `corral_message_agent`, `smoke:list` →
+  `list_corral_agents`, anything else → a plain text turn. The driver POSTs
+  extra rules with baked-in dynamic values (e.g. a session id for stop) at
+  runtime via `/rules`, and reads every received request via `/requests` for
+  assertions.
+  DECISION (2026-07-18, during impl): mock-llm was rejected after reading its
+  source — its streaming path only chunks `message.content`, so a canned
+  `tool_calls` response cannot be streamed, and pi's openai-completions client
+  always streams. One small stub speaking both dialects is simpler than
+  mock-llm + a separate Anthropic stub, and needs no npm build.
+- `nix/tests/pkgs.nix` — test-only packages: pi built as an npm meta-package (a
+  local `package.json` + committed `package-lock.json` depending on the
+  published npm package, built with `buildNpmPackage`; this mirrors the common
+  `npm install -g pi` setup without coupling to any private derivation), pinned
+  by version + `npmDepsHash`.
 - `nix/tests/profiles/agent.jsonc` — the vendored nono profile every agent
   launch goes through (`nono run --profile ...`): rw on the session cwd, rw on
   `~/.corral` (pointer store + control socket), read on the harness config, TCP
@@ -181,8 +187,8 @@ code-cursor (nixpkgs, unfree) with the .vsix installed by the module.
 
 - home-manager: new flake input, used only by `nix/tests/` (the package and
   dev shell do not depend on it).
-- pi `0.80.10` and mock-llm: npm meta-packages under `nix/tests/npm/`,
-  lockfiles committed, hashes pinned.
+- pi `0.80.10`: npm meta-package under `nix/tests/npm/pi/`, lockfile committed,
+  hash pinned. The stub LLM is stdlib Python (no package).
 - nono, opencode, claude-code, code-cursor: from the already-pinned nixpkgs.
 - cage/xwayland: already shipped by the corral package wrapper.
 
@@ -190,23 +196,35 @@ code-cursor (nixpkgs, unfree) with the .vsix installed by the module.
 
 Coded from docs, verified only by running the test:
 
-- mock-llm YAML shapes for pi's `openai-completions` client (tool_calls
-  encoding, streaming chunks).
-- The Anthropic stub's SSE event sequence satisfying claude-code.
+- The stub's OpenAI streaming tool_calls encoding satisfying pi's
+  `openai-completions` client (single-fragment arguments).
+- The stub's Anthropic SSE event sequence satisfying claude-code.
 - nono profile field names/grants (validated with `nono profile schema`) and
   Landlock unix-socket + localhost-TCP behavior.
 - pi settings/trust: the VM pre-seeds `~/.pi/agent/settings.json`
   (defaultModel = the stub model) and trust so first start is prompt-free.
 - claude-code hook payload field names (the adapter's own UNVERIFIED list).
 - corral-gui under the VM's software renderer.
+- nono under Landlock inside the NixOS test kernel (TCP-to-localhost + unix
+  socket behavior; `${HOME}` expansion in the profile).
+
+Implementation status (2026-07-18): the four checks evaluate; the pi npm
+meta-package's deps FOD builds with the pinned hash (pi ships an npm-shrinkwrap
+whose nested entries needed integrity patched from the registry); the stub and
+the Python testScripts are validated in isolation. A full VM run has not been
+completed in the authoring sandbox (large closures over a slow binary cache);
+it is expected to be run on the maintainer's machine / CI, where the
+Verify-in-VM items above are the first iteration points. Only pi and opencode
+launch nono-confined; confining Claude (node-spawned sidecar) and the Cursor
+GUI is future work, so their scenarios stay partial.
 
 ## Rejected Alternatives
 
 - Real API keys / impure test: not reproducible, not CI-safe.
 - One VM covering all harnesses: one giant serial test; per-harness checks
   isolate failures and parallelize.
-- Bespoke OpenAI stub: mock-llm already does rules/sequences/streaming and is
-  maintained; we only hand-write the Anthropic stub it lacks.
+- mock-llm: rejected during implementation (cannot stream tool calls; see the
+  dated decision above). One stdlib stub covers both dialects with no npm dep.
 - Reusing the maintainer's private pi derivation: couples the repo to a
   private tree; the npm meta-package is the common installation shape.
 - Skipping nono: would leave the security model's central premise untested.

@@ -7,9 +7,16 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Test-only: the VM e2e checks install corral inside the test VM through
+    # the real home-manager module, so the checks validate the shipped install
+    # path. The package and dev shell do not depend on it.
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, rust-overlay }:
+  outputs = { self, nixpkgs, rust-overlay, home-manager }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system:
@@ -157,8 +164,14 @@
         };
       });
 
-      checks = forAllSystems (pkgs: {
-        build = self.packages.${pkgs.system}.default;
-      });
+      checks = forAllSystems (pkgs:
+        {
+          build = self.packages.${pkgs.system}.default;
+        }
+        # VM e2e smoke tests (KVM + NixOS test driver), Linux only. Slow by
+        # design; CI runs them in a separate job. See nix/tests/ and
+        # docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md.
+        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux
+          (import ./nix/tests { inherit pkgs self home-manager; }));
     };
 }
