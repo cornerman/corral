@@ -24,16 +24,22 @@ agent on its own.
 
 ## Quick Start
 
-```sh
-# Try it now (opens the board):
-nix run github:cornerman/corral
+Install via home-manager — this is the path that gives you a working board.
+It installs the binaries, runs the `corrald` messaging daemon as a user
+service, and links the agent adapters:
 
-# Or install everything via home-manager (binaries + messaging daemon + agent adapters):
+```nix
 programs.corral.enable = true;
 ```
 
 Then start your agents however you normally do. They appear on the board
 automatically. That is the whole loop.
+
+A board is a pure viewer of a registry the daemon curates, so it shows nothing
+on its own: it needs `corrald` running and an adapter installed in your harness,
+both of which the module above sets up. From there just run `corral` (or
+`corral-gui`) — launch as many boards as you like, they all reflect the same
+registry.
 
 ## Keys
 
