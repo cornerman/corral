@@ -25,9 +25,14 @@ fmt:
 nix-build:
     nix build
 
-# Run all VM e2e smoke tests (KVM required; slow). See nix/tests/.
+# Run all VM e2e smoke tests (KVM required; slow). Sequentially -- one NixOS
+# VM saturates a dev box, and running four at once starves each guest enough
+# to trip timing-sensitive steps. CI runs them in parallel across the matrix
+# (separate runners). See nix/tests/.
 e2e:
-    nix build .#checks.x86_64-linux.e2e-pi .#checks.x86_64-linux.e2e-opencode .#checks.x86_64-linux.e2e-claude .#checks.x86_64-linux.e2e-cursor -L
+    for s in e2e-pi e2e-opencode e2e-claude e2e-cursor; do \
+      nix build -L .#checks.x86_64-linux.$s || exit 1; \
+    done
 
 # Run one VM e2e scenario, e.g. `just e2e-one e2e-pi`
 e2e-one SCENARIO:

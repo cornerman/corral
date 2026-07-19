@@ -81,8 +81,11 @@ assert not stub_saw("[from proj-a"), \
     "message delivered before whitelist approval"
 
 # Approve via the headless whitelist path and let corrald's poll release it.
+# Generous window: delivery needs corrald's poll + B's turn against the stub,
+# both of which slow under host contention (e.g. `just e2e` before it went
+# sequential, or a busy CI runner).
 as_user(f"mkdir -p {CORRAL}/state; echo '{PROJ_A} -> {PROJ_B}' >> {WHITELIST}")
-deadline = _t.time() + 30
+deadline = _t.time() + 90
 while _t.time() < deadline:
     if stub_saw("[from proj-a"):
         break
