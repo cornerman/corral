@@ -144,7 +144,9 @@ ratatui / iced, the daemon keeps ksni).
     `scan_registry` is a plain trusted read of a dir of records (used by the
     boards over the **vetted** `state/registry/`, and by corrald over its own
     output). Also `valid_session_id` (charset gate) and the `cwd_from_*`
-    physical-path derivations. Pure, unit-tested.
+    physical-path derivations. `RegistryEntry` carries the optional
+    `model` (`"<provider>/<id>"`, the last-known model, persisted so a dormant
+    card shows it). Pure, unit-tested.
   - `src/curation.rs` — corrald's parsing boundary (security). `read_pointers`
     (the per-session pointer store → distinct cwds), `forget_dormant` (the
     board's `d`: delete a session's workdir record + its home pointer),
@@ -238,7 +240,11 @@ ratatui / iced, the daemon keeps ksni).
     shown number are the same quantity by construction. `Agent`/`RegistryEntry`
     carry a `hidden` flag (from the record); `sync_registry` stamps it — and the
     `resume_command` — onto live agents too, so a live hidden card can be
-    revealed/hidden by resume. Pure, unit-tested.
+    revealed/hidden by resume. `Agent.model` holds the live model, refreshed by
+    the `Update::SetModel` variant (from a `config_options_update` broadcast);
+    `sync_registry` also stamps the record's last-known model onto both live
+    (only when the live value is still `None`) and dormant agents, shown
+    display-only in the footer for the selected card. Pure, unit-tested.
   - `src/watch.rs` — one reader thread per live socket: seeds from
     `initialize` + `session/list`, then streams `state_update`, `tool_call`
     (summarized to a card activity string), and title updates; EOF = gone. The
@@ -246,7 +252,9 @@ ratatui / iced, the daemon keeps ksni).
     `session/list` reply, so the watcher stashes it and stamps it onto the
     seeding `Upsert` (a `SetState` for a not-yet-present agent would be
     dropped); without this a Running/blocked agent showed Idle until its next
-    transition. A stateless agent still defaults to Idle.
+    transition. A stateless agent still defaults to Idle. It also parses
+    `config_options_update` (`parse_config_model`) into the live model, seeded
+    onto the `Upsert` the same connect-race way as state.
   - `src/engine.rs` — the shared registry-reflect loop the boards run on: it
     reads the **vetted `state/registry/`** (an inotify watch on that dir
     triggers an immediate rescan, so a viewer reacts to corrald's writes
@@ -313,7 +321,9 @@ ratatui / iced, the daemon keeps ksni).
     fixed-height cards, and a clickable key-hint footer. Each card is two rows:
     the session title with the column age dim at the top-right, then a
     hash-colored cwd basename pill (see `core::palette`), the kind badge, and
-    the activity hint. Owns card / heading / footer / filter-box / cwd-pill /
+    the activity hint. The row above the footer shows the selected card's model
+    right-aligned (`model: <x>`, display-only) beside any transient status.
+    Owns card / heading / footer / filter-box / cwd-pill /
     age formatting; `column_layout` and `hit_test` share one geometry (top rows
     reserved for the filter).
   - `src/main.rs` — the imperative shell: `core::engine` reflect + draw +
@@ -367,7 +377,8 @@ ratatui / iced, the daemon keeps ksni).
   the window width, shift-release via iced's `on_key_release`). Each card is two rows: the title with the column age at the
   top-right, then a hash-colored cwd basename pill (`core::palette`, same color
   per directory) beside the dim kind badge and the activity hint; the Dormant
-  column is faded. `src/theme.rs` is the base16 theming
+  column is faded. The footer shows the selected card's model at its far end
+  (`model: <x>`, display-only, parity with the TUI). `src/theme.rs` is the base16 theming
   system: a lenient tinted-theming YAML parser (no YAML dependency), Solarized
   dark/light built-ins, and an env-selected (`CORRAL_THEME_DARK` /
   `CORRAL_THEME_LIGHT`) dark/light preset pair loaded from built-ins plus
@@ -473,6 +484,9 @@ ratatui / iced, the daemon keeps ksni).
   the standard `state_update` (running/idle/requires_action) on
   `turn_start`/`turn_end` and while the interactive `question` tool blocks on
   the user. A newly connected client is seeded with the current `state_update`.
+  It also broadcasts the current model (from `ctx.model`, refreshed on
+  `model_select`) as a `config_options_update` config option and persists it in
+  the record, seeded on connect like state (verified against pi's types).
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
   (`target_dir` or `target_session`, `message`, `force_new`, optional `label`,
   optional `hidden` default true)
@@ -509,7 +523,9 @@ ratatui / iced, the daemon keeps ksni).
   message and tool activity, `session_info_update` on rename, and the standard
   `state_update` (running on the first turn signal, idle on `session.idle`,
   `requires_action` while a permission prompt is open via `permission.updated`,
-  cleared on `permission.replied`). It tracks a single active session per window
+  cleared on `permission.replied`). It also broadcasts + persists the model as a
+  `config_options_update` config option, probed defensively from the assistant
+  message metadata (UNVERIFIED here). It tracks a single active session per window
   (multi-session multiplexing is deferred) and, lacking a plugin-unload hook,
   clears the record's socket and unlinks on process exit/SIGINT/SIGTERM;
   best-effort, since corral's dead-socket sweep makes a missed teardown dormant
@@ -543,7 +559,9 @@ ratatui / iced, the daemon keeps ksni).
   fired to arm the doorbell, so the message would wait for the first user prompt. `state_update` is native and richer than pi's
   (`UserPromptSubmit`->running, `Stop`->idle,
   `Notification[permission_prompt]`->requires_action, a real approval gate);
-  `session/cancel` is a no-op (no external turn-abort). Runs on `node` (not
+  `session/cancel` is a no-op (no external turn-abort). The sidecar also
+  broadcasts + persists the model (`config_options_update`), probed defensively
+  from the hook payload's `model` field (UNVERIFIED here). Runs on `node` (not
   bun: bun's JavaScriptCore SIGTRAP-crashes under a Landlock sandbox, which is
   how Claude runs on hardened setups; node runs the `.ts` directly via native
   type-stripping, >= 22.18 / 24, no build step), external to Claude. So a
@@ -574,7 +592,9 @@ ratatui / iced, the daemon keeps ksni).
   extension auto-registers in `~/.cursor/hooks.json` (additive, idempotent),
   mapping `beforeSubmitPrompt`→running / `stop`→idle over a
   `.cursor-ctl-<sessionId>.sock` control channel; coarse (no `requires_action`,
-  Cursor exposes no permission hook). One card per window (a chat can be neither
+  Cursor exposes no permission hook). The `beforeSubmitPrompt` payload also
+  carries the model (UNVERIFIED, undocumented), forwarded on the same control
+  ping and broadcast + persisted as a `config_options_update` config option. One card per window (a chat can be neither
   focused nor resumed independently); dormant delivery reopens the folder
   without the message text. Authored in plain JavaScript (no build step: the
   host loads `main` as JS); the pure core (`lib.js`) is unit-tested with
@@ -713,6 +733,13 @@ recognize `state_update` until v2; acceptable because corral is the consumer
 here. The rest of the surface (initialize, session/list, prompt, cancel,
 message/tool updates) is ACP v1.
 
+The current model rides a `config_options_update` session/update (an ACP
+Session Config Option, reserved category `model`), broadcast on model change
+and seeded on connect. corral reads only
+`configOptions[category=="model"].currentValue` and is display-only — it never
+sends `session/set_config_option`, so the selectable `options` list is
+irrelevant to it. Shown verbatim in the footer for the selected card.
+
 ## Interfaces to the Outside World
 
 - CLI `corral` — full-screen TUI, four columns: Requires Action, Idle, Running,
@@ -744,7 +771,8 @@ message/tool updates) is ACP v1.
   footer actions (go / message / spawn / toggle-hidden / dismiss) acting on the
   card under the cursor (Esc or a click outside closes it). Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
-  visible; live cards show time-in-state. Reads `$HOME` (or
+  visible; live cards show time-in-state. The footer shows the selected card's
+  model (`model: <x>`, display-only). Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir; uses `swaymsg` and `kitty` for
   focus and spawn.
 - CLI `corral-gui` — the same attention board as a desktop (iced) window,
@@ -753,7 +781,7 @@ message/tool updates) is ACP v1.
   portal). A centered filter line over the four columns; single-click selects
   a card, double-click goes, right-click opens the context menu of footer
   actions, `+ new` to spawn, arrows / Enter / Shift+Enter / `m` / `d` / `/` as in the
-  TUI, a bottom key-hint footer. Links the graphics libs (libGL / wayland / X11
+  TUI, a bottom key-hint footer showing the selected card's model at its far end. Links the graphics libs (libGL / wayland / X11
   / xkbcommon); on NixOS the flake wraps it with the driver library path. The
   tray's “Open board” launches this.
 - CLI `corrald` — the headless message-routing daemon. No TUI; run under a

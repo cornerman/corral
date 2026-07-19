@@ -98,6 +98,7 @@ Fields:
 | `gui`       | boolean         | Optional; default `false`. `true` when the agent draws its own window (a GUI app like quine), so the consumer launches `spawnCommand`/`resumeCommand` **directly** rather than wrapping them in a terminal. Absent or `false` means terminal-wrapped, so every existing terminal agent keeps its behavior unchanged. |
 | `messageFlag` | string \| null | Optional CLI flag that carries the initial launch message (see §2a), e.g. `"--message"` for quine. When set, the consumer passes the message as this flag's value (`… --message "<text>"`); absent/null means the message is a trailing positional argument. Lets a flag-based agent take a launch message without accepting a positional. |
 | `hidden`    | boolean         | Optional; default `false`. `true` when the session runs **hidden**: inside a headless compositor, so its window never maps on the host. A consumer reveals a hidden session by resume (see §2b) rather than by focusing a window, and MAY show it as hidden. The agent SHOULD set this from the `CORRAL_HIDDEN=1` environment variable a consumer exports when it launches a hidden session (see §2b). Absent/false is a normal, visible session. |
+| `model`     | string \| null  | Optional. The LLM model this session runs, as `"<provider>/<id>"` (e.g. `"anthropic/claude-opus-4"`). Display-only; a consumer shows it verbatim for the selected session and never prettifies or acts on it. Latest-seen value per session (the record mirrors the live `config_options_update` broadcast, §5). Absent when the adapter cannot report a model. |
 
 The consumer runs `spawnCommand` / `resumeCommand` **verbatim except for
 substituting the two reserved placeholders** (below), so it stays agent-neutral:
@@ -276,6 +277,21 @@ column the session without waiting for the next transition.
 
 Emitted whenever the title changes, so an already-connected client sees a rename
 (or a first-message fallback title) without reconnecting.
+
+### `config_options_update` (MAY, model)
+
+```json
+{ "sessionUpdate": "config_options_update",
+  "configOptions": [ { "id": "model", "name": "Model", "category": "model",
+                       "type": "select", "currentValue": "anthropic/claude-opus-4" } ] }
+```
+
+An ACP Session Config Option carrying the current model. The agent SHOULD
+broadcast it on every model change and seed it on connect (like `state_update`).
+A consumer reads only `configOptions[category=="model"].currentValue` for
+display; it is **display-only** and never sends `session/set_config_option`, so
+the selectable `options` list MAY be omitted. `currentValue` is the
+`"<provider>/<id>"` string, shown verbatim.
 
 ### Activity events (MAY)
 
