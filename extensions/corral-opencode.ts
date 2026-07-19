@@ -95,6 +95,32 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 	// as the standard state_update session/update so corral can column the agent
 	// without polling.
 	let currentState: "running" | "idle" | "requires_action" = "idle";
+	// UNVERIFIED (no opencode toolchain here): the model is probed from the
+	// assistant message metadata. Shape guarded so a miss just leaves the model
+	// unreported (corral shows nothing), never throwing into the plugin host.
+	// Format "<provider>/<id>", shown verbatim by corral.
+	let currentModel: string | undefined;
+	function setModelFrom(obj: unknown) {
+		const o = (obj ?? {}) as {
+			providerID?: string;
+			modelID?: string;
+			provider?: string;
+			model?: string;
+			info?: unknown;
+		};
+		const provider = o.providerID ?? o.provider;
+		const model = o.modelID ?? o.model;
+		if (provider && model) {
+			const next = `${provider}/${model}`;
+			if (next !== currentModel) {
+				currentModel = next;
+				broadcastModel();
+			}
+			return;
+		}
+		// The metadata often nests under `info` (message.updated); probe once.
+		if (o.info && o.info !== obj) setModelFrom(o.info);
+	}
 	// Bun sockets are the client connections; a per-connection read buffer lives
 	// beside each so a partial line survives across data events.
 	const clients = new Set<{ write: (s: string) => void; end?: () => void }>();
@@ -126,6 +152,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					if (activeSessionId) {
 						try {
 							sock.write(sessionUpdateLine({ sessionUpdate: "state_update", state: currentState }));
+							const line = modelConfigLine();
+							if (line) sock.write(line);
 						} catch {}
 					}
 				},
@@ -210,6 +238,29 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 	function broadcastState() {
 		if (clients.size === 0 || !activeSessionId) return;
 		const line = sessionUpdateLine({ sessionUpdate: "state_update", state: currentState });
+		for (const c of clients) {
+			try {
+				c.write(line);
+			} catch {}
+		}
+	}
+
+	// Broadcast the current model as an ACP Session Config Option (category
+	// "model"). corral reads currentValue for display only; options[] is omitted
+	// (corral never selects a model). Mirrors the pi adapter.
+	function modelConfigLine(): string | undefined {
+		if (!activeSessionId || !currentModel) return undefined;
+		return sessionUpdateLine({
+			sessionUpdate: "config_options_update",
+			configOptions: [
+				{ id: "model", name: "Model", category: "model", type: "select", currentValue: currentModel },
+			],
+		});
+	}
+
+	function broadcastModel() {
+		const line = modelConfigLine();
+		if (!line) return;
 		for (const c of clients) {
 			try {
 				c.write(line);
@@ -433,6 +484,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				// A hidden spawn runs inside a headless cage; corral sets
 				// CORRAL_HIDDEN=1 there. Record it so the board reveals by resume.
 				hidden: process.env.CORRAL_HIDDEN === "1",
+				// Last-known model as "<provider>/<id>" (undefined dropped by
+				// JSON.stringify), so a dormant card shows it.
+				model: currentModel,
 				lastSeen: new Date().toISOString(),
 			};
 			const tmp = `${recordFile}.${process.pid}.tmp`;
@@ -507,9 +561,12 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						break;
 					case "message.updated":
 						markRunning();
+						// Assistant message metadata carries the model; probe defensively.
+						setModelFrom(props);
 						break;
 					case "message.part.updated":
 						markRunning();
+						setModelFrom(props);
 						broadcastMessageActivity(props as never);
 						break;
 					case "permission.updated":
