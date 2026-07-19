@@ -1,8 +1,0 @@
-{
-  "name": "corral-e2e-pi",
-  "version": "0.0.0",
-  "private": true,
-  "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.10"
-  }
-}

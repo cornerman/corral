@@ -1,37 +1,33 @@
-# npm meta-packages for the VM e2e tests
+# Vendored pi lockfile for the VM e2e tests
 
-Each directory is a one-dependency npm project pinning a published package
-(`pi`, `mock-llm`) the way a user installs it. `nix/tests/pkgs.nix` builds them
-with `buildNpmPackage`.
+`pi/npm-shrinkwrap.json` is a copy of the `npm-shrinkwrap.json` bundled inside
+the `@earendil-works/pi-coding-agent` release tarball, with one change: pi
+references its own sibling packages (`@earendil-works/pi-tui`, `pi-ai`,
+`pi-agent-core`) without `integrity` fields, which breaks offline `npm ci`, so
+those three integrities are patched in from the registry. `nix/tests/pkgs.nix`
+swaps this file into the source before fetching deps.
 
-Regenerating a lockfile (after bumping the version in package.json):
-
-```sh
-cd nix/tests/npm/<name>
-npm install --package-lock-only --ignore-scripts
-```
-
-pi only: `@earendil-works/pi-coding-agent` ships an npm-shrinkwrap, so npm
-records its three bundled `@earendil-works/*` nested deps without `integrity`
-fields, which `prefetch-npm-deps` rejects. Patch them from the registry:
+Regenerating (after bumping the version in `pkgs.nix`):
 
 ```sh
+V=0.80.10
+cd /tmp
+curl -sL "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-$V.tgz" -o pi.tgz
+tar xzf pi.tgz
 python3 - <<'EOF'
 import json, urllib.request
-p = "package-lock.json"
-d = json.load(open(p))
+d = json.load(open("package/npm-shrinkwrap.json"))
 for k, v in d["packages"].items():
-    if k and "integrity" not in v and "resolved" in v:
+    if k and "integrity" not in v and v.get("resolved", "").startswith("http"):
         name = k.split("node_modules/")[-1]
         meta = json.load(urllib.request.urlopen(
             f"https://registry.npmjs.org/{name}/{v['version']}"))
         v["integrity"] = meta["dist"]["integrity"]
-json.dump(d, open(p, "w"), indent=2)
+json.dump(d, open("out.json", "w"), indent=2)
 EOF
+cp out.json <repo>/nix/tests/npm/pi/npm-shrinkwrap.json
+nix run nixpkgs#prefetch-npm-deps -- out.json   # -> npmDepsHash in pkgs.nix
 ```
 
-Then refresh the hash in `nix/tests/pkgs.nix`:
-
-```sh
-nix run nixpkgs#prefetch-npm-deps -- ./package-lock.json
-```
+The tarball hash in `pkgs.nix` comes from
+`nix-prefetch-url <tarball-url> | xargs nix hash to-sri --type sha256`.
