@@ -46,6 +46,14 @@ for r in records_with_label(recs, "pi"):
 # per-session pointer files exist in the write-only input dir.
 as_user(f"test -n \"$(ls {CORRAL}/input/registry/)\"")
 
+# Model exposure: pi runs the stub provider's `smoke` model, so both the vetted
+# record and the live config_options_update broadcast carry "stub/smoke".
+for r in records_with_label(recs, "pi"):
+    assert r.get("model") == "stub/smoke", f"record missing model: {r}"
+model_res = json.loads(acp(f"model {sock_a} 20"))
+assert model_res.get("model") == "stub/smoke", \
+    f"pi did not broadcast the model: {model_res}"
+
 # --- 2. a plain turn: running -> idle -----------------------------------
 acp(f"prompt {sock_a} {sid_a} 'smoke:reply operator-turn'")
 acp(f"state {sock_a} idle 30")

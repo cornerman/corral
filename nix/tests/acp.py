@@ -9,6 +9,8 @@ Usage:
   acp.py state <socket> <want> [secs]  -> wait until a state_update reports
                                           <want> (running|idle|requires_action);
                                           prints {"ok":true,"state":...}
+  acp.py model <socket> [secs]         -> wait for a config_options_update model
+                                          broadcast; prints {"ok":true,"model":..}
   acp.py prompt <socket> <sid> <text>  -> send session/prompt (fire-and-forget)
 
 Ground truth for the rest (records, focus, windows) is read directly by the
@@ -93,6 +95,38 @@ def cmd_state(path, want, secs):
     sys.exit(1)
 
 
+def cmd_model(path, secs):
+    # Wait for the config_options_update seed carrying the model option (sent on
+    # connect, like state_update). Read every line without rpc() so the seed is
+    # not discarded while awaiting the init reply.
+    deadline = time.time() + secs
+    s = connect(path, timeout=secs + 2)
+    send(s, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    buf = b""
+    while time.time() < deadline:
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            upd = msg.get("params", {}).get("update", {})
+            if upd.get("sessionUpdate") == "config_options_update":
+                for o in upd.get("configOptions", []):
+                    if o.get("category") == "model":
+                        print(json.dumps({"ok": True,
+                                          "model": o.get("currentValue")}))
+                        return
+    print(json.dumps({"ok": False}))
+    sys.exit(1)
+
+
 def cmd_prompt(path, sid, text):
     s = connect(path)
     rpc(s, "initialize", {}, 1)
@@ -119,6 +153,9 @@ if __name__ == "__main__":
     elif op == "state":
         cmd_state(sys.argv[2], sys.argv[3],
                   int(sys.argv[4]) if len(sys.argv) > 4 else 15)
+    elif op == "model":
+        cmd_model(sys.argv[2],
+                  int(sys.argv[3]) if len(sys.argv) > 3 else 15)
     elif op == "prompt":
         cmd_prompt(sys.argv[2], sys.argv[3], sys.argv[4])
     elif op == "cancel":
