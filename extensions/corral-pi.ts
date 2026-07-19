@@ -81,6 +81,10 @@ export default function (pi: ExtensionAPI) {
 	// as the standard state_update session/update so corral (and any ACP client)
 	// can column the agent without polling.
 	let currentState: "running" | "idle" | "requires_action" = "idle";
+	// Current model as "<provider>/<id>" (e.g. anthropic/claude-opus-4), or
+	// undefined before pi resolves one. Broadcast as an ACP config option and
+	// persisted in the record so a dormant card shows its last-known model.
+	let currentModel: string | undefined;
 	// toolCallId of an in-flight `question` tool: while it runs, the agent is
 	// blocked on the user, which is requires_action.
 	let questionCallId: string | undefined;
@@ -318,6 +322,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
 		currentCtx = ctx;
+		currentModel = modelString(ctx);
 		currentState = "idle";
 		questionCallId = undefined;
 		lastTitle = undefined;
@@ -339,6 +344,11 @@ export default function (pi: ExtensionAPI) {
 			// Seed the new client with the current state so it can column us at once.
 			if (currentCtx && !conn.destroyed) {
 				conn.write(sessionUpdateLine({ sessionUpdate: "state_update", state: currentState }));
+			}
+			// Seed the model too, so a card shows it before the first change.
+			if (currentModel) {
+				const line = modelConfigLine();
+				if (line && !conn.destroyed) conn.write(line);
 			}
 			let buf = "";
 			conn.on("data", (chunk) => {
@@ -362,6 +372,15 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => stop());
+
+	// The model changed (/model, cycle, restore): refresh clients and persist so
+	// a dormant card shows the last-known model.
+	pi.on("model_select", async (event, ctx) => {
+		currentCtx = ctx;
+		currentModel = `${event.model.provider}/${event.model.id}`;
+		broadcastModel();
+		if (currentCtx) writeRegistry(currentCtx, socketPath ?? null);
+	});
 
 	// --- outgoing: agent activity -> session/update broadcasts ---
 
@@ -467,6 +486,42 @@ export default function (pi: ExtensionAPI) {
 	function broadcastState() {
 		if (clients.size === 0 || !currentCtx) return;
 		const line = sessionUpdateLine({ sessionUpdate: "state_update", state: currentState });
+		for (const c of clients) {
+			if (!c.destroyed) c.write(line);
+		}
+	}
+
+	// The current model as "<provider>/<id>" from ctx.model, or undefined when pi
+	// has not resolved one. corral shows it verbatim (never prettified).
+	function modelString(ctx: ExtensionContext): string | undefined {
+		const m = ctx.model;
+		if (!m?.provider || !m?.id) return undefined;
+		return `${m.provider}/${m.id}`;
+	}
+
+	// Broadcast the current model as an ACP Session Config Option (category
+	// "model"). corral reads currentValue for display only; it never selects a
+	// model, so the selectable options[] is omitted. Sent on model_select and as
+	// a per-connection seed.
+	function modelConfigLine(): string | undefined {
+		if (!currentCtx || !currentModel) return undefined;
+		return sessionUpdateLine({
+			sessionUpdate: "config_options_update",
+			configOptions: [
+				{
+					id: "model",
+					name: "Model",
+					category: "model",
+					type: "select",
+					currentValue: currentModel,
+				},
+			],
+		});
+	}
+
+	function broadcastModel() {
+		const line = modelConfigLine();
+		if (!line) return;
 		for (const c of clients) {
 			if (!c.destroyed) c.write(line);
 		}
@@ -696,6 +751,10 @@ export default function (pi: ExtensionAPI) {
 			spawnCommand: ["pi"],
 			resumeCommand: ["pi", "--session", "{sessionId}"],
 			hidden,
+			// Last-known model as "<provider>/<id>", so a dormant card shows it.
+			// An undefined value is dropped by JSON.stringify, so no `model` key
+			// is written when unknown (matching corral's Option<String> parse).
+			model: currentModel,
 			lastSeen: new Date().toISOString(),
 		};
 		const tmp = `${recordFile}.${process.pid}.tmp`;
