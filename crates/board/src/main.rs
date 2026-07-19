@@ -719,6 +719,10 @@ fn run(
                                 ),
                                 ui::FooterAction::Quit => break,
                             }
+                        } else if ui::filter_hit_test(area, m.column, m.row) {
+                            // Click on the filter field focuses it (GUI parity).
+                            status.clear();
+                            filtering = true;
                         } else {
                             let scroll = std::array::from_fn(|i| list_states[i].offset());
                             if let Some(idx) = ui::hit_test(area, board, m.column, m.row, scroll) {

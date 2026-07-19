@@ -113,6 +113,29 @@ fn centered(area: Rect, pw: u16, ph: u16) -> Rect {
     .split(v[1])[1]
 }
 
+/// The centered filter field rect (input row + underline) inside `area`, the
+/// same geometry `render_filter` draws, so a click test cannot drift from what
+/// is shown.
+fn filter_field(area: Rect) -> Rect {
+    let strip = filter_area(area);
+    let w = ((strip.width as u32 * 7 / 10) as u16).clamp(30.min(strip.width), strip.width);
+    let x = strip.x + strip.width.saturating_sub(w) / 2;
+    Rect {
+        x,
+        y: strip.y + 1,
+        width: w,
+        height: 2,
+    }
+}
+
+/// True when the mouse cell (col,row) lands on the filter field, so a left
+/// click there focuses it (parity with the GUI). Shares `filter_field`'s
+/// geometry with the renderer.
+pub fn filter_hit_test(area: Rect, col: u16, row: u16) -> bool {
+    let f = filter_field(area);
+    col >= f.x && col < f.x + f.width && row >= f.y && row < f.y + f.height
+}
+
 /// Draw the inline content filter on the row above the footer: `/` plus the
 /// query, with a block cursor while editing. Draws nothing when idle and empty,
 /// so the status line shows through.
@@ -132,17 +155,10 @@ pub fn render_filter(frame: &mut Frame, filter: &str, filtering: bool) {
         ))),
         mark,
     );
-    // A centered field, prominent like a launcher's input line.
-    let w = ((area.width as u32 * 7 / 10) as u16).clamp(30.min(area.width), area.width);
-    let x = area.x + area.width.saturating_sub(w) / 2;
-    // The field is just the input row + its underline; the remaining reserved
-    // rows are empty space under it.
-    let field = Rect {
-        x,
-        y: area.y + 1, // a blank row of padding above the filter
-        width: w,
-        height: 2,
-    };
+    // A centered field, prominent like a launcher's input line. The field is
+    // just the input row + its underline; the remaining reserved rows are empty
+    // space under it. Shared with `filter_hit_test` via `filter_field`.
+    let field = filter_field(frame.area());
     // Bright border while editing, dim otherwise; the box is always shown.
     let border = if filtering {
         Style::default()
