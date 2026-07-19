@@ -107,6 +107,12 @@ pub struct Agent {
     /// record on both live and dormant agents; the board shows a `hidden`
     /// badge on a live hidden card and reveals it by resume instead of focus.
     pub hidden: bool,
+    /// The LLM model this agent runs, `"<provider>/<id>"` (e.g.
+    /// `anthropic/claude-opus-4`). Live agents refresh it from a
+    /// `config_options_update` broadcast; `sync_registry` also stamps the
+    /// record's last-known model onto both live and dormant agents. Shown
+    /// verbatim in the footer for the selected card. `None` until reported.
+    pub model: Option<String>,
     /// When this agent entered its current state. Runtime timing, not from the
     /// record and not persisted: `Board::apply` sets it from the update stream.
     /// Orders the Requires Action / Idle columns by time-in-state (longest
@@ -224,6 +230,9 @@ pub enum Update {
     /// The current tool activity (from a `tool_call` broadcast): a short
     /// summary like "edit model.rs" shown on the card.
     SetActivity(PathBuf, String),
+    /// The current model (from a `config_options_update` broadcast): a
+    /// `"provider/id"` string shown in the footer for the selected card.
+    SetModel(PathBuf, String),
     /// The socket closed or refused: the agent is gone.
     Gone(PathBuf),
 }
@@ -274,6 +283,11 @@ impl Board {
                 if let Some(a) = self.live.get_mut(&path) {
                     a.activity = Some(activity);
                     a.last_activity = Instant::now();
+                }
+            }
+            Update::SetModel(path, model) => {
+                if let Some(a) = self.live.get_mut(&path) {
+                    a.model = Some(model);
                 }
             }
             Update::Gone(path) => {
@@ -338,6 +352,7 @@ impl Board {
                 gui: e.gui,
                 message_flag: e.message_flag.clone(),
                 hidden: e.hidden,
+                model: e.model.clone(),
                 // Dormant cards order by record age (set below), not by these
                 // runtime clocks, so a placeholder now() is fine.
                 state_since: Instant::now(),
@@ -363,6 +378,14 @@ impl Board {
                     a.gui = e.gui;
                     a.message_flag = e.message_flag.clone();
                     a.hidden = e.hidden;
+                    // The record carries the last-known model; the socket
+                    // refreshes it live via config_options_update. Stamp the
+                    // record value only when the live agent has no model yet,
+                    // so a fresher live broadcast is never overwritten by a
+                    // staler record value.
+                    if a.model.is_none() {
+                        a.model = e.model.clone();
+                    }
                 }
             }
         }
@@ -460,9 +483,36 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            model: None,
             state_since: Instant::now(),
             last_activity: Instant::now(),
         }
+    }
+
+    #[test]
+    fn set_model_updates_live_agent() {
+        let mut b = Board::default();
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Idle))));
+        b.apply(Update::SetModel(
+            PathBuf::from("/s/pi-1.sock"),
+            "anthropic/claude-opus-4".into(),
+        ));
+        assert_eq!(
+            b.in_state(State::Idle)[0].model.as_deref(),
+            Some("anthropic/claude-opus-4")
+        );
+    }
+
+    #[test]
+    fn dormant_agent_inherits_model_from_record() {
+        let mut b = Board::default();
+        let mut rec = dormant_record("q1", "/tmp/q", "2026-06-01T00:00:00Z");
+        rec.model = Some("anthropic/claude-sonnet-4".into());
+        b.sync_registry(&[rec], &HashSet::new());
+        assert_eq!(
+            b.dormant()[0].model.as_deref(),
+            Some("anthropic/claude-sonnet-4")
+        );
     }
 
     #[test]
