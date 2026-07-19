@@ -1253,6 +1253,13 @@ impl Board {
                     None => item.into(),
                 }
             };
+        // The selected card's model, display-only (parity with the TUI footer),
+        // pushed to the far end of the row by a Fill spacer.
+        let model_text = self
+            .selected_agent()
+            .and_then(|a| a.model.as_deref())
+            .map(|m| format!("model: {m}"))
+            .unwrap_or_default();
         // Same keys, order and keycap styling as the TUI footer (ui.rs
         // footer_items / footer_layout). Verbs shared with the context menu
         // come from MenuAction::label so footer and menu cannot drift.
@@ -1273,6 +1280,8 @@ impl Board {
                 Some(Message::ToggleHidden)
             ),
             hint("q", "quit", Some(Message::Quit)),
+            Space::with_width(Length::Fill),
+            text(model_text).size(13).color(dim),
         ]
         .spacing(14)
         .align_y(Alignment::Center)
