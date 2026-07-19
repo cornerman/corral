@@ -730,6 +730,7 @@ pub fn render(
     status: &str,
     states: &mut [ListState; 4],
     meta: &CardMeta,
+    model: Option<&str>,
 ) {
     let footer_area = footer_rect(frame.area());
     let cols = column_layout(frame.area());
@@ -760,15 +761,27 @@ pub fn render(
         );
     }
 
-    // Status (if any) on the spacer row above; the footer row holds the
-    // clickable key hints at a fixed position (so clicks map, and a status
-    // message never shifts them).
+    // The spacer row above the footer carries a transient action status on the
+    // left and the selected card's model on the right (display-only; corral
+    // never selects a model). Both dim so the columns stay the focus; the
+    // footer row below keeps the clickable key hints at a fixed position.
+    let spacer = Rect {
+        y: footer_area.y.saturating_sub(1),
+        ..footer_area
+    };
     if !status.is_empty() {
-        let spacer = Rect {
-            y: footer_area.y.saturating_sub(1),
-            ..footer_area
-        };
         frame.render_widget(Paragraph::new(Line::from(status.dim())), spacer);
+    }
+    if let Some(m) = model {
+        let text = format!("model: {m}");
+        let w = text.chars().count() as u16;
+        let right = Rect {
+            x: spacer.x + spacer.width.saturating_sub(w),
+            y: spacer.y,
+            width: w.min(spacer.width),
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(Line::from(text.dim())), right);
     }
     let (spans, _) = footer_layout();
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_area);
@@ -808,6 +821,7 @@ mod tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            model: None,
             state_since: std::time::Instant::now(),
             last_activity: std::time::Instant::now(),
         })));
@@ -892,6 +906,7 @@ mod card_tests {
             gui: false,
             message_flag: None,
             hidden: false,
+            model: None,
             state_since: std::time::Instant::now(),
             last_activity: std::time::Instant::now(),
         }
