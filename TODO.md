@@ -31,6 +31,12 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
       Stop-block / asyncRewake hook delivery paths. cursor (unfree) must verify
       the extension announce and the state hooks. Turn each scenario's
       best-effort logs into hard asserts as it is validated on a real run.
+- [ ] CI gating for the unvalidated scenarios. `.github/workflows/ci.yml` runs
+      all four e2e checks in a matrix; only `e2e-pi` is proven green. Until
+      opencode/claude/cursor are validated on real hardware, decide whether to
+      mark those three `continue-on-error` (so only `e2e-pi` gates the merge)
+      and promote each to gating as it goes green, versus letting the whole
+      matrix gate now (likely red on the three heavy/unfree scenarios).
 
 ## Harness Registration
 
