@@ -30,6 +30,30 @@ pub fn parse_state_notification(line: &str) -> Option<State> {
     State::from_wire(update.get("state")?.as_str()?)
 }
 
+/// Extract the current model from an ACP `config_options_update` session/update
+/// (agentclientprotocol.com — Session Config Options). Returns the
+/// `currentValue` of the option whose `category` is `"model"`, else `None`.
+/// corral is display-only, so it reads only the current value and ignores the
+/// selectable `options`/`type`. Pure, unit tested.
+pub fn parse_config_model(line: &str) -> Option<String> {
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("method")? != "session/update" {
+        return None;
+    }
+    let update = msg.get("params")?.get("update")?;
+    if update.get("sessionUpdate")? != "config_options_update" {
+        return None;
+    }
+    update
+        .get("configOptions")?
+        .as_array()?
+        .iter()
+        .find(|o| o.get("category").and_then(|c| c.as_str()) == Some("model"))
+        .and_then(|o| o.get("currentValue"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
 /// Extract a title change from a `session_info_update` notification. Returns
 /// `Some(new_title)` (which may itself be `None`, meaning cleared) if the line
 /// is that notification, else `None`. Pure.
@@ -158,6 +182,11 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
     // DEFAULT_STATE; without this the card is stuck Idle until the next real
     // transition. A stateless agent keeps DEFAULT_STATE.
     let mut seed_state = DEFAULT_STATE;
+    // Like seed_state: the extension sends its config_options_update model seed
+    // BEFORE the session/list reply, so it is read before the agent exists in
+    // the board. A SetModel for an absent socket is dropped, so stash the seed
+    // and stamp it onto the Upsert instead. None until the first broadcast.
+    let mut seed_model: Option<String> = None;
 
     loop {
         line.clear();
@@ -190,6 +219,9 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 gui: false,
                 message_flag: None,
                 hidden: false,
+                // Seeded from the config_options_update the extension sends on
+                // connect (stashed below), else None until the first broadcast.
+                model: seed_model.clone(),
                 // Clocks start at seed time; Board::apply keeps them across a
                 // reconnect and resets state_since on the next transition.
                 state_since: std::time::Instant::now(),
@@ -207,6 +239,16 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 let _ = tx.send(Update::SetState(entry.path.clone(), state));
             } else {
                 seed_state = state;
+            }
+            continue;
+        }
+        // Live model change; before the Upsert stash it for the seed instead of
+        // emitting a SetModel that would be dropped.
+        if let Some(model) = parse_config_model(&line) {
+            if seeded {
+                let _ = tx.send(Update::SetModel(entry.path.clone(), model));
+            } else {
+                seed_model = Some(model);
             }
             continue;
         }
@@ -278,6 +320,52 @@ mod tests {
         // Not a tool_call.
         let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
         assert_eq!(parse_tool_call(state), None);
+    }
+
+    #[test]
+    fn parses_config_model() {
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"config_options_update","configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"anthropic/claude-opus-4"}]}}}"#;
+        assert_eq!(
+            parse_config_model(line).as_deref(),
+            Some("anthropic/claude-opus-4")
+        );
+        // No model-category option present -> None.
+        let other = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"config_options_update","configOptions":[{"id":"mode","category":"mode","currentValue":"ask"}]}}}"#;
+        assert_eq!(parse_config_model(other), None);
+        // Not a config_options_update.
+        let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
+        assert_eq!(parse_config_model(state), None);
+        assert_eq!(parse_config_model("not json"), None);
+    }
+
+    #[test]
+    fn preseed_model_lands_on_upsert() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc::channel;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("pi-1.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (tx, rx) = channel();
+        let entry = SocketEntry {
+            path: sock.clone(),
+            pid: 1,
+            label: "pi".into(),
+        };
+        let h = spawn(entry, tx);
+        let (mut conn, _) = listener.accept().unwrap();
+        // Model config seed BEFORE the session/list reply (the real order).
+        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"config_options_update\",\"configOptions\":[{\"id\":\"model\",\"category\":\"model\",\"currentValue\":\"anthropic/claude-opus-4\"}]}}}\n").unwrap();
+        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"sessions\":[{\"sessionId\":\"s\",\"title\":\"t\",\"cwd\":\"/tmp\"}]}}\n").unwrap();
+        let upsert = loop {
+            match rx.recv().unwrap() {
+                Update::Upsert(a) => break a,
+                _ => continue,
+            }
+        };
+        assert_eq!(upsert.model.as_deref(), Some("anthropic/claude-opus-4"));
+        drop(conn);
+        let _ = h.join();
     }
 
     #[test]
