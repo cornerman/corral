@@ -86,6 +86,9 @@ const controlSocketPath = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 let title: string | null = null;
 let lastTitle: string | null | undefined;
 let currentState: "running" | "idle" | "requires_action" = "idle";
+// Current model, as reported by Claude hook payloads (a bare id string). Shown
+// verbatim in corral's footer and persisted so a dormant card shows it.
+let currentModel: string | undefined;
 // Record file in the workdir's .corral/registry/; corrald authenticates by its
 // physical location (physical-location identity).
 let recordFile: string | undefined;
@@ -156,6 +159,37 @@ function setState(next: "running" | "idle" | "requires_action") {
 	if (currentState === next) return;
 	currentState = next;
 	broadcast({ sessionUpdate: "state_update", state: currentState });
+}
+// UNVERIFIED: Claude hook payloads carry a `model` field. Guarded so a missing
+// field just leaves the model unreported. Claude reports a bare id string;
+// keep it verbatim (corral shows it as-is).
+function setModelFromHook(payload: Record<string, unknown>) {
+	const m = payload.model;
+	if (typeof m === "string" && m && m !== currentModel) {
+		currentModel = m;
+		broadcastModel();
+	}
+}
+// Broadcast the current model as an ACP Session Config Option (category
+// "model"). corral reads currentValue for display only; options[] is omitted
+// (corral never selects a model). Mirrors the pi adapter.
+function modelConfigLine(): string | undefined {
+	if (!currentModel) return undefined;
+	return acpUpdateLine({
+		sessionUpdate: "config_options_update",
+		configOptions: [
+			{ id: "model", name: "Model", category: "model", type: "select", currentValue: currentModel },
+		],
+	});
+}
+function broadcastModel() {
+	const line = modelConfigLine();
+	if (!line) return;
+	for (const c of acpClients) {
+		try {
+			c.write(line);
+		} catch {}
+	}
 }
 function setTitleIfChanged(next: string | null) {
 	title = next;
@@ -273,6 +307,8 @@ function handleControl(line: string, conn: Sock) {
 	const ev = req.event ?? {};
 	const name = String(ev.hook_event_name ?? "");
 	touchRegistry();
+	// Every hook payload carries the model; refresh from whichever event fires.
+	setModelFromHook(ev);
 	switch (name) {
 		case "SessionStart":
 			applyTitle(ev.session_title);
@@ -385,6 +421,9 @@ function writeRegistry() {
 			// accepts the trailing prompt in interactive mode.
 			spawnCommand: ["claude"],
 			resumeCommand: ["claude", "--resume", "{sessionId}"],
+			// Last-known model (undefined dropped by JSON.stringify), so a dormant
+			// card shows it.
+			model: currentModel,
 			// A hidden spawn runs inside a headless cage; corral sets
 			// CORRAL_HIDDEN=1 there. Record it so the board reveals by resume.
 			hidden: process.env.CORRAL_HIDDEN === "1",
@@ -446,6 +485,8 @@ try {
 		// Seed the new client with current state so corral columns us at once.
 		try {
 			sock.write(acpUpdateLine({ sessionUpdate: "state_update", state: currentState }));
+			const line = modelConfigLine();
+			if (line) sock.write(line);
 		} catch {}
 	});
 	controlServer = lineServer(controlSocketPath, handleControl);
