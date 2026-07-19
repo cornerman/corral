@@ -62,6 +62,13 @@ pub struct RegistryEntry {
     /// per label wins. The string is adapter code, not model output. Absent
     /// for older/unknown producers.
     pub description: Option<String>,
+    /// The LLM model this session runs, as `"<provider>/<id>"` (e.g.
+    /// `anthropic/claude-opus-4`). Written by the adapter so a selected
+    /// dormant card shows its last-known model; live cards refresh it over the
+    /// socket (a `config_options_update` broadcast). Verbatim adapter string,
+    /// shown as-is (corral never prettifies). Absent for a producer that does
+    /// not report a model.
+    pub model: Option<String>,
 }
 
 impl RegistryEntry {
@@ -119,6 +126,7 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         message_flag: str_field("messageFlag"),
         hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
         description: str_field("description"),
+        model: str_field("model"),
     })
 }
 
@@ -207,6 +215,19 @@ pub fn parse_socket_filename(name: &str) -> Option<(String, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_field_parses_and_defaults_none() {
+        let e = parse_registry_json(r#"{"sessionId":"s1","model":"anthropic/claude-opus-4"}"#)
+            .unwrap();
+        assert_eq!(e.model.as_deref(), Some("anthropic/claude-opus-4"));
+        // Absent -> None (older/unknown producer).
+        let e = parse_registry_json(r#"{"sessionId":"s2"}"#).unwrap();
+        assert_eq!(e.model, None);
+        // Non-string -> None (never a garbled value).
+        let e = parse_registry_json(r#"{"sessionId":"s3","model":42}"#).unwrap();
+        assert_eq!(e.model, None);
+    }
 
     #[test]
     fn session_id_charset_is_strict() {

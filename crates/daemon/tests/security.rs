@@ -362,6 +362,7 @@ fn mk_rec(sid: &str, socket: Option<&str>) -> RegistryEntry {
         message_flag: None,
         hidden: false,
         description: None,
+        model: None,
     }
 }
 

@@ -147,6 +147,7 @@ pub fn vet(dir: &str, file_stem: &str, mut rec: RegistryEntry) -> Option<Registr
     rec.cwd = Some(dir.to_string());
     rec.title = rec.title.map(sanitize);
     rec.description = rec.description.map(sanitize);
+    rec.model = rec.model.map(sanitize);
     Some(rec)
 }
 
@@ -288,6 +289,7 @@ mod tests {
             message_flag: None,
             hidden: false,
             description: None,
+            model: None,
         }
     }
 

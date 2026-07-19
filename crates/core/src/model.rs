@@ -497,6 +497,7 @@ mod tests {
             message_flag: None,
             hidden: true,
             description: None,
+            model: None,
         };
         b.sync_registry(&[rec], &HashSet::new());
         let live = b.in_state(State::Running);
@@ -531,6 +532,7 @@ mod tests {
             message_flag: None,
             hidden: false,
             description: None,
+            model: None,
         }
     }
 
@@ -555,6 +557,7 @@ mod tests {
             message_flag: Some("--message".into()),
             hidden: false,
             description: None,
+            model: None,
         };
         board.sync_registry(&[rec], &HashSet::new());
         let dormant = board.dormant();

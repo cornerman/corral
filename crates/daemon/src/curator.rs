@@ -151,7 +151,29 @@ fn record_json(rec: &corral_core::discovery::RegistryEntry) -> Result<String, se
     if let Some(d) = &rec.description {
         m.insert("description".into(), d.clone().into());
     }
+    if let Some(m2) = &rec.model {
+        m.insert("model".into(), m2.clone().into());
+    }
     serde_json::to_string_pretty(&serde_json::Value::Object(m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_json_includes_model_when_set() {
+        let mut rec = corral_core::discovery::parse_registry_json(
+            r#"{"sessionId":"s1","model":"anthropic/claude-opus-4"}"#,
+        )
+        .unwrap();
+        rec.cwd = Some("/tmp/p".into());
+        let json = record_json(&rec).unwrap();
+        assert!(json.contains("\"model\": \"anthropic/claude-opus-4\""));
+        // Absent model is omitted, not written as null.
+        rec.model = None;
+        assert!(!record_json(&rec).unwrap().contains("model"));
+    }
 }
 
 #[cfg(unix)]

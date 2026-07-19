@@ -475,6 +475,7 @@ mod tests {
             message_flag: None,
             hidden: false,
             description: desc.map(String::from),
+            model: None,
         }
     }
 

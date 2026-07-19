@@ -228,6 +228,7 @@ mod tests {
             message_flag: None,
             hidden: false,
             description: None,
+            model: None,
         }
     }
 
