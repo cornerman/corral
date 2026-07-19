@@ -35,8 +35,9 @@
   "network": {
     // Reach the stub LLM on localhost only. Filesystem, not network, is the
     // isolation axis under test, so this stays deliberately narrow.
+    // open_port/allow_port/port_allow are aliases of ONE field -- listing more
+    // than one is a parse error, so use exactly one.
     "allow_domain": ["127.0.0.1", "localhost"],
-    "allow_port": [6556],
-    "port_allow": [6556]
+    "open_port": [6556]
   }
 }

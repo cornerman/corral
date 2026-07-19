@@ -55,7 +55,7 @@ if announced:
                       timeout=90, desc="live pi record")
     sock_a = next(r["socket"] for r in records_with_label(pa, "pi") if r.get("socket"))
     sid_a = next(r.get("sessionId", "") for r in records_with_label(pa, "pi"))
-    as_user(f"mkdir -p {CORRAL}; echo '{PROJ_A} -> {PROJ_O}' >> {CORRAL}/whitelist")
+    as_user(f"mkdir -p {CORRAL}/state; echo '{PROJ_A} -> {PROJ_O}' >> {CORRAL}/state/whitelist")
     stub_post_rule(json.dumps({
         "match": "smoke:msg-o", "tool": "corral_message_agent",
         "args": {"target_dir": PROJ_O, "message": "cross-kind-hi"}}))

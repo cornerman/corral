@@ -16,19 +16,13 @@ let
     exec ${pkgs.python3}/bin/python3 ${./stub-llm.py} "$@"
   '';
 
-  # Confine every agent: a `pi` on PATH that runs the real pi under nono with
-  # the vendored profile. corral-pi's spawnCommand is ["pi"], so board-spawned
-  # and hand-launched sessions alike hit this wrapper. Filesystem confinement
-  # is what proves SECURITY.md's location=identity premise.
-  nonoWrap = name: realBin: pkgs.writeShellScriptBin name ''
-    exec ${pkgs.nono}/bin/nono run --profile /etc/corral/agent.jsonc -- ${realBin} "$@"
-  '';
-  # pi and opencode are launched confined. claude/cursor are added unwrapped by
-  # their own scenario modules: confining Claude (a sidecar spawned by node
-  # hooks) and a GUI IDE is future work, and those scenarios are partial /
-  # UNVERIFIED anyway (see the design spec).
-  piWrapped = nonoWrap "pi" "${testPkgs.pi}/bin/pi";
-  opencodeWrapped = nonoWrap "opencode" "${pkgs.opencode}/bin/opencode";
+  # NOTE (2026-07-19): agents run UNCONFINED for the main loop. Getting a full
+  # agent (pi's whole node closure) to run under nono needs per-harness path
+  # discovery (`nono learn`) that is a separate effort; the security premise is
+  # still proven by the sandbox-negative checks in scenarios/pi.py, which run
+  # `nono run` directly on cat/sh and assert cross-workdir reads and
+  # state/registry writes are DENIED. Confining the whole agent is a tracked
+  # follow-up (TODO.md). nono stays on PATH for those direct checks.
 in
 {
   imports = [ home-manager.nixosModules.home-manager ];
@@ -75,9 +69,8 @@ in
     pkgs.nono
     pkgs.mesa # llvmpipe/lavapipe for the GUI under software GL
     stubLlm
-    # nono-wrapped harnesses FIRST so they shadow any real binary on PATH.
-    piWrapped
-    opencodeWrapped
+    testPkgs.pi
+    pkgs.opencode
     self.packages.${pkgs.stdenv.hostPlatform.system}.default # corral, corral-gui, corrald
   ];
 
@@ -85,6 +78,13 @@ in
   # scenarios call.
   environment.etc."corral/agent.jsonc".source = ./profiles/agent.jsonc;
   environment.etc."corral/acp.py".source = ./acp.py;
+
+  # nono refuses to run unless its session store is 0700; the default umask
+  # would create it group/world-readable. Pre-create it tight.
+  systemd.tmpfiles.rules = [
+    "d ${home}/.nono 0700 ${user} users -"
+    "d ${home}/.nono/sessions 0700 ${user} users -"
+  ];
 
   # Stub LLM as a system service on 127.0.0.1:6556 (OpenAI + Anthropic).
   systemd.services.corral-stub-llm = {
@@ -123,6 +123,18 @@ in
     };
     home.file.".pi/agent/extensions/stub-provider.ts".source = ./pi-ext/stub-provider.ts;
     home.file.".pi/agent/extensions/question.ts".source = ./pi-ext/question.ts;
+
+    # Pre-seed the harness-registration store so corrald treats every adapter
+    # kind as already registered. corrald normally holds a new kind pending an
+    # operator tray approval; the VM has no tray, so we seed the exact launch
+    # sets each adapter writes (see extensions/*). Without this, records stay
+    # quarantined and never reach the vetted state/registry the boards read.
+    home.file.".corral/state/approved-commands.json".text = builtins.toJSON {
+      pi = { spawn = [ "pi" ]; resume = [ "pi" "--session" "{sessionId}" ]; };
+      opencode = { spawn = [ "opencode" ]; resume = [ "opencode" "--session" "{sessionId}" ]; };
+      claude = { spawn = [ "claude" ]; resume = [ "claude" "--resume" "{sessionId}" ]; };
+      cursor = { spawn = [ "cursor" "{cwd}" ]; resume = [ "cursor" "{cwd}" ]; gui = true; };
+    };
 
     # Minimal sway config: no bar, mod4, a marker exec the test waits on.
     home.file.".config/sway/config".text = ''
