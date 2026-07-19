@@ -880,28 +880,64 @@ impl Board {
 
     fn board_view(&self, s: &Base16) -> Element<'_, Message> {
         let dim = s.base[3];
-        let fg = s.base[5];
 
-        // Top row: "corral" wordmark left, filter centered, status right.
-        let wordmark = container(text("corral").size(15).color(dim))
-            .width(Length::Fill)
-            .align_y(Alignment::Center);
-        // Modern, minimal: no box, just a thin underline (like the TUI and the
-        // old GUI). iced's text_input border is uniform, so the field is drawn
-        // frameless and a 1px line sits beneath it.
-        let underline = s.base[2];
+        // Top row: the ∴ pen-mark logo left, filter centered, status right. The
+        // logo lives here (not the footer) as the single brand mark; the Fill
+        // width keeps it a left spacer balancing the right-side status so the
+        // filter stays centered.
+        let wordmark = container(
+            canvas(Mark { color: dim })
+                .width(Length::Fixed(16.0))
+                .height(Length::Fixed(16.0)),
+        )
+        .width(Length::Fill)
+        .align_y(Alignment::Center);
+        // Minimal: a thin underline, no box — the underline brightens on focus,
+        // like the TUI. iced's border is uniform (all four sides), so the
+        // underline is a separate bar beneath the field, and a bar cannot read
+        // the field's focus status. Our own `self.filtering` flag misses
+        // click-to-focus (the field captures the click without a message), so
+        // the field's style closure (which sees the real `Status`) writes the
+        // focus into a shared cell that the underline's style closure reads in
+        // the same draw pass: the field draws before the bar beneath it, so the
+        // read sees the current frame's write.
+        let focus = std::rc::Rc::new(std::cell::Cell::new(false));
+        let focus_w = focus.clone();
+        let (dim, faint, fg, blue) = (s.base[3], s.base[2], s.base[5], s.accent[Base16::BLUE]);
+        let sel = Color { a: 0.35, ..blue };
         let filter_field = text_input("type to filter…", &self.filter)
             .id(filter_id())
             .on_input(Message::FilterInput)
             .on_submit(Message::FilterSubmit)
             .size(18)
             .padding(4)
-            .style(bare_input(s));
+            .style(move |_t, st| {
+                let focused = matches!(st, text_input::Status::Focused);
+                focus_w.set(focused);
+                text_input::Style {
+                    background: Background::Color(Color::TRANSPARENT),
+                    border: Border {
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: 0.0.into(),
+                    },
+                    icon: dim,
+                    // Brighter hint when focused; recede further at rest.
+                    placeholder: if focused { dim } else { faint },
+                    value: fg,
+                    selection: sel,
+                }
+            });
+        let rest = s.base[4];
         let filter = column![
             filter_field,
-            container(Space::new(Length::Fill, Length::Fixed(1.0))).style(move |_t| {
+            // Underline (constant 2px): accent-blue when focused, dim at rest.
+            // Only the color varies (thickness is fixed at build time, before
+            // the draw-time focus status is known).
+            container(Space::new(Length::Fill, Length::Fixed(2.0))).style(move |_t| {
+                let focused = focus.get();
                 container::Style {
-                    background: Some(Background::Color(underline)),
+                    background: Some(Background::Color(if focused { blue } else { rest })),
                     ..container::Style::default()
                 }
             }),
@@ -959,13 +995,14 @@ impl Board {
                     .height(Length::Fill),
             );
             // A faint hairline in the gutter separates the columns (the GUI
-            // analogue of the TUI's vertical dividers), reusing the filter's
-            // underline color so the UI has one structural-line tone.
+            // analogue of the TUI's vertical dividers), a dim structural-line
+            // tone.
             if i + 1 < Column::ALL.len() {
+                let divider = s.base[2];
                 cols = cols.push(
                     container(Space::new(Length::Fixed(1.0), Length::Fill)).style(move |_t| {
                         container::Style {
-                            background: Some(Background::Color(underline)),
+                            background: Some(Background::Color(divider)),
                             ..container::Style::default()
                         }
                     }),
@@ -1236,10 +1273,6 @@ impl Board {
                 Some(Message::ToggleHidden)
             ),
             hint("q", "quit", Some(Message::Quit)),
-            Space::new(Length::Fill, 0.0),
-            canvas(Mark { color: dim })
-                .width(Length::Fixed(14.0))
-                .height(Length::Fixed(14.0)),
         ]
         .spacing(14)
         .align_y(Alignment::Center)
@@ -1337,28 +1370,6 @@ fn compose_overlay<'a>(compose: &'a Compose, s: &Base16) -> Element<'a, Message>
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
         .into()
-}
-
-/// Frameless text-input style: transparent background, no border (the filter's
-/// underline is drawn separately). Returns a closure capturing owned colors.
-fn bare_input(s: &Base16) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
-    let (dim, fg) = (s.base[3], s.base[5]);
-    let sel = Color {
-        a: 0.35,
-        ..s.accent[Base16::BLUE]
-    };
-    move |_t, _st| text_input::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: 0.0.into(),
-        },
-        icon: dim,
-        placeholder: dim,
-        value: fg,
-        selection: sel,
-    }
 }
 
 /// Flat text-input style: a faint filled box, thin border, no rounding (used by

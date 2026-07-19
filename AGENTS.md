@@ -339,7 +339,8 @@ ratatui / iced, the daemon keeps ksni).
   filter over the four columns of fixed-height cards; single-click selects a
   card, double-click goes, right-click opens a context menu of the footer
   actions, Shift+Enter spawns the selected card's kind in
-  its dir, a bottom key-hint footer with the canvas-drawn corral mark, the same
+  its dir, the canvas-drawn corral mark top-left (the single brand mark), a
+  bottom key-hint footer, the same
   keys as the TUI — including **move mode** (Shift+Left/Right or a mouse drag →
   drop-boxes, shift-release / Enter / drop commits the `core::transition`
   action, the `→ <target> ⋯` pending badge; drag targets by `column_at_x` from
