@@ -257,11 +257,19 @@ impl Tray {
     /// Start the tray on its own thread (best-effort).
     pub fn start() -> Self {
         let (tx, commands) = mpsc::channel();
+        // `assume_sni_available` survives the boot race: corrald starts on
+        // `graphical-session.target`, often before the tray host (waybar)
+        // registers the StatusNotifierWatcher. Without this, `spawn` fails
+        // hard on the missing watcher and never retries, so the tray is gone
+        // for the whole session. With it, the watcher-absent error is soft —
+        // `spawn` succeeds and ksni's own `NameOwnerChanged` watch registers
+        // the item once the watcher appears, so the tray self-heals.
         let handle = match (CorralTray {
             tx,
             pending: None,
             pending_reg: None,
         })
+        .assume_sni_available(true)
         .spawn()
         {
             Ok(h) => Some(h),
