@@ -24,12 +24,13 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
       inside a headless `cage`, which did not come up under the VM's software
       GL. Get `cage` working headless in the test (or document the SW-GL
       limitation) and make sections 7-8 hard.
-- [ ] Run + harden the other three scenarios (answer: "later must validate as
-      well"): opencode (needs a verified stub provider config; also confirm the
-      bun-under-Landlock outcome once confined), claude (unfree; verify the
-      sidecar announce + hook delivery paths), cursor (unfree; extension
-      announce + state hooks). Turn their best-effort logs into hard asserts as
-      each is validated on a real run.
+- [ ] Run and harden the other three scenarios; each is wired and evaluates
+      but was not run in the authoring sandbox. opencode needs a verified stub
+      provider config, and should confirm the bun-under-Landlock outcome once
+      confined. claude (unfree) must verify the sidecar announce plus the
+      Stop-block / asyncRewake hook delivery paths. cursor (unfree) must verify
+      the extension announce and the state hooks. Turn each scenario's
+      best-effort logs into hard asserts as it is validated on a real run.
 
 ## Harness Registration
 
