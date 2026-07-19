@@ -1,7 +1,10 @@
 //! Routing agent-initiated messages. Messages arrive over the control socket
 //! (`control.rs`) and are enqueued here; the `Router` owns the authorization
-//! decisions and the one message awaiting an operator decision. corrald is the
-//! trusted cross-workdir bridge, so the authorization gate lives here.
+//! decisions and the messages awaiting an operator decision. Pending approvals
+//! are held in a list, each resolved independently by id, so an un-approved
+//! message never blocks an authorized (or separately approved) one behind it.
+//! corrald is the trusted cross-workdir bridge, so the authorization gate lives
+//! here.
 //!
 //! A message targets either a directory (reach whoever works there, spawning
 //! one if none) or an exact session id (reach precisely that agent, resuming it
@@ -89,7 +92,11 @@ pub struct Router {
     approved: HashSet<String>,
     /// Messages accepted over the control socket, awaiting routing.
     queue: VecDeque<Message>,
-    pending: Option<Pending>,
+    /// Messages parked awaiting an operator decision. A list, not one slot, so
+    /// an unapproved message never blocks the queue behind it: each pending
+    /// item is resolved independently by id, and an authorized message still
+    /// delivers while others wait for approval (the head-of-line-blocking fix).
+    pending: Vec<Pending>,
     /// How a `Stop` action kills its target's process (real: `kill_pid`).
     kill: Kill,
 }
@@ -105,7 +112,7 @@ impl Router {
             whitelist,
             approved: HashSet::new(),
             queue: VecDeque::new(),
-            pending: None,
+            pending: Vec::new(),
             kill,
         }
     }
@@ -115,81 +122,96 @@ impl Router {
         self.queue.push_back(msg);
     }
 
-    /// The message awaiting an operator decision, if any.
+    /// The first message awaiting an operator decision, if any (the tray shows
+    /// one at a time). Every pending message is surfaced via `pending_messages`.
     pub fn pending(&self) -> Option<&Message> {
-        self.pending.as_ref().map(|p| &p.msg)
+        self.pending.first().map(|p| &p.msg)
     }
 
-    /// Route every whitelisted or already-approved message in the queue. Stops
-    /// at the first message that needs a decision, storing it as `pending`.
-    /// Returns a status line when it acted. While a decision is pending it only
-    /// releases that message if its pair was meanwhile whitelisted, else it is a
-    /// no-op (one pending at a time). `entries` is a fresh registry scan (the daemon's view
-    /// of who is live and dormant).
+    /// Every message awaiting an operator decision, so the loop can surface each
+    /// one (a notification per pending message) and resolve any by id — no
+    /// approval hides behind another.
+    pub fn pending_messages(&self) -> impl Iterator<Item = &Message> {
+        self.pending.iter().map(|p| &p.msg)
+    }
+
+    /// A specific pending message by id, for surfacing details / auditing a
+    /// decision that may target any pending item, not just the first.
+    pub fn pending_by_id(&self, id: &str) -> Option<&Message> {
+        self.pending.iter().find(|p| p.msg.id == id).map(|p| &p.msg)
+    }
+
+    /// Route the queue: deliver every whitelisted or already-approved message,
+    /// and park the rest for approval WITHOUT blocking the queue behind them —
+    /// an authorized message still delivers this tick even while others await a
+    /// decision (the head-of-line-blocking fix). Returns a status line when it
+    /// acted. `entries` is a fresh registry scan (the daemon's view of who is
+    /// live and dormant).
     pub fn poll(&mut self, entries: &[RegistryEntry], launcher: &dyn Launcher) -> Option<String> {
-        // Release a pending message without an interactive decision if its pair
-        // was meanwhile whitelisted. This is the headless approval path: with no
-        // tray/notification/GUI, an operator edits ~/.corral/whitelist and the
-        // daemon picks it up on the next tick. Otherwise a decision is still
-        // owed, so stay put (one pending at a time).
-        if let Some(p) = self.pending.take() {
-            if is_whitelisted(&self.whitelist, &p.msg.from_cwd, &p.target_cwd) {
+        // Release any parked message whose pair was meanwhile whitelisted (the
+        // headless approval path: with no tray/notification/GUI an operator
+        // edits ~/.corral/whitelist and the daemon picks it up next tick). The
+        // rest stay parked, each still independently approvable by id.
+        let mut i = 0;
+        while i < self.pending.len() {
+            if is_whitelisted(
+                &self.whitelist,
+                &self.pending[i].msg.from_cwd,
+                &self.pending[i].target_cwd,
+            ) {
+                let p = self.pending.remove(i);
                 self.approved.insert(p.msg.id.clone());
-                self.queue.push_front(p.msg);
+                self.queue.push_back(p.msg);
             } else {
-                self.pending = Some(p);
-                return None;
+                i += 1;
             }
         }
-        let mut status = None;
+        let mut statuses = Vec::new();
         while let Some(msg) = self.queue.pop_front() {
             let Some(target_cwd) = target_cwd(&msg, entries) else {
                 // Resolvable at accept time but gone now (rare race). Drop it.
-                status = Some("route: unknown target".into());
+                statuses.push("route: unknown target".to_string());
                 continue;
             };
             let ok = self.approved.contains(&msg.id)
                 || is_whitelisted(&self.whitelist, &msg.from_cwd, &target_cwd);
             if !ok {
-                self.pending = Some(Pending { msg, target_cwd });
-                break;
+                // Park for approval, then keep draining: an authorized message
+                // behind this one must not wait on it.
+                if !self.pending.iter().any(|p| p.msg.id == msg.id) {
+                    self.pending.push(Pending { msg, target_cwd });
+                }
+                continue;
             }
-            status = Some(deliver(&msg, entries, launcher, self.kill.as_ref()));
+            statuses.push(deliver(&msg, entries, launcher, self.kill.as_ref()));
         }
-        status
+        (!statuses.is_empty()).then(|| statuses.join("; "))
     }
 
-    /// Apply an operator decision to the pending message.
-    pub fn apply(&mut self, action: ApprovalAction) -> std::io::Result<()> {
+    /// Apply an operator decision to the pending message named by `id`. A stale
+    /// id (already resolved, or superseded) is a harmless no-op, so a late click
+    /// on an old notification never disturbs another message.
+    pub fn apply(&mut self, id: &str, action: ApprovalAction) -> std::io::Result<()> {
+        let Some(pos) = self.pending.iter().position(|p| p.msg.id == id) else {
+            return Ok(());
+        };
         match action {
-            ApprovalAction::AllowOnce => self.allow_once(),
-            ApprovalAction::AllowAlways => self.allow_always()?,
-            ApprovalAction::Deny => self.deny(),
+            ApprovalAction::AllowOnce => {
+                let p = self.pending.remove(pos);
+                self.approved.insert(p.msg.id.clone());
+                self.queue.push_back(p.msg);
+            }
+            ApprovalAction::AllowAlways => {
+                let p = self.pending.remove(pos);
+                whitelist_add(&self.whitelist, &p.msg.from_cwd, &p.target_cwd)?;
+                self.approved.insert(p.msg.id.clone());
+                self.queue.push_back(p.msg);
+            }
+            ApprovalAction::Deny => {
+                self.pending.remove(pos);
+            }
         }
         Ok(())
-    }
-
-    /// Allow the pending message once (this run), then route it on the next poll.
-    pub fn allow_once(&mut self) {
-        if let Some(p) = self.pending.take() {
-            self.approved.insert(p.msg.id.clone());
-            self.queue.push_front(p.msg);
-        }
-    }
-
-    /// Allow the pending message and persist its `(from -> target)` dir pair.
-    pub fn allow_always(&mut self) -> std::io::Result<()> {
-        if let Some(p) = self.pending.take() {
-            whitelist_add(&self.whitelist, &p.msg.from_cwd, &p.target_cwd)?;
-            self.approved.insert(p.msg.id.clone());
-            self.queue.push_front(p.msg);
-        }
-        Ok(())
-    }
-
-    /// Deny the pending message: drop it.
-    pub fn deny(&mut self) {
-        self.pending = None;
     }
 }
 
@@ -646,7 +668,7 @@ mod tests {
         let entries = [dir_record("/b")];
 
         r.poll(&entries, &launcher); // -> pending
-        r.apply(ApprovalAction::AllowAlways).unwrap();
+        r.apply("1", ApprovalAction::AllowAlways).unwrap();
         assert!(mailbox::is_whitelisted(&whitelist, "/a", "/b"));
         r.poll(&entries, &launcher); // re-queued -> delivered
         assert_eq!(launcher.spawns.get(), 1);
@@ -662,7 +684,7 @@ mod tests {
         let launcher = StubLauncher::default();
 
         r.poll(&[], &launcher); // -> pending
-        r.apply(ApprovalAction::Deny).unwrap();
+        r.apply("1", ApprovalAction::Deny).unwrap();
         assert!(r.pending().is_none());
         r.poll(&[], &launcher);
         assert_eq!(launcher.spawns.get(), 0, "denied -> never delivered");
@@ -820,8 +842,83 @@ mod tests {
         r.poll(&entries, &launcher);
         assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
         assert!(killed.lock().unwrap().is_empty(), "no kill before approval");
-        r.apply(ApprovalAction::AllowOnce).unwrap();
+        r.apply("1", ApprovalAction::AllowOnce).unwrap();
         r.poll(&entries, &launcher);
         assert_eq!(*killed.lock().unwrap(), vec![4242], "allowed -> killed");
+    }
+
+    #[test]
+    fn authorized_message_is_not_blocked_by_a_pending_one() {
+        // The head-of-line-blocking regression: an unapproved message A must not
+        // stall an authorized message B behind it. B delivers this same poll.
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap(); // B's pair only
+        let mut r = Router::new(whitelist);
+        let entries = [dir_record("/unlisted"), dir_record("/b")];
+        r.enqueue(dir_msg("A", "/a", "/unlisted")); // needs approval
+        r.enqueue(dir_msg("B", "/a", "/b")); // whitelisted
+        let launcher = StubLauncher::default();
+
+        r.poll(&entries, &launcher);
+        assert_eq!(launcher.spawns.get(), 1, "B delivered despite A pending");
+        assert_eq!(
+            r.pending().map(|m| m.id.as_str()),
+            Some("A"),
+            "A still parked for approval"
+        );
+    }
+
+    #[test]
+    fn multiple_unauthorized_messages_all_become_pending() {
+        // Two unapproved messages must both be parked (each surfaced for its own
+        // approval), not one hidden in the queue behind the other.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = Router::new(tmp.path().join("whitelist"));
+        let entries = [dir_record("/b"), dir_record("/c")];
+        r.enqueue(dir_msg("A", "/a", "/b"));
+        r.enqueue(dir_msg("B", "/a", "/c"));
+        let launcher = StubLauncher::default();
+
+        r.poll(&entries, &launcher);
+        let ids: Vec<&str> = r.pending_messages().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["A", "B"], "both parked for approval");
+        assert_eq!(launcher.spawns.get(), 0);
+    }
+
+    #[test]
+    fn apply_by_id_resolves_the_named_message_only() {
+        // Approving the second pending message delivers it; the first stays
+        // parked (out-of-order approval works, no head-of-line dependency).
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = Router::new(tmp.path().join("whitelist"));
+        let entries = [dir_record("/b"), dir_record("/c")];
+        r.enqueue(dir_msg("A", "/a", "/b"));
+        r.enqueue(dir_msg("B", "/a", "/c"));
+        let launcher = StubLauncher::default();
+
+        r.poll(&entries, &launcher); // A, B both pending
+        r.apply("B", ApprovalAction::AllowOnce).unwrap();
+        r.poll(&entries, &launcher); // B delivers
+        assert_eq!(launcher.spawns.get(), 1);
+        assert_eq!(
+            r.pending().map(|m| m.id.as_str()),
+            Some("A"),
+            "A remains parked"
+        );
+    }
+
+    #[test]
+    fn apply_with_a_stale_id_is_a_noop() {
+        // A late click on a superseded notification must not panic or disturb a
+        // live pending message.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = Router::new(tmp.path().join("whitelist"));
+        let entries = [dir_record("/b")];
+        r.enqueue(dir_msg("A", "/a", "/b"));
+        let launcher = StubLauncher::default();
+        r.poll(&entries, &launcher);
+        r.apply("ghost", ApprovalAction::AllowOnce).unwrap();
+        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("A"), "A untouched");
     }
 }

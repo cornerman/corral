@@ -427,10 +427,13 @@ ratatui / iced, the daemon keeps ksni).
     approved). A fresh dir-spawn prepends the swarm **`CHARTER`** to its first
     prompt (task-confirmation, comms-only-via-tool, escalate-up, event-driven);
     a resume gets none. Holds an in-memory
-    queue (no file spool), the authorization decisions, and the one message
-    awaiting operator approval; owns `ApprovalAction` and `apply`. Unit-tested
+    queue (no file spool), the authorization decisions, and a **list** of
+    messages awaiting operator approval (each resolved independently by id via
+    `apply(id, action)`, so an un-approved message never blocks an authorized
+    one behind it — no head-of-line blocking); owns `ApprovalAction`. Unit-tested
     (gating, spawn-with-message, visible-request unhidden, charter prefix,
-    live + dormant session delivery, allow/deny, unknown-session drop).
+    live + dormant session delivery, allow/deny, unknown-session drop,
+    head-of-line-free multi-pending + by-id apply).
   - `src/notify.rs` — `ApprovalNotifier` seam. `NotifySendNotifier` mirrors a
     pending approval to a desktop notification with Allow once / Allow always /
     Deny buttons (`notify-send -A`), reporting the choice back on a channel

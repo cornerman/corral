@@ -80,6 +80,27 @@ _t.sleep(8)
 assert not stub_saw("[from proj-a"), \
     "message delivered before whitelist approval"
 
+# --- 5b. head-of-line: a second pending message must not block on the first --
+# A->B is now parked awaiting approval. Enqueue a SECOND pending message B->A,
+# then whitelist ONLY B->A. It must deliver even though A->B is still pending
+# ahead of it (regression: the old single-pending queue blocked the whole
+# queue on the first un-approved message).
+stub_post_rule(json.dumps({
+    "match": "smoke:msg-a", "tool": "corral_message_agent",
+    "args": {"target_dir": PROJ_A, "message": "hello-from-b"}}))
+acp(f"prompt {sock_b} {sid_b} 'smoke:msg-a'")
+_t.sleep(8)
+as_user(f"mkdir -p {CORRAL}/state; echo '{PROJ_B} -> {PROJ_A}' >> {WHITELIST}")
+deadline = _t.time() + 90
+while _t.time() < deadline:
+    if stub_saw("[from proj-b"):
+        break
+    _t.sleep(2)
+assert stub_saw("hello-from-b"), \
+    "B->A blocked behind the still-pending A->B (head-of-line regression)"
+assert not stub_saw("[from proj-a"), \
+    "A->B delivered without its own approval"
+
 # Approve via the headless whitelist path and let corrald's poll release it.
 # Generous window: delivery needs corrald's poll + B's turn against the stub,
 # both of which slow under host contention (e.g. `just e2e` before it went

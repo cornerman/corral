@@ -115,9 +115,12 @@ pub fn run() {
     // Harness-registration approvals: the peer of the router's message
     // approvals (separate consent, separate store — H3).
     let mut registrar = Registrar::new(approved_commands_file.clone());
-    // Which pending message id / registration label already has a surface
-    // shown, so each fires (and is audited) once.
-    let mut announced: Option<String> = None;
+    // Which pending message ids / registration label already have a surface
+    // shown, so each fires (and is audited) once. A set, not one slot, so every
+    // pending message gets its own notification — no approval hides behind
+    // another (paired with the router's multi-pending queue).
+    let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut tray_shown: Option<String> = None;
     let mut announced_reg: Option<String> = None;
 
     loop {
@@ -158,20 +161,12 @@ pub fn run() {
             curator::audit(&audit_log, &status);
         }
 
-        // Reflect a newly pending approval to the tray and a notification (once).
-        match router.pending() {
-            Some(msg) if announced.as_deref() != Some(&msg.id) => {
-                let from = mailbox::basename(&msg.from_cwd);
-                // A stop is destructive, so the operator must see it is a kill,
-                // not a message: the verb prefixes both surfaces.
-                let verb = match msg.action {
-                    mailbox::Action::Stop => "stop ",
-                    mailbox::Action::Deliver => "",
-                };
-                tray.set_pending(Some((
-                    msg.id.clone(),
-                    format!("{from} → {verb}{}", msg.target_label_short()),
-                )));
+        // Surface every pending approval: one desktop notification per message
+        // (fired once, tracked by id), and the first on the tray (it shows one
+        // at a time). Because each notification carries its own id and the
+        // router resolves by id, approvals never block on ordering.
+        for msg in router.pending_messages() {
+            if announced.insert(msg.id.clone()) {
                 notifier.notify(
                     msg.id.clone(),
                     &msg.from_cwd,
@@ -180,14 +175,31 @@ pub fn run() {
                     msg.action,
                     napp_tx.clone(),
                 );
-                announced = Some(msg.id.clone());
             }
-            None if announced.is_some() => {
-                tray.set_pending(None);
-                announced = None;
-            }
-            _ => {}
         }
+        // The tray reflects the first pending message (or clears when none),
+        // updating only when that head changes.
+        let head = router.pending().map(|msg| {
+            let from = mailbox::basename(&msg.from_cwd);
+            // A stop is destructive, so the operator must see it is a kill, not
+            // a message: the verb prefixes the tray label.
+            let verb = match msg.action {
+                mailbox::Action::Stop => "stop ",
+                mailbox::Action::Deliver => "",
+            };
+            (
+                msg.id.clone(),
+                format!("{from} → {verb}{}", msg.target_label_short()),
+            )
+        });
+        if head.as_ref().map(|(id, _)| id) != tray_shown.as_ref() {
+            tray.set_pending(head.clone());
+            tray_shown = head.map(|(id, _)| id);
+        }
+        // Forget ids no longer pending, so a later re-submission re-notifies.
+        let live: std::collections::HashSet<String> =
+            router.pending_messages().map(|m| m.id.clone()).collect();
+        announced.retain(|id| live.contains(id));
 
         // Apply decisions from the tray and the notification. Both are guarded
         // on the current pending id so a stale click cannot decide the wrong
@@ -211,7 +223,7 @@ pub fn run() {
                     announced_reg = None; // re-evaluate what to surface next tick
                 }
                 TrayCommand::ShowDetails(id) => {
-                    if let Some(msg) = router.pending().filter(|m| m.id == id) {
+                    if let Some(msg) = router.pending_by_id(&id) {
                         notify::show_detail(
                             msg.from_cwd.clone(),
                             msg.target_label(),
@@ -234,23 +246,25 @@ pub fn run() {
     }
 }
 
-/// Apply an approval decision only if it still matches the pending message,
-/// and record it in the audit trail (who -> whom, allow/deny).
+/// Apply an approval decision to the pending message named by `id`, and record
+/// it in the audit trail (who -> whom, allow/deny). An id that is no longer
+/// pending (already resolved, or a stale click on an old notification) is a
+/// harmless no-op, so a late decision never disturbs another message.
 fn apply_decision(
     router: &mut Router,
     id: &str,
     action: ApprovalAction,
     audit_log: &std::path::Path,
 ) {
-    if router.pending().map(|m| m.id.as_str()) == Some(id) {
-        let line = router
-            .pending()
-            .map(|m| format!("message {action:?}: {} -> {}", m.from_cwd, m.target_label()))
-            .unwrap_or_default();
-        if let Err(e) = router.apply(action) {
-            eprintln!("corrald: whitelist: {e}");
-        } else {
-            curator::audit(audit_log, &line);
-        }
+    let Some(line) = router
+        .pending_by_id(id)
+        .map(|m| format!("message {action:?}: {} -> {}", m.from_cwd, m.target_label()))
+    else {
+        return;
+    };
+    if let Err(e) = router.apply(id, action) {
+        eprintln!("corrald: whitelist: {e}");
+    } else {
+        curator::audit(audit_log, &line);
     }
 }
