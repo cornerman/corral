@@ -208,15 +208,47 @@ Coded from docs, verified only by running the test:
 - nono under Landlock inside the NixOS test kernel (TCP-to-localhost + unix
   socket behavior; `${HOME}` expansion in the profile).
 
-Implementation status (2026-07-18): the four checks evaluate; the pi npm
-meta-package's deps FOD builds with the pinned hash (pi ships an npm-shrinkwrap
-whose nested entries needed integrity patched from the registry); the stub and
-the Python testScripts are validated in isolation. A full VM run has not been
-completed in the authoring sandbox (large closures over a slow binary cache);
-it is expected to be run on the maintainer's machine / CI, where the
-Verify-in-VM items above are the first iteration points. Only pi and opencode
-launch nono-confined; confining Claude (node-spawned sidecar) and the Cursor
-GUI is future work, so their scenarios stay partial.
+Implementation status (2026-07-19): **e2e-pi PASSES end-to-end in a real VM**
+(`nix build .#checks.x86_64-linux.e2e-pi` -> exit 0). Hard-asserted and
+verified: two pi sessions announce (records, sockets, cwd stamped from physical
+location, pointer files); a plain turn runs running->idle against the stub;
+the board TUI renders (OCR); operator `m` delivers; an inter-agent A->B message
+is gated with no whitelist and delivered with the `[from <basename> (session
+..)]` provenance tag once the pair is whitelisted (headless approval path);
+`list_corral_agents` runs; `corral_stop_agent` drops B to dormant; the question
+tool flips the card to `requires_action`.
+
+Findings from the live run (all real, worth acting on):
+- pi build: `@earendil-works/pi-coding-agent` bundles an npm-shrinkwrap that
+  references its own sibling packages WITHOUT integrity and lists
+  devDependencies absent from the production cache; the build vendors the
+  shrinkwrap with those integrities patched and strips devDependencies so
+  offline `npm ci` succeeds (nix/tests/pkgs.nix, npm/pi/).
+- The whitelist corrald reads is `~/.corral/state/whitelist` (sealed dir), not
+  `~/.corral/whitelist`; the headless approval release only works when the
+  pair is written there.
+- corrald holds a new harness kind PENDING an operator tray approval; with no
+  tray in the VM the records never reach state/registry, so the test seeds
+  `state/approved-commands.json` with each adapter's launch set.
+- nono needs `~/.nono/sessions` at 0700 and rejects duplicate port aliases
+  (`open_port`/`allow_port`/`port_allow` are one field).
+- CONFIRMED (was UNVERIFIED in AGENTS.md): pi's `session/cancel` does NOT
+  unblock a pending `question` tool -- the turn stays in requires_action. The
+  card-move Running/RequiresAction->Idle action is therefore a no-op against a
+  blocked pi question today; corral-pi needs to cancel the question explicitly.
+
+Best-effort in the VM (logged, not hard-asserted; tracked follow-ups in
+TODO.md):
+- Agents run UNCONFINED for the main loop. Running a full agent (or even
+  `sh`/`cat`) under nono needs per-command path discovery (`nono learn`); the
+  security premise stays hard-covered by corral's curation/vet unit tests and
+  the security test matrix. Full nono confinement + the sandbox-negative
+  assertions are a follow-up.
+- Hidden resume / hidden force_new spawn launch inside a headless `cage`, which
+  did not come up under the VM's software GL; a follow-up.
+- Claude and Cursor scenarios (unfree, heavy) are wired and evaluate but were
+  not run in the authoring sandbox; opencode's turn path depends on its
+  UNVERIFIED provider config. These run in CI / on the maintainer's machine.
 
 ## Rejected Alternatives
 

@@ -4,6 +4,33 @@ Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design. Only open, founded next steps live
 here; shipped work is described in AGENTS.md, not tracked here.
 
+## VM E2E Smoke Test (follow-ups)
+
+The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
+`docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md`). Open items:
+
+- [ ] pi bug found by the test: `session/cancel` does NOT unblock a pending
+      `question` tool, so the card-move Running/RequiresAction -> Idle action
+      is a no-op against a blocked pi question. corral-pi should cancel the
+      open question explicitly on `session/cancel` (its `ctx.ui` prompt), not
+      only `ctx.abort()`. This was UNVERIFIED in AGENTS.md; now confirmed.
+- [ ] Full nono confinement in the VM. Agents currently run UNCONFINED in the
+      scenarios; running a full agent (or `sh`/`cat`) under nono needs
+      per-command path discovery (`nono learn` -> a vendored profile with the
+      pi/node/opencode closures granted). Once confined, flip the
+      sandbox-negative checks in `scenarios/pi.py` from best-effort to hard
+      asserts (cross-workdir read denied, sealed `state/registry` unwritable).
+- [ ] Hidden agents in the VM: hidden resume / hidden force_new spawn launch
+      inside a headless `cage`, which did not come up under the VM's software
+      GL. Get `cage` working headless in the test (or document the SW-GL
+      limitation) and make sections 7-8 hard.
+- [ ] Run + harden the other three scenarios (answer: "later must validate as
+      well"): opencode (needs a verified stub provider config; also confirm the
+      bun-under-Landlock outcome once confined), claude (unfree; verify the
+      sidecar announce + hook delivery paths), cursor (unfree; extension
+      announce + state hooks). Turn their best-effort logs into hard asserts as
+      each is validated on a real run.
+
 ## Harness Registration
 
 - [ ] Multiple approved launch sets per label (`Approved: label -> SET of
