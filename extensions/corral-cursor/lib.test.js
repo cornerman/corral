@@ -125,3 +125,25 @@ test("isControlSocketFile matches the ctl socket name only", () => {
   assert.equal(lib.isControlSocketFile("cursor-121602.sock"), false);
   assert.equal(lib.isControlSocketFile("pi-102342.sock"), false);
 });
+
+test("modelFromPayload reads a string model, else undefined", () => {
+  assert.equal(lib.modelFromPayload({ model: "claude-4-sonnet" }), "claude-4-sonnet");
+  assert.equal(lib.modelFromPayload({ model: 42 }), undefined);
+  assert.equal(lib.modelFromPayload({}), undefined);
+  assert.equal(lib.modelFromPayload(null), undefined);
+});
+
+test("modelConfigUpdate builds the model config option (display-only)", () => {
+  const u = lib.modelConfigUpdate("anthropic/claude-opus-4");
+  assert.equal(u.sessionUpdate, "config_options_update");
+  assert.equal(u.configOptions[0].category, "model");
+  assert.equal(u.configOptions[0].currentValue, "anthropic/claude-opus-4");
+  assert.equal(u.configOptions[0].options, undefined); // corral never selects
+});
+
+test("buildRecord carries model when set, omits it when unknown", () => {
+  const withModel = lib.buildRecord({ sessionId: "s", title: "t", socket: "x", nowIso: "n", model: "gpt-5" });
+  assert.equal(withModel.model, "gpt-5");
+  const without = lib.buildRecord({ sessionId: "s", title: "t", socket: "x", nowIso: "n" });
+  assert.equal(without.model, undefined);
+});

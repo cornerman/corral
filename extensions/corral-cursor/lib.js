@@ -29,7 +29,7 @@ function controlSocketPath(cwd, sessionId, env) {
 // the literal `{cwd}` TEMPLATE token, which corral substitutes with the trusted
 // dir at launch (CONVENTION.md) — so a cursor kind is approved once for all
 // directories, not re-verified per workspace.
-function buildRecord({ sessionId, title, socket, nowIso, hidden }) {
+function buildRecord({ sessionId, title, socket, nowIso, hidden, model }) {
   return {
     sessionId,
     title: title ?? null,
@@ -45,8 +45,31 @@ function buildRecord({ sessionId, title, socket, nowIso, hidden }) {
     // there. Recorded so the board reveals by resume. Passed in (not read from
     // env) to keep this record builder pure.
     hidden: Boolean(hidden),
+    // Last-known model, shown by corral for a dormant card. Omitted when
+    // unknown (undefined drops out of JSON.stringify), matching the parse.
+    model: model || undefined,
     lastSeen: nowIso,
   };
+}
+
+// The ACP Session Config Option (category "model") update for a model string.
+// corral reads currentValue for display only; options[] is omitted (corral
+// never selects a model). Mirrors the pi/opencode/claude adapters.
+function modelConfigUpdate(currentValue) {
+  return {
+    sessionUpdate: "config_options_update",
+    configOptions: [
+      { id: "model", name: "Model", category: "model", type: "select", currentValue },
+    ],
+  };
+}
+
+// The model Cursor reports on a beforeSubmitPrompt hook payload (UNVERIFIED
+// field, present but undocumented per the Cursor forum). A non-string or
+// missing field yields undefined so a garbled value never shows.
+function modelFromPayload(ev) {
+  const m = ev && ev.model;
+  return typeof m === "string" && m ? m : undefined;
 }
 
 function acpUpdate(sessionId, update) {
@@ -148,4 +171,4 @@ function isControlSocketFile(name) {
   return /^\.cursor-ctl-.*\.sock$/.test(name);
 }
 
-module.exports = { pointerDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };
+module.exports = { pointerDir, socketDir, acpSocketPath, controlSocketPath, buildRecord, modelConfigUpdate, modelFromPayload, acpReply, acpUpdate, resolveWindowPid, mergeHooks, hookEventToState, isControlSocketFile };

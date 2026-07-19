@@ -30,6 +30,9 @@ let servers = [];
 let recordFile;
 let state = "idle";
 let title = null;
+// Last-known model (a Cursor model string) from the beforeSubmitPrompt hook,
+// shown by corral and persisted in the record. undefined until first reported.
+let model;
 const clients = new Set();
 const ctx = { sessionId: "", cwd: "", get title() { return title; }, get state() { return state; } };
 
@@ -57,7 +60,10 @@ function start(context) {
   // ACP surface corral connects to.
   servers.push(lineServer(acpPath, (line, sock) => onAcp(line, sock), (sock) => {
     clients.add(sock);
-    try { sock.write(JSON.stringify(lib.acpUpdate(sessionId, { sessionUpdate: "state_update", state })) + "\n"); } catch {}
+    try {
+      sock.write(JSON.stringify(lib.acpUpdate(sessionId, { sessionUpdate: "state_update", state })) + "\n");
+      if (model) sock.write(JSON.stringify(lib.acpUpdate(sessionId, lib.modelConfigUpdate(model))) + "\n");
+    } catch {}
   }));
   // Control channel the state-hook pings.
   servers.push(lineServer(ctlPath, (line) => onControl(line)));
@@ -112,6 +118,13 @@ function onAcp(line, sock) {
 function onControl(line) {
   let req; try { req = JSON.parse(line); } catch { return; }
   if (req.kind === "state" && (req.state === "running" || req.state === "idle")) setState(req.state);
+  // The model rides the same control ping (beforeSubmitPrompt only); broadcast
+  // + persist on change.
+  if (typeof req.model === "string" && req.model && req.model !== model) {
+    model = req.model;
+    broadcast(lib.modelConfigUpdate(model));
+    touchRegistry();
+  }
 }
 
 function setState(next) {
@@ -182,7 +195,7 @@ function writeRegistry(acpPath) {
     const recordDir = path.join(lib.socketDir(ctx.cwd, process.env), "registry");
     fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
     recordFile = path.join(recordDir, `${ctx.sessionId}.json`);
-    const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1" });
+    const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1", model });
     const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, recordFile);

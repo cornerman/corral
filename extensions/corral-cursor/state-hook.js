@@ -32,6 +32,9 @@ async function main() {
   const eventName = process.argv[2] || ev.hook_event_name || ev.hookEventName || "";
   const state = lib.hookEventToState(eventName);
   if (!state) return;
+  // beforeSubmitPrompt carries the model; forward it so the extension can
+  // broadcast + persist it (undefined on other stages, dropped below).
+  const model = lib.modelFromPayload(ev);
   // cwd: Cursor's payload carries `workspace_roots` (array), not `cwd`; hooks also
   // run from the project root, so process.cwd() is a final fallback.
   const cwd =
@@ -51,7 +54,7 @@ async function main() {
     // Write, then close only AFTER the write flushes (the callback). Destroying
     // immediately after write() races the flush and drops the message.
     conn.on("connect", () => {
-      try { conn.write(JSON.stringify({ kind: "state", state }) + "\n", () => conn.end()); }
+      try { conn.write(JSON.stringify({ kind: "state", state, model }) + "\n", () => conn.end()); }
       catch { done(); }
     });
     conn.on("close", done);
