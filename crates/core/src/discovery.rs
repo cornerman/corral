@@ -85,17 +85,17 @@ impl RegistryEntry {
     /// Resume argv with `{sessionId}`/`{cwd}` substituted (see
     /// `Agent::resume_argv`). `None` when the record announced no resume command.
     pub fn resume_argv(&self) -> Option<Vec<String>> {
-        self.resume_command
-            .as_ref()
-            .map(|c| crate::approved_commands::denormalize(c, &self.session_id, self.cwd.as_deref()))
+        self.resume_command.as_ref().map(|c| {
+            crate::approved_commands::denormalize(c, &self.session_id, self.cwd.as_deref())
+        })
     }
 
     /// Spawn argv with `{cwd}` substituted. `None` when the record announced no
     /// spawn command.
     pub fn spawn_argv(&self) -> Option<Vec<String>> {
-        self.spawn_command
-            .as_ref()
-            .map(|c| crate::approved_commands::denormalize(c, &self.session_id, self.cwd.as_deref()))
+        self.spawn_command.as_ref().map(|c| {
+            crate::approved_commands::denormalize(c, &self.session_id, self.cwd.as_deref())
+        })
     }
 }
 
@@ -218,8 +218,8 @@ mod tests {
 
     #[test]
     fn model_field_parses_and_defaults_none() {
-        let e = parse_registry_json(r#"{"sessionId":"s1","model":"anthropic/claude-opus-4"}"#)
-            .unwrap();
+        let e =
+            parse_registry_json(r#"{"sessionId":"s1","model":"anthropic/claude-opus-4"}"#).unwrap();
         assert_eq!(e.model.as_deref(), Some("anthropic/claude-opus-4"));
         // Absent -> None (older/unknown producer).
         let e = parse_registry_json(r#"{"sessionId":"s2"}"#).unwrap();

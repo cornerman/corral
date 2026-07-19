@@ -727,10 +727,7 @@ impl Board {
     fn act_spawn(&mut self) -> Task<Message> {
         let agent = self.selected_agent().cloned();
         let mut ok = false;
-        self.status = match agent
-            .as_ref()
-            .and_then(|a| a.spawn_argv().map(|c| (a, c)))
-        {
+        self.status = match agent.as_ref().and_then(|a| a.spawn_argv().map(|c| (a, c))) {
             Some((a, command)) => {
                 let cwd = launch::default_cwd(a.cwd.as_deref());
                 // a.launch_mode() carries the selected card's `hidden`, so a

@@ -157,25 +157,6 @@ fn record_json(rec: &corral_core::discovery::RegistryEntry) -> Result<String, se
     serde_json::to_string_pretty(&serde_json::Value::Object(m))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn record_json_includes_model_when_set() {
-        let mut rec = corral_core::discovery::parse_registry_json(
-            r#"{"sessionId":"s1","model":"anthropic/claude-opus-4"}"#,
-        )
-        .unwrap();
-        rec.cwd = Some("/tmp/p".into());
-        let json = record_json(&rec).unwrap();
-        assert!(json.contains("\"model\": \"anthropic/claude-opus-4\""));
-        // Absent model is omitted, not written as null.
-        rec.model = None;
-        assert!(!record_json(&rec).unwrap().contains("model"));
-    }
-}
-
 #[cfg(unix)]
 fn set_mode_700(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -217,5 +198,24 @@ pub fn audit(log: &Path, line: &str) {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let _ = writeln!(f, "{ts} {line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_json_includes_model_when_set() {
+        let mut rec = corral_core::discovery::parse_registry_json(
+            r#"{"sessionId":"s1","model":"anthropic/claude-opus-4"}"#,
+        )
+        .unwrap();
+        rec.cwd = Some("/tmp/p".into());
+        let json = record_json(&rec).unwrap();
+        assert!(json.contains("\"model\": \"anthropic/claude-opus-4\""));
+        // Absent model is omitted, not written as null.
+        rec.model = None;
+        assert!(!record_json(&rec).unwrap().contains("model"));
     }
 }
