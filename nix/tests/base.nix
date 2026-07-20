@@ -16,6 +16,18 @@ let
     exec ${pkgs.python3}/bin/python3 ${./stub-llm.py} "$@"
   '';
 
+  # Stub notify-send: the VM runs no notification daemon, but corrald surfaces
+  # message approvals via `notify-send -A …` and reads the clicked action name
+  # from its stdout. The stub logs every invocation (so a scenario can assert
+  # the approval surface fired) and answers with the mode in /tmp/notify-mode
+  # (once|always|deny; anything else = dismissed, prints nothing), letting a
+  # scenario drive the real operator Allow-once path end to end.
+  stubNotify = pkgs.writeShellScriptBin "notify-send" ''
+    echo "$@" >> /tmp/notify-send.log
+    mode=$(cat /tmp/notify-mode 2>/dev/null || true)
+    case "$mode" in once|always|deny) echo "$mode";; esac
+  '';
+
   # NOTE (2026-07-19): agents run UNCONFINED for the main loop. Getting a full
   # agent (pi's whole node closure) to run under nono needs per-harness path
   # discovery (`nono learn`) that is a separate effort; the security premise is
@@ -69,6 +81,7 @@ in
     pkgs.nono
     pkgs.mesa # llvmpipe/lavapipe for the GUI under software GL
     stubLlm
+    stubNotify
     testPkgs.pi
     pkgs.opencode
     self.packages.${pkgs.stdenv.hostPlatform.system}.default # corral, corral-gui, corrald

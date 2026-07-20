@@ -80,14 +80,15 @@ _t.sleep(8)
 assert not stub_saw("[from proj-a"), \
     "message delivered before whitelist approval"
 
-# --- 5b. head-of-line: a second pending message must not block on the first --
-# A->B is now parked awaiting approval. Enqueue a SECOND pending message B->A,
-# then whitelist ONLY B->A. It must deliver even though A->B is still pending
-# ahead of it (regression: the old single-pending queue blocked the whole
-# queue on the first un-approved message).
+# --- 5b. head-of-line + reply-by-session: B answers A via target_session ----
+# A->B is now parked awaiting approval. B replies to A by SESSION id (the
+# reply-handle path a spawned agent uses to answer its spawner), then ONLY
+# B->A is whitelisted. The reply must deliver to A's live socket even though
+# A->B is still pending ahead of it (regression: the old single-pending queue
+# blocked the whole queue on the first un-approved message).
 stub_post_rule(json.dumps({
     "match": "smoke:msg-a", "tool": "corral_message_agent",
-    "args": {"target_dir": PROJ_A, "message": "hello-from-b"}}))
+    "args": {"target_session": sid_a, "message": "hello-from-b"}}))
 acp(f"prompt {sock_b} {sid_b} 'smoke:msg-a'")
 _t.sleep(8)
 as_user(f"mkdir -p {CORRAL}/state; echo '{PROJ_B} -> {PROJ_A}' >> {WHITELIST}")
@@ -96,10 +97,42 @@ while _t.time() < deadline:
     if stub_saw("[from proj-b"):
         break
     _t.sleep(2)
+if not stub_saw("hello-from-b"):
+    dump_messaging()
 assert stub_saw("hello-from-b"), \
-    "B->A blocked behind the still-pending A->B (head-of-line regression)"
+    "B->A reply-by-session never delivered (send_prompt seed-drain regression) \
+     or blocked behind the still-pending A->B (head-of-line regression)"
 assert not stub_saw("[from proj-a"), \
     "A->B delivered without its own approval"
+
+# --- 5c. operator Allow-once via the notification releases by id ------------
+# The real approval surface: corrald fires `notify-send -A` per pending message
+# and applies the clicked action to that message id. The VM's stub notify-send
+# answers with /tmp/notify-mode. A sends a SECOND message on the same
+# unwhitelisted A->B pair: it parks, its own notification fires, the stub
+# clicks "Allow once", and only THIS message may deliver -- the first A->B
+# message must stay parked (by-id resolution; the reported
+# allow-once-not-delivered flow).
+as_user("echo once > /tmp/notify-mode")
+stub_post_rule(json.dumps({
+    "match": "smoke:again", "tool": "corral_message_agent",
+    "args": {"target_dir": PROJ_B, "message": "second-to-b"}}))
+acp(f"prompt {sock_a} {sid_a} 'smoke:again'")
+deadline = _t.time() + 90
+while _t.time() < deadline:
+    if stub_saw("second-to-b"):
+        break
+    _t.sleep(2)
+as_user("echo dismiss > /tmp/notify-mode")
+if not stub_saw("second-to-b"):
+    dump_messaging()
+    machine.log(try_user("cat /tmp/notify-send.log")[1])
+assert stub_saw("second-to-b"), \
+    "notification Allow-once did not deliver the approved message"
+assert not stub_saw("hello-from-a"), \
+    "Allow once released the WRONG message (first A->B must stay parked)"
+ok, nlog = try_user("cat /tmp/notify-send.log")
+assert ok and "corral" in nlog, f"approval notification never fired: {nlog}"
 
 # Approve via the headless whitelist path and let corrald's poll release it.
 # Generous window: delivery needs corrald's poll + B's turn against the stub,
@@ -108,7 +141,9 @@ assert not stub_saw("[from proj-a"), \
 as_user(f"mkdir -p {CORRAL}/state; echo '{PROJ_A} -> {PROJ_B}' >> {WHITELIST}")
 deadline = _t.time() + 90
 while _t.time() < deadline:
-    if stub_saw("[from proj-a"):
+    # 5c already delivered a "[from proj-a"-tagged message, so wait on this
+    # message's own text.
+    if stub_saw("hello-from-a"):
         break
     _t.sleep(2)
 if not stub_saw("hello-from-a"):

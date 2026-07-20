@@ -131,7 +131,11 @@ def stub_requests():
 def dump_messaging():
     """Diagnostics for the inter-agent messaging path."""
     machine.log("=== DIAG: whitelist ===")
-    machine.log(machine.execute(f"cat {CORRAL}/whitelist 2>&1")[1])
+    machine.log(machine.execute(f"cat {CORRAL}/state/whitelist 2>&1")[1])
+    machine.log("=== DIAG: audit log ===")
+    machine.log(machine.execute(f"cat {CORRAL}/state/audit.log 2>&1")[1])
+    machine.log("=== DIAG: notify-send log ===")
+    machine.log(machine.execute("cat /tmp/notify-send.log 2>&1")[1])
     machine.log("=== DIAG: corrald journal ===")
     machine.log(try_user("journalctl --user -u corrald -n 60 --no-pager 2>&1")[1])
     machine.log("=== DIAG: stub messages (last content per request) ===")
