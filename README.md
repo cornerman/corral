@@ -35,6 +35,21 @@ programs.corral.enable = true;
 Then start your agents however you normally do. They appear on the board
 automatically. That is the whole loop.
 
+### Binary Cache
+
+CI pushes the package closure to a public [Cachix](https://cachix.org) cache on
+every `main` build, so you substitute it instead of compiling. Add it to your
+Nix config:
+
+```nix
+nix.settings = {
+  substituters = [ "https://corral.cachix.org" ];
+  trusted-public-keys = [ "corral.cachix.org-1:y09IX0o7GIFmfXHIQWvEsF8YWvnpe6urUdg06fXc8E4=" ];
+};
+```
+
+Or, without NixOS, `cachix use corral`.
+
 A board is a pure viewer of a registry the daemon curates, so it shows nothing
 on its own: it needs `corrald` running and an adapter installed in your harness,
 both of which the module above sets up. From there just run `corral` (or
