@@ -35,6 +35,12 @@ programs.corral.enable = true;
 Then start your agents however you normally do. They appear on the board
 automatically. That is the whole loop.
 
+A board is a pure viewer of a registry the daemon curates, so it shows nothing
+on its own: it needs `corrald` running and an adapter installed in your harness,
+both of which the module above sets up. From there just run `corral` (or
+`corral-gui`) — launch as many boards as you like, they all reflect the same
+registry.
+
 ### Binary Cache
 
 CI pushes the package closure to a public [Cachix](https://cachix.org) cache on
@@ -49,12 +55,6 @@ nix.settings = {
 ```
 
 Or, without NixOS, `cachix use corral`.
-
-A board is a pure viewer of a registry the daemon curates, so it shows nothing
-on its own: it needs `corrald` running and an adapter installed in your harness,
-both of which the module above sets up. From there just run `corral` (or
-`corral-gui`) — launch as many boards as you like, they all reflect the same
-registry.
 
 ## Keys
 
