@@ -12,10 +12,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
+      # Pull from (and authenticate against) the corral cachix cache. The
+      # automatic post-job push is disabled: it diffs the whole store and would
+      # also upload the devShell closure (rust toolchain, GBs); we push exactly
+      # the package closure in the explicit step below instead.
+      - uses: cachix/cachix-action@v16
+        with:
+          name: corral
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
       - name: Build
         run: nix build
       - name: Tests
         run: nix develop --command cargo test
+      # Only main pushes carry the secret (fork PRs have none), and main is
+      # what local machines substitute.
+      - name: Push package closure to cachix
+        if: github.event_name == 'push'
+        run: cachix push corral ./result
 
   # Slow path: VM e2e smoke tests (need /dev/kvm; GitHub standard runners have
   # it). Split out so the fast job is not blocked, and unfree is allowed only

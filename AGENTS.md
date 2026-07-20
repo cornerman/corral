@@ -927,3 +927,12 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   (`nix build` + `cargo test`) on every push/PR, and a slow `e2e` matrix job
   building the four VM smoke checks (needs KVM; unfree allowed only there via
   the tests' own allowUnfree nixpkgs import).
+- Binary cache: the fast job pushes the package closure (`./result` from `nix
+  build`) to the `corral` cachix cache on every `main` push, so a local machine
+  substitutes the build instead of compiling. `cachix-action` authenticates via
+  the `CACHIX_AUTH_TOKEN` repo secret with `skipPush: true` (the automatic
+  post-job diff-push would also upload the devShell/toolchain closure, GBs), and
+  an explicit `cachix push corral ./result` step uploads just the package.
+  Consume it locally by adding `https://corral.cachix.org` as a substituter with
+  the cache's public key (nix: `nix.settings.substituters` /
+  `trusted-public-keys`, or `cachix use corral`).
