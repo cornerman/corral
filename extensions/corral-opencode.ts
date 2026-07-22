@@ -868,7 +868,7 @@ function submitRawToCorral(
 			finish(() => resolve(line));
 		});
 		conn.on("error", (e) => finish(() => { try { fs.rmSync(file, { force: true }); } catch {} reject(e); }));
-		conn.on("close", () => finish(() => reject(new Error("closed before ack"))));
+		conn.on("close", () => finish(() => { try { fs.rmSync(file, { force: true }); } catch {} reject(new Error("closed before ack")); }));
 	});
 }
 
