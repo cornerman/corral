@@ -43,6 +43,11 @@ const DORMANT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(14 *
 /// `fromCwd` from where the file physically lives, ignoring any `fromCwd` in
 /// the content. Returns `(cwd, content)`.
 ///
+/// Consumes the file: on success it unlinks the *deduced* real path (the one it
+/// just validated through the fd), never the caller's raw envelope string. The
+/// raw path is untrusted input — the boundary reads and removes the file itself
+/// so no caller is ever handed the attacker path back to act on.
+///
 /// Hardened against a confused-deputy path (corrald is unsandboxed):
 /// - non-blocking open, so a FIFO in place cannot hang corrald;
 /// - regular file only (reject FIFO/device/dir);
@@ -64,6 +69,9 @@ pub fn resolve_submission(path: &Path) -> Option<(String, String)> {
     let cwd = discovery::cwd_from_outbox_path(&real)?;
     let mut content = String::new();
     file.read_to_string(&mut content).ok()?;
+    // Consume the outbox file via the deduced real path, so the caller never
+    // touches the raw envelope path again (best-effort).
+    let _ = std::fs::remove_file(&real);
     Some((cwd, content))
 }
 
@@ -380,6 +388,8 @@ mod tests {
         let (cwd, content) = resolve_submission(&msg).unwrap();
         assert_eq!(cwd, std::fs::canonicalize(&boxd).unwrap().to_string_lossy());
         assert!(content.contains("\"message\":\"hi\""));
+        // The boundary consumes the file, so the caller never re-touches it.
+        assert!(!msg.exists(), "resolve_submission must unlink the outbox file");
 
         // A file not under .corral/outbox is rejected (corrald never reads an
         // arbitrary path).

@@ -102,12 +102,12 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         let _ = ack(&mut conn, "malformed");
         return;
     };
+    // resolve_submission reads AND consumes the file, deriving the trusted
+    // facts from the fd it holds; the raw `path` is never touched again.
     let Some((from_cwd, content)) = curation::resolve_submission(Path::new(&path)) else {
         let _ = ack(&mut conn, "malformed");
         return;
     };
-    // The request has been read; remove the outbox file (best-effort).
-    let _ = std::fs::remove_file(&path);
 
     // A read-only roster query, answered synchronously and never routed. The
     // `fromCwd` is the authenticated one, so an agent cannot widen its roster
