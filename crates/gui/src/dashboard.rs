@@ -635,7 +635,7 @@ impl Board {
                 "m" => return self.update(Message::OpenCompose),
                 "d" => return self.update(Message::Dismiss),
                 "h" => return self.update(Message::ToggleHidden),
-                "q" => std::process::exit(0),
+                "q" => return iced::exit(),
                 "/" => {
                     self.filtering = true;
                     return text_input::focus(filter_id());
