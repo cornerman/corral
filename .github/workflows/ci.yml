@@ -16,10 +16,12 @@ jobs:
       # automatic post-job push is disabled: it diffs the whole store and would
       # also upload the devShell closure (rust toolchain, GBs); we push exactly
       # the package closure in the explicit step below instead.
+      # The repo secret is named CACHIX_AUTH_TOKE (no trailing N) and cannot be
+      # renamed; do not "fix" it to CACHIX_AUTH_TOKEN or auth breaks.
       - uses: cachix/cachix-action@v16
         with:
           name: corral
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKE }}
           skipPush: true
       - name: Build
         run: nix build
@@ -29,6 +31,8 @@ jobs:
       # what local machines substitute.
       - name: Push package closure to cachix
         if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKE }}
         run: cachix push corral ./result
 
   # Slow path: VM e2e smoke tests (need /dev/kvm; GitHub standard runners have
