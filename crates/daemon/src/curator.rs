@@ -75,11 +75,6 @@ pub fn refresh(
     split.pending
 }
 
-/// Ensure the raw dir-index file and its parent (`~/.corral`) exist, so an
-/// agent's sandbox can be granted append on an already-present file. The
-/// hardened sandbox grants the agent write on this single file only (never on
-/// `~/.corral` itself, or it could rebind the control socket — SECURITY.md T6);
-/// a Landlock file rule binds to the inode at sandbox-build time and is silently
 /// Ensure the agent-writable pointer store (`~/.corral/input/registry/`) and its
 /// parents exist, so the agent sandbox can be granted `filesystem.write` on the
 /// `input/` DIRECTORY: a Landlock dir rule binds to the dir's inode at
