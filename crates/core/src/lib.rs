@@ -10,6 +10,7 @@ pub mod curation;
 pub mod discovery;
 pub mod engine;
 pub mod focus;
+pub mod history;
 pub mod launch;
 pub mod menu;
 pub mod model;
