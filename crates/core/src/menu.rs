@@ -14,6 +14,7 @@
 pub enum MenuAction {
     Go,
     Message,
+    History,
     Spawn,
     ToggleHidden,
     Dismiss,
@@ -22,9 +23,10 @@ pub enum MenuAction {
 impl MenuAction {
     /// Every entry in display order (footer order, destructive last). Both
     /// shells iterate this to build the menu, so the order cannot drift.
-    pub const ALL: [MenuAction; 5] = [
+    pub const ALL: [MenuAction; 6] = [
         MenuAction::Go,
         MenuAction::Message,
+        MenuAction::History,
         MenuAction::Spawn,
         MenuAction::ToggleHidden,
         MenuAction::Dismiss,
@@ -37,6 +39,7 @@ impl MenuAction {
         match self {
             MenuAction::Go => "go",
             MenuAction::Message => "msg",
+            MenuAction::History => "history",
             MenuAction::Spawn => "new",
             MenuAction::ToggleHidden => "hide/show",
             MenuAction::Dismiss => "delete",
@@ -55,6 +58,7 @@ mod tests {
             [
                 MenuAction::Go,
                 MenuAction::Message,
+                MenuAction::History,
                 MenuAction::Spawn,
                 MenuAction::ToggleHidden,
                 MenuAction::Dismiss,

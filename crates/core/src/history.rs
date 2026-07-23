@@ -158,6 +158,39 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
+    fn write_and_open_writes_json_with_wrapper_fields() {
+        use crate::model::{Agent, Origin, State};
+        use std::time::Instant;
+        let agent = Agent {
+            socket_path: std::path::PathBuf::from("/tmp/x.sock"),
+            pid: 1,
+            label: "pi".into(),
+            session_id: Some("sess-1".into()),
+            title: Some("fix bug".into()),
+            cwd: Some("/tmp/proj".into()),
+            state: State::Idle,
+            origin: Origin::Live,
+            spawn_command: None,
+            resume_command: None,
+            activity: None,
+            gui: false,
+            message_flag: None,
+            hidden: false,
+            model: None,
+            state_since: Instant::now(),
+            last_activity: Instant::now(),
+        };
+        let entries = vec![serde_json::json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}})];
+        let path = super::write_and_open(&agent, entries).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(v["sessionId"], "sess-1");
+        assert_eq!(v["updates"][0]["sessionUpdate"], "agent_message_chunk");
+        assert!(v.get("capturedAt").is_some());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn fetch_history_collects_notifications_then_stops_at_reply() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("pi-1.sock");
