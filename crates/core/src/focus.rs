@@ -527,6 +527,9 @@ mod tests {
             message_flag: None,
             hidden: false,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
             state_since: std::time::Instant::now(),
             last_activity: std::time::Instant::now(),
         };

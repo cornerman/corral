@@ -72,6 +72,16 @@ impl Column {
     }
 }
 
+/// One `context_update` broadcast's payload (see `watch::parse_config_context`):
+/// entries count, context-window percent (`None` when the adapter's own
+/// estimate is unknown), and a pre-formatted age string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextInfo {
+    pub entries: u64,
+    pub percent: Option<u32>,
+    pub age: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub socket_path: PathBuf,
@@ -113,6 +123,16 @@ pub struct Agent {
     /// record's last-known model onto both live and dormant agents. Shown
     /// verbatim in the footer for the selected card. `None` until reported.
     pub model: Option<String>,
+    /// Count of session-log entries (pi only today). `None` gates the whole
+    /// entries/percent/age footer group off — see `footer_line`.
+    pub entries: Option<u64>,
+    /// Context usage as a percentage of the model's context window (pi's own
+    /// estimate), 0-100. `None` when unknown (e.g. right after compaction) or
+    /// unreported.
+    pub context_percent: Option<u32>,
+    /// A pre-formatted age string (e.g. `"3d"`) for how long this session's
+    /// transcript has existed. `None` when unreported.
+    pub context_age: Option<String>,
     /// When this agent entered its current state. Runtime timing, not from the
     /// record and not persisted: `Board::apply` sets it from the update stream.
     /// Orders the Requires Action / Idle columns by time-in-state (longest
@@ -206,6 +226,33 @@ impl Agent {
         .to_lowercase();
         q.split_whitespace().all(|term| is_subsequence(term, &hay))
     }
+
+    /// The footer line for the selected card: context size/age (pi only, when
+    /// reported) followed by the model, display-only. The entries/percent/age
+    /// group is gated as a whole on `entries` being known (they are broadcast
+    /// together); within it, percent is separately omitted when unknown (e.g.
+    /// right after compaction). `None` when neither group has anything to show.
+    /// Shared by both shells so TUI/GUI parity is structural, not duplicated.
+    pub fn footer_line(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(entries) = self.entries {
+            if let Some(pct) = self.context_percent {
+                parts.push(format!("{pct}% ctx"));
+            }
+            parts.push(format!("{entries} entries"));
+            if let Some(age) = &self.context_age {
+                parts.push(age.clone());
+            }
+        }
+        if let Some(m) = &self.model {
+            parts.push(format!("model: {m}"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" \u{b7} "))
+        }
+    }
 }
 
 /// Whether `needle` occurs in `hay` as an in-order (not necessarily
@@ -233,6 +280,9 @@ pub enum Update {
     /// The current model (from a `config_options_update` broadcast): a
     /// `"provider/id"` string shown in the footer for the selected card.
     SetModel(PathBuf, String),
+    /// Context size/age (from a `context_update` broadcast, pi only): shown
+    /// alongside the model in the footer for the selected card.
+    SetContext(PathBuf, ContextInfo),
     /// The socket closed or refused: the agent is gone.
     Gone(PathBuf),
 }
@@ -288,6 +338,13 @@ impl Board {
             Update::SetModel(path, model) => {
                 if let Some(a) = self.live.get_mut(&path) {
                     a.model = Some(model);
+                }
+            }
+            Update::SetContext(path, info) => {
+                if let Some(a) = self.live.get_mut(&path) {
+                    a.entries = Some(info.entries);
+                    a.context_percent = info.percent;
+                    a.context_age = Some(info.age);
                 }
             }
             Update::Gone(path) => {
@@ -353,6 +410,9 @@ impl Board {
                 message_flag: e.message_flag.clone(),
                 hidden: e.hidden,
                 model: e.model.clone(),
+                entries: e.entries,
+                context_percent: e.context_percent,
+                context_age: e.context_age.clone(),
                 // Dormant cards order by record age (set below), not by these
                 // runtime clocks, so a placeholder now() is fine.
                 state_since: Instant::now(),
@@ -385,6 +445,13 @@ impl Board {
                     // staler record value.
                     if a.model.is_none() {
                         a.model = e.model.clone();
+                    }
+                    // Same precedent for the context group: stamp the record's
+                    // last-known reading only when the live agent has none yet.
+                    if a.entries.is_none() {
+                        a.entries = e.entries;
+                        a.context_percent = e.context_percent;
+                        a.context_age = e.context_age.clone();
                     }
                 }
             }
@@ -484,6 +551,9 @@ mod tests {
             message_flag: None,
             hidden: false,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
             state_since: Instant::now(),
             last_activity: Instant::now(),
         }
@@ -513,6 +583,109 @@ mod tests {
             b.dormant()[0].model.as_deref(),
             Some("anthropic/claude-sonnet-4")
         );
+    }
+
+    #[test]
+    fn set_context_updates_live_agent() {
+        let mut b = Board::default();
+        b.apply(Update::Upsert(Box::new(agent("/s/pi-1.sock", State::Idle))));
+        b.apply(Update::SetContext(
+            PathBuf::from("/s/pi-1.sock"),
+            ContextInfo {
+                entries: 42,
+                percent: Some(12),
+                age: "3d".into(),
+            },
+        ));
+        let a = &b.in_state(State::Idle)[0];
+        assert_eq!(a.entries, Some(42));
+        assert_eq!(a.context_percent, Some(12));
+        assert_eq!(a.context_age.as_deref(), Some("3d"));
+    }
+
+    #[test]
+    fn dormant_agent_inherits_context_from_record() {
+        let mut b = Board::default();
+        let mut rec = dormant_record("q1", "/tmp/q", "2026-06-01T00:00:00Z");
+        rec.entries = Some(7);
+        rec.context_percent = Some(4);
+        rec.context_age = Some("1h".into());
+        b.sync_registry(&[rec], &HashSet::new());
+        let d = &b.dormant()[0];
+        assert_eq!(d.entries, Some(7));
+        assert_eq!(d.context_percent, Some(4));
+        assert_eq!(d.context_age.as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn live_agent_context_not_overwritten_by_staler_record() {
+        // Mirrors the model field's precedent: a live broadcast wins over a
+        // record only stamped when the live agent has no value yet.
+        let mut b = Board::default();
+        b.apply(Update::Upsert(Box::new(agent("sess-1", State::Running))));
+        b.apply(Update::SetContext(
+            PathBuf::from("sess-1"),
+            ContextInfo {
+                entries: 99,
+                percent: Some(50),
+                age: "9d".into(),
+            },
+        ));
+        let rec = RegistryEntry {
+            session_id: "sess-1".into(),
+            cwd: Some("/tmp/p".into()),
+            title: None,
+            socket: Some(PathBuf::from("/tmp/p/.corral/pi-9.sock")),
+            spawn_command: Some(vec!["pi".into()]),
+            resume_command: Some(vec!["pi".into(), "--session".into(), "sess-1".into()]),
+            label: Some("pi".into()),
+            last_seen: None,
+            gui: false,
+            message_flag: None,
+            hidden: false,
+            description: None,
+            model: None,
+            entries: Some(1),
+            context_percent: Some(1),
+            context_age: Some("1s".into()),
+        };
+        b.sync_registry(&[rec], &HashSet::new());
+        let a = &b.in_state(State::Running)[0];
+        assert_eq!(
+            a.entries,
+            Some(99),
+            "live value must win over the stale record"
+        );
+    }
+
+    #[test]
+    fn footer_line_formats_full_and_partial_and_none() {
+        let mut a = agent("x", State::Idle);
+        // Nothing known at all.
+        assert_eq!(a.footer_line(), None);
+        // Model only (every non-pi adapter, or pi before its first broadcast).
+        a.model = Some("anthropic/claude-opus-4".into());
+        assert_eq!(
+            a.footer_line().as_deref(),
+            Some("model: anthropic/claude-opus-4")
+        );
+        // Full pi group.
+        a.entries = Some(42);
+        a.context_percent = Some(12);
+        a.context_age = Some("3d".into());
+        assert_eq!(
+            a.footer_line().as_deref(),
+            Some("12% ctx \u{b7} 42 entries \u{b7} 3d \u{b7} model: anthropic/claude-opus-4")
+        );
+        // Percent unknown (e.g. right after compaction): omit just that segment.
+        a.context_percent = None;
+        assert_eq!(
+            a.footer_line().as_deref(),
+            Some("42 entries \u{b7} 3d \u{b7} model: anthropic/claude-opus-4")
+        );
+        // entries known but no model reported: no trailing " \u{b7} model: ..".
+        a.model = None;
+        assert_eq!(a.footer_line().as_deref(), Some("42 entries \u{b7} 3d"));
     }
 
     #[test]

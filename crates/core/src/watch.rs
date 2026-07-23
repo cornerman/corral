@@ -222,6 +222,9 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 // Seeded from the config_options_update the extension sends on
                 // connect (stashed below), else None until the first broadcast.
                 model: seed_model.clone(),
+                entries: None,
+                context_percent: None,
+                context_age: None,
                 // Clocks start at seed time; Board::apply keeps them across a
                 // reconnect and resets state_since on the next transition.
                 state_since: std::time::Instant::now(),
