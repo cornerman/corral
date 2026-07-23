@@ -117,6 +117,32 @@ shell (ratatui / iced / headless).
 Dev loop: `nix develop` then `just test` / `just lint` / `just board` / `just
 gui` / `just daemon`. Architecture depth is in [AGENTS.md](AGENTS.md).
 
+## Sandbox Setup
+
+If you sandbox your agents (recommended; see Security below), the sandbox
+profile needs exactly one write exception: `$HOME/.corral/input`. Everything
+else under `~/.corral` (the sealed vetted registry, the whitelist, the audit
+log) must stay denied — an agent's own workdir already carries the write access
+it needs for its own `.corral/` registry and socket. Example, in whatever
+profile syntax your sandbox uses:
+
+```
+allow write:   $HOME/.corral/input
+```
+
+Also add `.corral/` to your global gitignore: every project directory an agent
+touches gains one (the registry record and the session socket), and none of it
+belongs in a commit. `programs.corral.gitignore.enable` (default `true`) does
+this for you automatically when `programs.git.enable` is also on; if it is
+not, home-manager warns on every rebuild instead of silently doing nothing.
+Add `.corral/` to your own `core.excludesfile` by hand and set
+
+```nix
+programs.corral.gitignore.enable = false;
+```
+
+to silence that warning once you have.
+
 ## Security: the Filesystem Is the Authority
 
 No ports, no network — every channel is a `0700` unix socket or file under

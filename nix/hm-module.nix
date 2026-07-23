@@ -4,7 +4,18 @@
 # (corral, corral-gui, corrald), run corrald as a user service, and symlink the
 # pi/opencode/claude adapters into each harness's plugin directory. The Cursor
 # adapter is a VS Code extension, so it is installed from a .vsix via
-# `programs.corral.cursor.package` (opt-in) instead of symlinked.
+# `programs.corral.cursor.package` (opt-in) instead of symlinked. When
+# `programs.git.enable` is also on, it adds `.corral/` to the managed global
+# gitignore (every project dir an agent touches gains one); otherwise it emits
+# a `warnings` entry rather than silently doing nothing, since writing to some
+# other core.excludesfile mechanism (a static dotfile, manual git config) would
+# be a second, ineffective writer.
+#
+# Sandboxed agents (nono, bwrap, or similar) need exactly one write exception
+# in their profile: $HOME/.corral/input. This module does not manage that,
+# since it does not know which sandbox tool (if any) wraps each harness --
+# that decision, and the profile syntax, belong to the sandboxing setup, not
+# to corral's own module (see SECURITY.md, Deployment Preconditions).
 #
 # `self` is the corral flake, so the module resolves corral's own package for
 # the current system without the importing config having to name it.
@@ -30,6 +41,20 @@ in
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       defaultText = lib.literalExpression "corral.packages.\${system}.default";
       description = "The corral package providing corral, corral-gui and corrald.";
+    };
+
+    gitignore.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Let corral manage the ".corral/" entry in your global gitignore (via
+        programs.git.ignores, only takes effect when programs.git.enable is
+        also on -- else a warning fires instead). Set to false once you've
+        added ".corral/" to your own gitignore yourself, or if you don't track
+        this at all, to silence both the write attempt and the warning -- a
+        `warnings` entry has no "seen once" memory and would otherwise repeat
+        on every rebuild.
+      '';
     };
 
     daemon.enable = lib.mkOption {
@@ -83,6 +108,23 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Add .corral/ to the user's global gitignore -- but only if home-manager
+    # actually owns core.excludesfile (programs.git.enable). If git is managed
+    # some other way (a static dotfile, manual `git config`), writing here would
+    # be a silent second writer with no effect on the file core.excludesfile
+    # really points at. Fail loud instead (a warning), rather than silently
+    # doing nothing: the user then adds ".corral/" to their own gitignore by
+    # hand and sets gitignore.enable = false to stop the (otherwise permanent,
+    # since `warnings` has no "seen once" memory) nag.
+    programs.git.ignores = lib.mkIf (cfg.gitignore.enable && config.programs.git.enable) [ ".corral/" ];
+
+    warnings = lib.optional (cfg.gitignore.enable && !config.programs.git.enable) ''
+      corral: programs.git.enable is false, so corral cannot add .corral/ to
+      your global gitignore automatically. Add it to your own core.excludesfile
+      by hand, then set programs.corral.gitignore.enable = false to silence
+      this -- every project directory an agent touches gains a .corral/.
+    '';
+
     # The Claude adapter's hooks run as external `node hook.ts` subprocesses
     # (Claude ships no runtime for hook commands), unlike the pi/opencode
     # adapters that the harness itself loads. node (not bun: bun's JSC
