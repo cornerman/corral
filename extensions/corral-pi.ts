@@ -90,6 +90,10 @@ export default function (pi: ExtensionAPI) {
 	// undefined before pi resolves one. Broadcast as an ACP config option and
 	// persisted in the record so a dormant card shows its last-known model.
 	let currentModel: string | undefined;
+	// Last-known context info (entries/percent/age), refreshed at turn_start
+	// and turn_end (see below) and persisted to the registry record so a
+	// dormant card still shows its last reading.
+	let currentContext: { entries: number; percent: number | null; age: string } | undefined;
 	// toolCallId of an in-flight `question` tool: while it runs, the agent is
 	// blocked on the user, which is requires_action.
 	let questionCallId: string | undefined;
@@ -355,6 +359,11 @@ export default function (pi: ExtensionAPI) {
 				const line = modelConfigLine();
 				if (line && !conn.destroyed) conn.write(line);
 			}
+			// Seed the context info too, so a card shows it before the first turn.
+			if (currentContext) {
+				const line = contextUpdateLine();
+				if (line && !conn.destroyed) conn.write(line);
+			}
 			let buf = "";
 			conn.on("data", (chunk) => {
 				buf += chunk.toString("utf8");
@@ -389,17 +398,21 @@ export default function (pi: ExtensionAPI) {
 
 	// --- outgoing: agent activity -> session/update broadcasts ---
 
-	pi.on("turn_start", async () => {
+	pi.on("turn_start", async (_event, ctx) => {
 		currentState = "running";
 		broadcastState();
+		currentContext = contextInfo(ctx);
+		broadcastContext();
 	});
 
-	pi.on("turn_end", async () => {
+	pi.on("turn_end", async (_event, ctx) => {
 		currentState = "idle";
 		broadcastState();
 		// The title may have become available this turn (the first user message
 		// becomes the fallback title); push it to clients if it changed.
 		broadcastTitleIfChanged();
+		currentContext = contextInfo(ctx);
+		broadcastContext();
 		// Refresh lastSeen so age-based pruning of dormant records is accurate.
 		if (currentCtx) writeRegistry(currentCtx, socketPath ?? null);
 	});
@@ -526,6 +539,61 @@ export default function (pi: ExtensionAPI) {
 
 	function broadcastModel() {
 		const line = modelConfigLine();
+		if (!line) return;
+		for (const c of clients) {
+			if (!c.destroyed) c.write(line);
+		}
+	}
+
+	// A compact age string: "8s" / "5m" / "2h" / "3d" — mirrors
+	// core::engine::age_label's unit scale exactly (kept independent since the
+	// two live in different languages and the arithmetic is trivial).
+	function ageLabel(ms: number): string {
+		const s = Math.floor(ms / 1000);
+		if (s < 60) return `${s}s`;
+		if (s < 3600) return `${Math.floor(s / 60)}m`;
+		if (s < 86400) return `${Math.floor(s / 3600)}h`;
+		return `${Math.floor(s / 86400)}d`;
+	}
+
+	// Entries count, context-window percent, and age, from pi's own
+	// introspection APIs (docs/extensions.md: ctx.sessionManager.getEntries(),
+	// ctx.getContextUsage()). undefined until the session has at least one
+	// entry (a session_start-only context has nothing to size yet). age is
+	// derived from the session file's own creation entry (session-format.md:
+	// the first logged entry carries the session's creation timestamp), so it
+	// stays correct across a resume without corral persisting its own
+	// start-time field.
+	function contextInfo(
+		ctx: ExtensionContext,
+	): { entries: number; percent: number | null; age: string } | undefined {
+		const entries = ctx.sessionManager.getEntries() as Array<{ timestamp?: string }>;
+		if (entries.length === 0) return undefined;
+		const createdAt = Date.parse(entries[0]?.timestamp ?? "");
+		if (Number.isNaN(createdAt)) return undefined;
+		const usage = ctx.getContextUsage();
+		return {
+			entries: entries.length,
+			percent: usage?.percent ?? null,
+			age: ageLabel(Date.now() - createdAt),
+		};
+	}
+
+	// Broadcast the current context info as corral-pi's own context_update
+	// session/update (not an ACP-standard shape, same footing as state_update).
+	// Sent on turn_start/turn_end and as a per-connection seed.
+	function contextUpdateLine(): string | undefined {
+		if (!currentCtx || !currentContext) return undefined;
+		return sessionUpdateLine({
+			sessionUpdate: "context_update",
+			entries: currentContext.entries,
+			...(currentContext.percent !== null ? { percent: currentContext.percent } : {}),
+			age: currentContext.age,
+		});
+	}
+
+	function broadcastContext() {
+		const line = contextUpdateLine();
 		if (!line) return;
 		for (const c of clients) {
 			if (!c.destroyed) c.write(line);
@@ -799,6 +867,12 @@ export default function (pi: ExtensionAPI) {
 			// An undefined value is dropped by JSON.stringify, so no `model` key
 			// is written when unknown (matching corral's Option<String> parse).
 			model: currentModel,
+			// Last-known context size/age, so a dormant card still shows it.
+			// undefined fields are dropped by JSON.stringify (matching corral's
+			// Option parse); percent is only included when known.
+			entries: currentContext?.entries,
+			contextPercent: currentContext?.percent ?? undefined,
+			contextAge: currentContext?.age,
 			lastSeen: new Date().toISOString(),
 		};
 		const tmp = `${recordFile}.${process.pid}.tmp`;
