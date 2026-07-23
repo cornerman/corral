@@ -54,6 +54,33 @@ pub fn parse_config_model(line: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// Extract a `context_update` session/update (corral-pi's own vocabulary, pi
+/// only today): entries count, optional context-window percent (`None` when
+/// the adapter's own estimate is unknown), and a pre-formatted age string.
+/// `entries` and `age` are required; a line missing either yields `None`
+/// rather than a half-populated value. Pure, unit tested.
+pub fn parse_config_context(line: &str) -> Option<crate::model::ContextInfo> {
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("method")? != "session/update" {
+        return None;
+    }
+    let update = msg.get("params")?.get("update")?;
+    if update.get("sessionUpdate")? != "context_update" {
+        return None;
+    }
+    let entries = update.get("entries")?.as_u64()?;
+    let age = update.get("age")?.as_str()?.to_string();
+    let percent = update
+        .get("percent")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    Some(crate::model::ContextInfo {
+        entries,
+        percent,
+        age,
+    })
+}
+
 /// Extract a title change from a `session_info_update` notification. Returns
 /// `Some(new_title)` (which may itself be `None`, meaning cleared) if the line
 /// is that notification, else `None`. Pure.
@@ -187,6 +214,12 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
     // the board. A SetModel for an absent socket is dropped, so stash the seed
     // and stamp it onto the Upsert instead. None until the first broadcast.
     let mut seed_model: Option<String> = None;
+    // Like seed_model/seed_state: the extension sends its context_update seed
+    // BEFORE the session/list reply, so stash it and stamp it onto the Upsert
+    // instead of emitting a SetContext that would be dropped. None until the
+    // first broadcast (a fresh pi session with no context to report yet, or a
+    // non-pi adapter, which never sends this broadcast at all).
+    let mut seed_context: Option<crate::model::ContextInfo> = None;
 
     loop {
         line.clear();
@@ -222,9 +255,9 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 // Seeded from the config_options_update the extension sends on
                 // connect (stashed below), else None until the first broadcast.
                 model: seed_model.clone(),
-                entries: None,
-                context_percent: None,
-                context_age: None,
+                entries: seed_context.as_ref().map(|c| c.entries),
+                context_percent: seed_context.as_ref().and_then(|c| c.percent),
+                context_age: seed_context.as_ref().map(|c| c.age.clone()),
                 // Clocks start at seed time; Board::apply keeps them across a
                 // reconnect and resets state_since on the next transition.
                 state_since: std::time::Instant::now(),
@@ -252,6 +285,16 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
                 let _ = tx.send(Update::SetModel(entry.path.clone(), model));
             } else {
                 seed_model = Some(model);
+            }
+            continue;
+        }
+        // Live context change; before the Upsert stash it for the seed instead
+        // of emitting a SetContext that would be dropped.
+        if let Some(info) = parse_config_context(&line) {
+            if seeded {
+                let _ = tx.send(Update::SetContext(entry.path.clone(), info));
+            } else {
+                seed_context = Some(info);
             }
             continue;
         }
@@ -342,6 +385,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_config_context() {
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"context_update","entries":42,"percent":12,"age":"3d"}}}"#;
+        let info = parse_config_context(line).unwrap();
+        assert_eq!(info.entries, 42);
+        assert_eq!(info.percent, Some(12));
+        assert_eq!(info.age, "3d");
+        // percent omitted (unknown estimate, e.g. right after compaction).
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"context_update","entries":7,"age":"5m"}}}"#;
+        let info = parse_config_context(line).unwrap();
+        assert_eq!(info.entries, 7);
+        assert_eq!(info.percent, None);
+        assert_eq!(info.age, "5m");
+        // Not a context_update.
+        let state = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"state_update","state":"idle"}}}"#;
+        assert_eq!(parse_config_context(state), None);
+        assert_eq!(parse_config_context("not json"), None);
+        // Missing required fields (entries/age) -> None, never a garbled value.
+        let bad = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"context_update","percent":12}}}"#;
+        assert_eq!(parse_config_context(bad), None);
+    }
+
+    #[test]
     fn preseed_model_lands_on_upsert() {
         use std::io::Write as _;
         use std::os::unix::net::UnixListener;
@@ -367,6 +432,38 @@ mod tests {
             }
         };
         assert_eq!(upsert.model.as_deref(), Some("anthropic/claude-opus-4"));
+        drop(conn);
+        let _ = h.join();
+    }
+
+    #[test]
+    fn preseed_context_lands_on_upsert() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc::channel;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("pi-1.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (tx, rx) = channel();
+        let entry = SocketEntry {
+            path: sock.clone(),
+            pid: 1,
+            label: "pi".into(),
+        };
+        let h = spawn(entry, tx);
+        let (mut conn, _) = listener.accept().unwrap();
+        // Context seed BEFORE the session/list reply (the real order).
+        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"context_update\",\"entries\":42,\"percent\":12,\"age\":\"3d\"}}}\n").unwrap();
+        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"sessions\":[{\"sessionId\":\"s\",\"title\":\"t\",\"cwd\":\"/tmp\"}]}}\n").unwrap();
+        let upsert = loop {
+            match rx.recv().unwrap() {
+                Update::Upsert(a) => break a,
+                _ => continue,
+            }
+        };
+        assert_eq!(upsert.entries, Some(42));
+        assert_eq!(upsert.context_percent, Some(12));
+        assert_eq!(upsert.context_age.as_deref(), Some("3d"));
         drop(conn);
         let _ = h.join();
     }
