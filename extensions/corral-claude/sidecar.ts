@@ -39,6 +39,12 @@
  *                   Stop hook takes it (see flushTo). This deferred delivery
  *                   matches the fire-and-forget contract and pi's "queue while
  *                   busy".
+ *   session/load    replay the full message history (user/assistant text
+ *                   only) from Claude Code's on-disk transcript file (its path
+ *                   arrives on every hook payload as `transcript_path`, a
+ *                   documented common input field), then respond (ACP v1
+ *                   session/load). The transcript's per-line JSON schema
+ *                   itself is UNVERIFIED (no Claude Code install in this repo).
  *   session/cancel  no-op: Claude exposes no external turn-abort. Documented
  *                   limitation, answered as a notification.
  * Broadcasts (session/update): state_update (running/idle/requires_action),
@@ -85,6 +91,11 @@ const controlSocketPath = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 // --- mutable session state ---
 let title: string | null = null;
 let lastTitle: string | null | undefined;
+// Path to Claude Code's own on-disk transcript for this session, captured
+// from the first hook event that carries it (every event does, per the
+// Claude Code hooks reference's common input fields). Used to serve
+// session/load, since the sidecar has no in-process transcript of its own.
+let transcriptPath: string | undefined;
 let currentState: "running" | "idle" | "requires_action" = "idle";
 // Current model, as reported by Claude hook payloads (a bare id string). Shown
 // verbatim in corral's footer and persisted so a dormant card shows it.
@@ -217,7 +228,7 @@ function handleAcp(line: string, conn: Sock) {
 		case "initialize":
 			reply({
 				protocolVersion: 1,
-				agentCapabilities: { loadSession: false },
+				agentCapabilities: { loadSession: true },
 				agentInfo: { name: "claude", version: "unknown" },
 				authMethods: [],
 			});
@@ -241,9 +252,65 @@ function handleAcp(line: string, conn: Sock) {
 			if (currentState === "idle" && heldAwait) heldAwait.respond(WAKE_NOTE);
 			break;
 		}
+		case "session/load": {
+			if (!transcriptPath) return fail(-32603, "no transcript available yet");
+			const tpath = transcriptPath;
+			(async () => {
+				try {
+					// Claude Code's transcript is one JSON object per line
+					// (documented as "conversation JSON" but the line schema itself
+					// is UNVERIFIED here -- no Claude Code install in this repo).
+					// Best-effort: skip any line that doesn't match the expected
+					// {type, message:{role, content}} shape rather than throwing.
+					const raw = fs.readFileSync(tpath, "utf8");
+					for (const line of raw.split("\n")) {
+						const trimmed = line.trim();
+						if (!trimmed) continue;
+						let entry: { type?: string; message?: { role?: string; content?: unknown } };
+						try {
+							entry = JSON.parse(trimmed);
+						} catch {
+							continue;
+						}
+						const role = entry.message?.role;
+						if (entry.type !== "user" && entry.type !== "assistant") continue;
+						if (role !== "user" && role !== "assistant") continue;
+						const text = transcriptText(entry.message?.content);
+						if (!text) continue;
+						conn.write(
+							acpUpdateLine({
+								sessionUpdate: role === "user" ? "user_message_chunk" : "agent_message_chunk",
+								content: { type: "text", text },
+							}),
+						);
+					}
+					reply({ sessionId, title, cwd });
+				} catch (e) {
+					fail(-32603, `session/load failed: ${e}`);
+				}
+			})();
+			break;
+		}
 		default:
 			fail(-32601, `method not supported by corral-claude: ${msg.method}`);
 	}
+}
+
+// Best-effort extraction of the plain-text content from a transcript
+// message's content field. Claude's transcript content is either a bare
+// string or an array of content blocks (text/tool_use/tool_result/...);
+// UNVERIFIED exact shape in this repo, so tolerate both and skip anything
+// that doesn't look like text rather than throwing.
+function transcriptText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.filter((b): b is { type?: string; text?: string } => typeof b === "object" && b !== null)
+			.filter((b) => b.type === "text" && typeof b.text === "string")
+			.map((b) => b.text as string)
+			.join("\n");
+	}
+	return "";
 }
 
 // Hand all queued messages to the Stop-hook reply, resolving each ACP request.
@@ -309,6 +376,9 @@ function handleControl(line: string, conn: Sock) {
 	touchRegistry();
 	// Every hook payload carries the model; refresh from whichever event fires.
 	setModelFromHook(ev);
+	if (typeof ev.transcript_path === "string" && ev.transcript_path) {
+		transcriptPath = ev.transcript_path;
+	}
 	switch (name) {
 		case "SessionStart":
 			applyTitle(ev.session_title);
