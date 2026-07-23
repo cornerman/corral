@@ -273,6 +273,7 @@ pub enum FooterAction {
     New,
     Jump,
     Msg,
+    History,
     Delete,
     Toggle,
     Quit,
@@ -287,7 +288,7 @@ const FOOTER_GAP: u16 = 2;
 /// font; the keycap styling in `footer_layout` supplies the visual polish. The
 /// verbs shared with the context menu come from `MenuAction::label` so the two
 /// cannot drift (footer is the source of truth for those strings).
-fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 8] {
+fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 9] {
     [
         (None, "arrows", "move"),
         (Some(FooterAction::Go), "enter", MenuAction::Go.label()),
@@ -298,6 +299,11 @@ fn footer_items() -> [(Option<FooterAction>, &'static str, &'static str); 8] {
         ),
         (Some(FooterAction::Jump), "/", "filter"),
         (Some(FooterAction::Msg), "m", MenuAction::Message.label()),
+        (
+            Some(FooterAction::History),
+            "o",
+            MenuAction::History.label(),
+        ),
         (Some(FooterAction::Delete), "d", MenuAction::Dismiss.label()),
         (
             Some(FooterAction::Toggle),

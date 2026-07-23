@@ -525,6 +525,9 @@ fn run(
                             selected,
                             &mut status,
                         ),
+                        MenuAction::History => {
+                            history_selected(board, selected, &mut status);
+                        }
                         MenuAction::Dismiss => {
                             dismiss_selected(focuser.as_ref(), board, selected, &mut status);
                         }
@@ -672,6 +675,9 @@ fn run(
                     KeyCode::Char('h') => {
                         toggle_selected(focuser.as_ref(), &launcher, board, selected, &mut status);
                     }
+                    KeyCode::Char('o') => {
+                        history_selected(board, selected, &mut status);
+                    }
                     KeyCode::Char('/') => {
                         // Focus the inline filter; typing narrows the cards.
                         status.clear();
@@ -731,6 +737,9 @@ fn run(
                                     selected,
                                     &mut status,
                                 ),
+                                ui::FooterAction::History => {
+                                    history_selected(board, selected, &mut status)
+                                }
                                 ui::FooterAction::Quit => break,
                             }
                         } else if ui::filter_hit_test(area, m.column, m.row) {
@@ -827,6 +836,31 @@ fn activate_selected(
             false
         }
     }
+}
+
+/// `o`/footer click/menu on the selected agent: fetch its full message
+/// history over session/load and open it. Live only — a dormant card has no
+/// process to ask, so this is a no-op there. Errors land in the status line
+/// like every other action.
+fn history_selected(board: &Board, selected: usize, status: &mut String) {
+    status.clear();
+    let Some(agent) = board.selectable().get(selected).copied() else {
+        *status = "history: no agent selected".into();
+        return;
+    };
+    if agent.origin != Origin::Live {
+        *status = "history: only available for live agents".into();
+        return;
+    }
+    let session_id = agent.session_id.clone().unwrap_or_default();
+    let cwd = agent.cwd.clone().unwrap_or_default();
+    *status = match corral_core::history::fetch_history(&agent.socket_path, &session_id, &cwd) {
+        Ok(entries) => match corral_core::history::write_and_open(agent, entries) {
+            Ok(path) => format!("history: opened {}", path.display()),
+            Err(e) => format!("history: {e}"),
+        },
+        Err(e) => format!("history: {e}"),
+    };
 }
 
 /// `h`/footer click on the selected agent: toggle placement (hide a visible
