@@ -99,6 +99,10 @@ pub enum Message {
     OpenCompose,
     Dismiss,
     ToggleHidden,
+    /// `o`: fetch the selected live agent's history and open it.
+    History,
+    /// The async history fetch/open finished; carries the formatted status.
+    HistoryDone(String),
     Quit,
     ComposeInput(String),
     ComposeSend,
@@ -442,6 +446,7 @@ impl Board {
                 return match action {
                     MenuAction::Go => self.act_go(),
                     MenuAction::Message => self.update(Message::OpenCompose),
+                    MenuAction::History => self.act_history(),
                     MenuAction::Spawn => self.act_spawn(),
                     MenuAction::ToggleHidden => self.act_toggle_hidden(),
                     MenuAction::Dismiss => self.update(Message::Dismiss),
@@ -475,6 +480,10 @@ impl Board {
                 }
             }
             Message::ToggleHidden => return self.act_toggle_hidden(),
+            Message::History => return self.act_history(),
+            Message::HistoryDone(status) => {
+                self.status = status;
+            }
             Message::Quit => return iced::exit(),
             Message::ComposeInput(s) => {
                 if let Some(c) = &mut self.compose {
@@ -635,6 +644,7 @@ impl Board {
                 "m" => return self.update(Message::OpenCompose),
                 "d" => return self.update(Message::Dismiss),
                 "h" => return self.update(Message::ToggleHidden),
+                "o" => return self.update(Message::History),
                 "q" => return iced::exit(),
                 "/" => {
                     self.filtering = true;
@@ -760,6 +770,35 @@ impl Board {
                 };
         }
         Task::none()
+    }
+
+    /// `o`: fetch the selected live agent's full history over session/load and
+    /// open it, off the UI thread (fetch_history can block up to 5s). Mirrors
+    /// the TUI's history_selected, but async since iced must not block its
+    /// event loop.
+    fn act_history(&mut self) -> Task<Message> {
+        let Some(agent) = self.selected_agent().cloned() else {
+            self.status = "history: no agent selected".into();
+            return Task::none();
+        };
+        if agent.origin != Origin::Live {
+            self.status = "history: only available for live agents".into();
+            return Task::none();
+        }
+        let session_id = agent.session_id.clone().unwrap_or_default();
+        let cwd = agent.cwd.clone().unwrap_or_default();
+        Task::perform(
+            async move {
+                match corral_core::history::fetch_history(&agent.socket_path, &session_id, &cwd) {
+                    Ok(entries) => match corral_core::history::write_and_open(&agent, entries) {
+                        Ok(path) => format!("history: opened {}", path.display()),
+                        Err(e) => format!("history: {e}"),
+                    },
+                    Err(e) => format!("history: {e}"),
+                }
+            },
+            Message::HistoryDone,
+        )
     }
 
     fn dismiss(&self, agent: &Agent) -> String {
@@ -1276,6 +1315,7 @@ impl Board {
                 MenuAction::ToggleHidden.label(),
                 Some(Message::ToggleHidden)
             ),
+            hint("o", MenuAction::History.label(), Some(Message::History)),
             hint("q", "quit", Some(Message::Quit)),
             Space::with_width(Length::Fill),
             text(model_text).size(13).color(dim),
