@@ -18,6 +18,11 @@
  *   session/list          this session: id, title, cwd
  *   session/prompt        inject a user message (queued as follow-up while
  *                         the agent is busy); responds on turn completion
+ *   session/load           replay the full message history (user/assistant
+ *                          text only, not tool calls) as session/update
+ *                          notifications, then respond (ACP v1 session/load;
+ *                          agentclientprotocol.com/protocol/session-setup
+ *                          #loading-sessions)
  *   session/cancel        abort the current turn (notification)
  * Broadcast to every connected client as session/update notifications:
  *   user_message_chunk    user messages (TUI-typed or injected)
@@ -577,7 +582,7 @@ export default function (pi: ExtensionAPI) {
 			case "initialize":
 				reply({
 					protocolVersion: 1,
-					agentCapabilities: { loadSession: false },
+					agentCapabilities: { loadSession: true },
 					agentInfo: { name: "pi", version: VERSION },
 					authMethods: [],
 				});
@@ -601,6 +606,45 @@ export default function (pi: ExtensionAPI) {
 				} else {
 					pi.sendUserMessage(text, { deliverAs: "followUp" });
 				}
+				break;
+			}
+			case "session/load": {
+				if (!currentCtx) return fail(-32603, "no active session");
+				const ctxAtRequest = currentCtx;
+				// cwd/mcpServers from msg.params are intentionally ignored: this is
+				// the one already-running in-process session replaying itself, not
+				// a fresh session restore, so there is nothing to reconnect.
+				(async () => {
+					try {
+						const entries = await ctxAtRequest.sessionManager.getEntries();
+						for (const e of entries as Array<{
+							type?: string;
+							message?: { role?: string; content?: unknown };
+						}>) {
+							// Deliberate scope cut: only `type: "message"` entries
+							// (role user/assistant) are replayed, not tool_call/other
+							// SessionTreeEntry types (thinking_level_change,
+							// model_change, compaction, branch_summary, custom, label,
+							// session_info) -- no established ACP mapping for those, and
+							// the feature's ask is message history, not a tool-call log
+							// (YAGNI). Mirrors message_end's own role filter above.
+							if (e.type !== "message") continue;
+							const role = e.message?.role;
+							if (role !== "user" && role !== "assistant") continue;
+							const text = messageText(e.message as { content?: unknown });
+							if (!text) continue;
+							conn.write(
+								sessionUpdateLine({
+									sessionUpdate: role === "user" ? "user_message_chunk" : "agent_message_chunk",
+									content: { type: "text", text },
+								}),
+							);
+						}
+						reply(sessionInfo(ctxAtRequest));
+					} catch (e) {
+						fail(-32603, `session/load failed: ${e}`);
+					}
+				})();
 				break;
 			}
 			default:
