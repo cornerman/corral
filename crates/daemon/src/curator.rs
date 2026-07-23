@@ -149,6 +149,15 @@ fn record_json(rec: &corral_core::discovery::RegistryEntry) -> Result<String, se
     if let Some(m2) = &rec.model {
         m.insert("model".into(), m2.clone().into());
     }
+    if let Some(e) = rec.entries {
+        m.insert("entries".into(), e.into());
+    }
+    if let Some(p) = rec.context_percent {
+        m.insert("contextPercent".into(), p.into());
+    }
+    if let Some(a) = &rec.context_age {
+        m.insert("contextAge".into(), a.clone().into());
+    }
     serde_json::to_string_pretty(&serde_json::Value::Object(m))
 }
 
@@ -212,5 +221,29 @@ mod tests {
         // Absent model is omitted, not written as null.
         rec.model = None;
         assert!(!record_json(&rec).unwrap().contains("model"));
+    }
+
+    #[test]
+    fn record_json_includes_context_fields_when_set() {
+        // Regression: record_json hand-lists fields, so a new RegistryEntry
+        // field must be added here explicitly or the vetted state/registry/
+        // output silently drops it even though the raw record carries it.
+        let mut rec = corral_core::discovery::parse_registry_json(
+            r#"{"sessionId":"s1","entries":42,"contextPercent":12,"contextAge":"3d"}"#,
+        )
+        .unwrap();
+        rec.cwd = Some("/tmp/p".into());
+        let json = record_json(&rec).unwrap();
+        assert!(json.contains("\"entries\": 42"));
+        assert!(json.contains("\"contextPercent\": 12"));
+        assert!(json.contains("\"contextAge\": \"3d\""));
+        // Absent fields are omitted, not written as null.
+        rec.entries = None;
+        rec.context_percent = None;
+        rec.context_age = None;
+        let json = record_json(&rec).unwrap();
+        assert!(!json.contains("entries"));
+        assert!(!json.contains("contextPercent"));
+        assert!(!json.contains("contextAge"));
     }
 }
