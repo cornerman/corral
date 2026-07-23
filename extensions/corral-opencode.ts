@@ -20,6 +20,9 @@
  *   session/list          this session: id, title, cwd
  *   session/prompt        inject a user message (opencode queues while busy);
  *                         responds on the next session.idle
+ *   session/load           replay the full message history (user/assistant
+ *                          text only) from client.session.messages, then
+ *                          respond (ACP v1 session/load)
  *   session/cancel        abort the current turn (notification)
  * Broadcast to every connected client as session/update notifications:
  *   agent_message_chunk / user_message_chunk (best-effort text from message
@@ -365,7 +368,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			case "initialize":
 				reply({
 					protocolVersion: 1,
-					agentCapabilities: { loadSession: false },
+					agentCapabilities: { loadSession: true },
 					// Version is unknown without a typed constant from opencode; the
 					// name is what corral labels the card with.
 					agentInfo: { name: "opencode", version: "unknown" },
@@ -400,6 +403,45 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					pendingPrompts.pop();
 					return fail(-32603, "failed to inject prompt");
 				}
+				break;
+			}
+			case "session/load": {
+				if (!activeSessionId) return fail(-32603, "no active session");
+				const sid = activeSessionId;
+				(async () => {
+					try {
+						// SDK-documented: session.messages({path}) -> {info: Message,
+						// parts: Part[]}[] (opencode.ai/docs/sdk/#sessions). UNVERIFIED
+						// at runtime in this repo (opencode is untypechecked here, per
+						// this file's existing UNVERIFIED posture), so every field
+						// access stays guarded.
+						const res = (await client.session.messages({ path: { id: sid } })) as {
+							data?: Array<{
+								info?: { role?: string };
+								parts?: Array<{ type?: string; text?: string }>;
+							}>;
+						};
+						const list = Array.isArray(res?.data) ? res.data : [];
+						for (const m of list) {
+							const role = m?.info?.role;
+							if (role !== "user" && role !== "assistant") continue;
+							const text = (m.parts ?? [])
+								.filter((p) => p?.type === "text" && typeof p.text === "string")
+								.map((p) => p.text)
+								.join("\n");
+							if (!text) continue;
+							conn.write(
+								sessionUpdateLine({
+									sessionUpdate: role === "user" ? "user_message_chunk" : "agent_message_chunk",
+									content: { type: "text", text },
+								}),
+							);
+						}
+						reply({ sessionId: sid, title: activeTitle, cwd: activeCwd });
+					} catch (e) {
+						fail(-32603, `session/load failed: ${e}`);
+					}
+				})();
 				break;
 			}
 			default:
