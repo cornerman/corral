@@ -572,9 +572,13 @@ export default function (pi: ExtensionAPI) {
 		const createdAt = Date.parse(entries[0]?.timestamp ?? "");
 		if (Number.isNaN(createdAt)) return undefined;
 		const usage = ctx.getContextUsage();
+		// usage.percent is a fractional 0-100 number (e.g. 0.006 early in a
+		// session, not a whole percent); round for display, since corral shows
+		// it verbatim as a plain integer ("N% ctx").
+		const percent = usage?.percent != null ? Math.round(usage.percent) : null;
 		return {
 			entries: entries.length,
-			percent: usage?.percent ?? null,
+			percent,
 			age: ageLabel(Date.now() - createdAt),
 		};
 	}
