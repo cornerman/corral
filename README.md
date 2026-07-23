@@ -65,6 +65,7 @@ Or, without NixOS, `cachix use corral`.
 | `Shift+←/→` or drag | Move a card between columns to drive the agent's state (stop, continue, kill, resume) |
 | `/` | Filter cards |
 | `m` | Send a message to an agent |
+| `o` | Fetch and open a live agent's full message history |
 | `d` | Close a live agent / forget a dormant one |
 | `q` | Quit |
 

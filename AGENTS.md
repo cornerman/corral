@@ -213,6 +213,14 @@ ratatui / iced, the daemon keeps ksni).
     (agent delivery to a live target). `send_cancel` does the same with a
     `session/cancel` notification (stop the turn / unblock a question), used by
     the card-move feature. Unit-tested against a throwaway listener.
+  - `src/history.rs` — `fetch_history`: open a fresh ACP connection, send
+    `session/load`, collect the replayed `session/update` notifications until
+    the reply lands (5s timeout); `write_and_open`: wrap the collected entries
+    plus session metadata into one JSON file (temp dir,
+    `corral-history-<sessionId>-<unix_ts>.json`) and launch `xdg-open` on it
+    detached, on the caller's own display (so a hidden/caged agent's history
+    still opens somewhere real). Backs the `o` key in both shells. Unit-tested
+    against a scripted `UnixListener`, like `prompt.rs`.
   - `src/transition.rs` — the pure card-move table (`action_for(from, to)`):
     moving a card between columns triggers a real agent action — cancel turn
     (Running/RequiresAction → Idle), nudge `"continue"` (Idle → Running), kill
@@ -763,7 +771,9 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   directly, arrows still navigate, Esc clears (never exits the normal board);
   `m` compose a
   message to any agent — delivered to a live one over its socket, or a dormant
-  one by resuming it with the message as its first prompt; `d` close the
+  one by resuming it with the message as its first prompt; `o` fetch the
+  selected live agent's full message history (session/load) and open it with
+  xdg-open (no-op on a dormant card); `d` close the
   selected live agent (kill its terminal process, closing the window; pi then
   goes dormant and resumable) or forget the selected dormant record; `q` quits
   (the sole quit), and Esc peels one layer per press (edit-mode blur, then clear
@@ -771,7 +781,7 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   ephemeral popup (filter focused, a successful go/spawn exits, as does a single
   Esc), the same as `corral-gui --launcher`. A single left click selects a
   card, a double click goes, and a right click opens a context menu of the
-  footer actions (go / message / spawn / toggle-hidden / dismiss) acting on the
+  footer actions (go / message / history / spawn / toggle-hidden / dismiss) acting on the
   card under the cursor (Esc or a click outside closes it). Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
   visible; live cards show time-in-state. The footer shows the selected card's
@@ -783,7 +793,7 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   base16-Solarized, follows the system light/dark (freedesktop appearance
   portal). A centered filter line over the four columns; single-click selects
   a card, double-click goes, right-click opens the context menu of footer
-  actions, `+ new` to spawn, arrows / Enter / Shift+Enter / `m` / `d` / `/` as in the
+  actions, `+ new` to spawn, arrows / Enter / Shift+Enter / `m` / `o` / `d` / `/` as in the
   TUI, a bottom key-hint footer showing the selected card's model at its far end. Links the graphics libs (libGL / wayland / X11
   / xkbcommon); on NixOS the flake wraps it with the driver library path. The
   tray's “Open board” launches this.
@@ -829,9 +839,13 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
 - A transient watch read error reports the agent gone; the next 1s scan
   reconnects. A genuinely dead socket (crashed pi) reconnects-and-drops cheaply
   once per second until its file disappears.
-- corral-pi answers `session/new`/`session/load` with method-not-
-  supported: clients can discover, watch, and prompt running pi sessions, but
-  attaching with history replay is not yet served.
+- corral-pi and corral-opencode serve `session/load` with full message-history
+  replay (user/assistant text only, not tool calls); corral-claude serves it
+  best-effort from Claude Code's on-disk transcript (UNVERIFIED — no Claude
+  Code install in this repo); corral-cursor does not support it (no transcript
+  API). `session/new` remains unsupported everywhere (no client needs to
+  create a second session on an existing agent). See `docs/superpowers/specs/
+  2026-07-23-history-export-design.md`.
 - corral-pi's `session/prompt` responses resolve for all waiting clients
   at once when the queue drains (no per-message turn attribution).
 - Approvals stay in the pi TUI; socket clients never receive
