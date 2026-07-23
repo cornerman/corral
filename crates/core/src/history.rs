@@ -177,6 +177,9 @@ mod tests {
             message_flag: None,
             hidden: false,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
             state_since: Instant::now(),
             last_activity: Instant::now(),
         };
