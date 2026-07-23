@@ -59,6 +59,11 @@ acp(f"prompt {sock_a} {sid_a} 'smoke:reply operator-turn'")
 acp(f"state {sock_a} idle 30")
 assert stub_saw("operator-turn"), "stub never saw the operator turn"
 
+# --- 2b. history export: session/load replays the turn we just ran ------
+load_res = json.loads(acp(f"load {sock_a} {sid_a} 15"))
+assert load_res.get("ok"), f"pi session/load failed: {load_res}"
+assert load_res["chunks"] >= 2, f"expected at least a user+assistant chunk: {load_res}"
+
 # --- 4. board TUI renders + operator m delivers -------------------------
 open_kitty(HOME, "corral")
 try:

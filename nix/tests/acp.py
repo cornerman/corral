@@ -12,6 +12,9 @@ Usage:
   acp.py model <socket> [secs]         -> wait for a config_options_update model
                                           broadcast; prints {"ok":true,"model":..}
   acp.py prompt <socket> <sid> <text>  -> send session/prompt (fire-and-forget)
+  acp.py load <socket> <sid> [secs]    -> session/load; prints
+                                          {"ok":true,"chunks":N} or
+                                          {"ok":false,"error":...}
 
 Ground truth for the rest (records, focus, windows) is read directly by the
 driver from state/registry, swaymsg, etc.; this helper only covers the live
@@ -137,6 +140,44 @@ def cmd_prompt(path, sid, text):
     print(json.dumps({"ok": True}))
 
 
+def cmd_load(path, sid, secs):
+    # session/load replays history as session/update notifications, then
+    # replies to the request itself (id 2, after id 1 = initialize here).
+    # Count only message chunks (the feature's scope); ignore anything else.
+    deadline = time.time() + secs
+    s = connect(path, timeout=secs + 2)
+    send(s, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    send(s, {"jsonrpc": "2.0", "id": 2, "method": "session/load",
+              "params": {"sessionId": sid, "cwd": "", "mcpServers": []}})
+    chunks = 0
+    buf = b""
+    while time.time() < deadline:
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            if msg.get("method") == "session/update":
+                upd = msg.get("params", {}).get("update", {})
+                if upd.get("sessionUpdate") in ("user_message_chunk", "agent_message_chunk"):
+                    chunks += 1
+                continue
+            if msg.get("id") == 2:
+                if "error" in msg:
+                    print(json.dumps({"ok": False, "error": "unsupported"}))
+                    return
+                print(json.dumps({"ok": True, "chunks": chunks}))
+                return
+    print(json.dumps({"ok": False, "error": "timeout"}))
+
+
 def cmd_cancel(path, sid):
     s = connect(path)
     rpc(s, "initialize", {}, 1)
@@ -158,6 +199,9 @@ if __name__ == "__main__":
                   int(sys.argv[3]) if len(sys.argv) > 3 else 15)
     elif op == "prompt":
         cmd_prompt(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif op == "load":
+        cmd_load(sys.argv[2], sys.argv[3],
+                  int(sys.argv[4]) if len(sys.argv) > 4 else 15)
     elif op == "cancel":
         cmd_cancel(sys.argv[2], sys.argv[3])
     else:

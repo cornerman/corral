@@ -30,6 +30,15 @@ try:
     rec = next(r for r in recs if r.get("label") == "cursor")
     assert rec.get("gui") is True, rec
     machine.log(f"e2e-cursor: extension announced gui record: {rec.get('sessionId')}")
+
+    # session/load (history export, corral's `o` key): Cursor exposes no API to
+    # read the Composer transcript, so the adapter's existing default case
+    # answers method-not-supported like any other unimplemented method.
+    if rec.get("socket"):
+        load_res = json.loads(acp(f"load {rec['socket']} {rec.get('sessionId', '')} 5"))
+        assert not load_res.get("ok") and load_res.get("error") == "unsupported", \
+            f"cursor should answer session/load as unsupported: {load_res}"
+        machine.log("e2e-cursor: session/load correctly unsupported")
 except Exception as e:
     machine.log("e2e-cursor: Cursor did not announce (Electron/software-GL or "
           f"login-gated; UNVERIFIED, expected residue): {e}")

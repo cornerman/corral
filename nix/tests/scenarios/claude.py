@@ -39,6 +39,16 @@ if announced:
     except Exception as e:
         machine.log(f"e2e-claude: turn/state best-effort skipped: {e}")
 
+    # History export: session/load replays from the on-disk transcript
+    # (transcript_path, captured off the first hook event). Best-effort like
+    # the turn check above -- both the turn and the transcript line schema are
+    # UNVERIFIED in this repo.
+    try:
+        load_res = json.loads(acp(f"load {sock_cl} {sid_cl} 15"))
+        machine.log(f"e2e-claude: session/load result: {load_res}")
+    except Exception as e:
+        machine.log(f"e2e-claude: session/load best-effort skipped: {e}")
+
     # Teardown: end the session, sidecar is reaped, record goes dormant.
     as_user("pkill -f claude || true")
     try:

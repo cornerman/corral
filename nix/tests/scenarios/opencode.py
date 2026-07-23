@@ -48,6 +48,15 @@ if announced:
     machine.log("e2e-opencode: operator turn seen by stub: "
                 + str(stub_saw("operator-to-opencode")))
 
+    # History export: session/load replays the turn above. Best-effort like the
+    # turn itself (opencode provider config UNVERIFIED, so the turn may not
+    # have actually produced messages) -- log rather than hard-assert.
+    try:
+        load_res = json.loads(acp(f"load {sock_o} {sid_o} 15"))
+        machine.log(f"e2e-opencode: session/load result: {load_res}")
+    except Exception as e:
+        machine.log(f"e2e-opencode: session/load best-effort skipped: {e}")
+
     # Cross-kind: a pi session messages the opencode dir (whitelisted). corrald
     # routing is the hard part; the opencode turn that follows is best-effort.
     open_kitty(PROJ_A, "pi")
