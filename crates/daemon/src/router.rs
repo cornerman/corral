@@ -448,6 +448,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 
@@ -489,6 +492,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 
@@ -509,6 +515,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 
@@ -527,6 +536,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 
@@ -763,6 +775,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }];
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();

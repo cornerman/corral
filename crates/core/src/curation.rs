@@ -298,6 +298,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 

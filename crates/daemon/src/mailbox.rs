@@ -476,6 +476,9 @@ mod tests {
             hidden: false,
             description: desc.map(String::from),
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 

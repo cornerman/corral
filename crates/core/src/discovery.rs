@@ -69,6 +69,24 @@ pub struct RegistryEntry {
     /// shown as-is (corral never prettifies). Absent for a producer that does
     /// not report a model.
     pub model: Option<String>,
+    /// Count of session-log entries (messages, tool calls, custom entries) —
+    /// an honest size proxy for "how big this transcript is". Written by an
+    /// adapter that can introspect its own transcript (pi only today); `None`
+    /// for a producer that does not report it, which also gates the whole
+    /// entries/percent/age footer group off (see `Agent::footer_line`).
+    pub entries: Option<u64>,
+    /// This session's context usage as a percentage of its model's context
+    /// window (pi's own `ctx.getContextUsage()`), 0-100. `None` when the
+    /// adapter's own estimate is unknown (e.g. right after compaction) or the
+    /// adapter does not report it at all.
+    pub context_percent: Option<u32>,
+    /// A pre-formatted age string (e.g. `"3d"`, `"42m"`) for how long this
+    /// session's transcript has existed, computed adapter-side from the
+    /// session's own creation timestamp (durable across a resume). Kept as an
+    /// opaque string rather than a raw timestamp: no ISO-8601 parsing
+    /// dependency needed in Rust, matching how `model` is also carried as an
+    /// opaque adapter string.
+    pub context_age: Option<String>,
 }
 
 impl RegistryEntry {
@@ -127,6 +145,12 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
         description: str_field("description"),
         model: str_field("model"),
+        entries: v.get("entries").and_then(|x| x.as_u64()),
+        context_percent: v
+            .get("contextPercent")
+            .and_then(|x| x.as_u64())
+            .map(|n| n as u32),
+        context_age: str_field("contextAge"),
     })
 }
 
@@ -227,6 +251,34 @@ mod tests {
         // Non-string -> None (never a garbled value).
         let e = parse_registry_json(r#"{"sessionId":"s3","model":42}"#).unwrap();
         assert_eq!(e.model, None);
+    }
+
+    #[test]
+    fn context_fields_parse_and_default_none() {
+        let json = r#"{"sessionId":"s1","entries":42,"contextPercent":12,"contextAge":"3d"}"#;
+        let e = parse_registry_json(json).unwrap();
+        assert_eq!(e.entries, Some(42));
+        assert_eq!(e.context_percent, Some(12));
+        assert_eq!(e.context_age.as_deref(), Some("3d"));
+        // Absent -> None (older/unknown producer, or an adapter that never reports it).
+        let e = parse_registry_json(r#"{"sessionId":"s2"}"#).unwrap();
+        assert_eq!(e.entries, None);
+        assert_eq!(e.context_percent, None);
+        assert_eq!(e.context_age, None);
+        // contextPercent can be legitimately absent (unknown estimate) even when
+        // entries/contextAge are present.
+        let json = r#"{"sessionId":"s3","entries":7,"contextAge":"5m"}"#;
+        let e = parse_registry_json(json).unwrap();
+        assert_eq!(e.entries, Some(7));
+        assert_eq!(e.context_percent, None);
+        assert_eq!(e.context_age.as_deref(), Some("5m"));
+        // Non-numeric entries/contextPercent or non-string contextAge -> None,
+        // never a garbled value.
+        let json = r#"{"sessionId":"s4","entries":"lots","contextPercent":"high","contextAge":9}"#;
+        let e = parse_registry_json(json).unwrap();
+        assert_eq!(e.entries, None);
+        assert_eq!(e.context_percent, None);
+        assert_eq!(e.context_age, None);
     }
 
     #[test]

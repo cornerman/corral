@@ -548,6 +548,9 @@ mod tests {
             hidden: true,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         };
         b.sync_registry(&[rec], &HashSet::new());
         let live = b.in_state(State::Running);
@@ -583,6 +586,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 
@@ -608,6 +614,9 @@ mod tests {
             hidden: false,
             description: None,
             model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         };
         board.sync_registry(&[rec], &HashSet::new());
         let dormant = board.dormant();

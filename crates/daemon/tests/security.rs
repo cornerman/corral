@@ -363,6 +363,9 @@ fn mk_rec(sid: &str, socket: Option<&str>) -> RegistryEntry {
         hidden: false,
         description: None,
         model: None,
+        entries: None,
+        context_percent: None,
+        context_age: None,
     }
 }
 
