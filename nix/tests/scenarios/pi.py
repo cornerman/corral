@@ -64,6 +64,19 @@ load_res = json.loads(acp(f"load {sock_a} {sid_a} 15"))
 assert load_res.get("ok"), f"pi session/load failed: {load_res}"
 assert load_res["chunks"] >= 2, f"expected at least a user+assistant chunk: {load_res}"
 
+# Context exposure: after a turn, pi has at least one session-log entry, so
+# the live broadcast and the persisted record must both carry it.
+context_res = json.loads(acp(f"context {sock_a} 20"))
+assert isinstance(context_res.get("entries"), int) and context_res["entries"] >= 1, \
+    f"pi did not broadcast entries: {context_res}"
+assert context_res.get("age"), f"pi did not broadcast an age string: {context_res}"
+recs = wait_records(
+    lambda rs: any(r.get("sessionId") == sid_a and r.get("entries")
+                   for r in rs),
+    timeout=30, desc="A's record carries entries after a turn")
+rec_a = next(r for r in recs if r.get("sessionId") == sid_a)
+assert rec_a.get("entries", 0) >= 1, f"record missing entries: {rec_a}"
+assert rec_a.get("contextAge"), f"record missing contextAge: {rec_a}"
 # --- 4. board TUI renders + operator m delivers -------------------------
 open_kitty(HOME, "corral")
 try:

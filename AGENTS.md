@@ -498,6 +498,14 @@ ratatui / iced, the daemon keeps ksni).
   It also broadcasts the current model (from `ctx.model`, refreshed on
   `model_select`) as a `config_options_update` config option and persists it in
   the record, seeded on connect like state (verified against pi's types).
+  It also broadcasts a corral-pi-specific `context_update` session/update
+  (entries count from `ctx.sessionManager.getEntries().length`, context-window
+  percent from `ctx.getContextUsage()`, and a pre-formatted age string derived
+  from the session's own creation entry), refreshed on `turn_start`/`turn_end`
+  and persisted in the record (`entries`/`contextPercent`/`contextAge`), seeded
+  on connect like state and model. Shown next to the model in the footer for the
+  selected card (`core::model::Agent::footer_line`), pi only for now — other
+  adapters have no equivalent introspection API surfaced today.
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
   (`target_dir` or `target_session`, `message`, `force_new`, optional `label`,
   optional `hidden` default true)

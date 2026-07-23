@@ -11,6 +11,9 @@ Usage:
                                           prints {"ok":true,"state":...}
   acp.py model <socket> [secs]         -> wait for a config_options_update model
                                           broadcast; prints {"ok":true,"model":..}
+  acp.py context <socket> [secs]        -> wait for a context_update
+                                           broadcast; prints
+                                           {"ok":true,"entries":..,"age":..}
   acp.py prompt <socket> <sid> <text>  -> send session/prompt (fire-and-forget)
   acp.py load <socket> <sid> [secs]    -> session/load; prints
                                           {"ok":true,"chunks":N} or
@@ -130,6 +133,37 @@ def cmd_model(path, secs):
     sys.exit(1)
 
 
+def cmd_context(path, secs):
+    # Wait for the context_update seed (sent on connect, like state_update and
+    # config_options_update). Read every line without rpc() so the seed is not
+    # discarded while awaiting the init reply.
+    deadline = time.time() + secs
+    s = connect(path, timeout=secs + 2)
+    send(s, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    buf = b""
+    while time.time() < deadline:
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            upd = msg.get("params", {}).get("update", {})
+            if upd.get("sessionUpdate") == "context_update":
+                print(json.dumps({"ok": True, "entries": upd.get("entries"),
+                                  "percent": upd.get("percent"),
+                                  "age": upd.get("age")}))
+                return
+    print(json.dumps({"ok": False}))
+    sys.exit(1)
+
+
 def cmd_prompt(path, sid, text):
     s = connect(path)
     rpc(s, "initialize", {}, 1)
@@ -197,6 +231,9 @@ if __name__ == "__main__":
     elif op == "model":
         cmd_model(sys.argv[2],
                   int(sys.argv[3]) if len(sys.argv) > 3 else 15)
+    elif op == "context":
+        cmd_context(sys.argv[2],
+                    int(sys.argv[3]) if len(sys.argv) > 3 else 15)
     elif op == "prompt":
         cmd_prompt(sys.argv[2], sys.argv[3], sys.argv[4])
     elif op == "load":
