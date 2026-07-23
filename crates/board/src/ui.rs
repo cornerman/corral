@@ -736,7 +736,7 @@ pub fn render(
     status: &str,
     states: &mut [ListState; 4],
     meta: &CardMeta,
-    model: Option<&str>,
+    footer_text: Option<&str>,
 ) {
     let footer_area = footer_rect(frame.area());
     let cols = column_layout(frame.area());
@@ -768,9 +768,10 @@ pub fn render(
     }
 
     // The spacer row above the footer carries a transient action status on the
-    // left and the selected card's model on the right (display-only; corral
-    // never selects a model). Both dim so the columns stay the focus; the
-    // footer row below keeps the clickable key hints at a fixed position.
+    // left and the selected card's footer line (context size/age + model,
+    // display-only; corral never selects a model) on the right. Both dim so
+    // the columns stay the focus; the footer row below keeps the clickable
+    // key hints at a fixed position.
     let spacer = Rect {
         y: footer_area.y.saturating_sub(1),
         ..footer_area
@@ -778,8 +779,7 @@ pub fn render(
     if !status.is_empty() {
         frame.render_widget(Paragraph::new(Line::from(status.dim())), spacer);
     }
-    if let Some(m) = model {
-        let text = format!("model: {m}");
+    if let Some(text) = footer_text {
         let w = text.chars().count() as u16;
         let right = Rect {
             x: spacer.x + spacer.width.saturating_sub(w),
