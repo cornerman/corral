@@ -88,6 +88,10 @@ Cursor versions. If messaging does not open a chat, set
 - **Dormant delivery drops the message text** (reopen only): `cursor <dir>`
   cannot carry a prompt. A future generic `messageUriTemplate` (prompt deeplink)
   could pre-fill it.
+- **`session/load` (history export, corral's `o` key) is not supported**:
+  Cursor exposes no API to read the Composer chat transcript. Falls through to
+  `lib.js`'s existing default case, answered as method-not-supported like any
+  other unimplemented method.
 
 ## TODO / Future
 
