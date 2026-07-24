@@ -114,12 +114,13 @@ The operator decides, and I would rank the options this way:
 
 ## Surface
 
-Two subcommands on the existing `corral` binary. Bare `corral` and
-`corral --launcher` behave exactly as today.
+Two subcommands plus a help form on the existing `corral` binary. Bare `corral`
+and `corral --launcher` behave exactly as today.
 
 ```
 corral send (--dir <path> | --session <id>) [--label <kind>] [--force-new] [--visible] [--] <message>
 corral list
+corral help | --help | -h
 ```
 
 `send` prints the daemon's ack line verbatim on stdout (`{"status":"accepted"}`),
@@ -210,8 +211,8 @@ consequences to plan around:
   directory X still prompts once. The operator has no whitelist file at all
   today, so **every** pair prompts on first use. The price of the security
   decision is one "allow always" per pair, and nothing in this design may assume
-  an existing whitelist. (The roster query does exempt self, `control.rs:118`, so
-  `corral list` needs no approval.)
+  an existing whitelist. (The roster query does exempt self, in `handle`'s
+  `visible` closure, so `corral list` needs no approval.)
 
 The CLI is not a session, so it sends no `fromSession`. The recipient's
 provenance tag reads `[from <sender-dir-basename>]` with no reply handle, which
@@ -282,8 +283,11 @@ pub fn parse(args: &[String]) -> Result<Command, String>   // pure, unit-tested
 `main` matches: `Send`/`List`/`Help` run and exit before `ratatui::init()`;
 `Board` falls through to today's code path unchanged.
 
-Only the exact first words `send` and `list` divert. Anything else keeps today's
-behavior (open the board), so no existing invocation changes meaning.
+Only the exact first words `send`, `list`, `help`, `--help` and `-h` divert;
+anything else keeps today's behavior of opening the board. One existing
+invocation therefore changes meaning: `corral --help` prints usage instead of
+opening the TUI (D1, decided). A binary that answers a help request with a
+full-screen TUI is a trap once it has subcommands.
 
 Parsing stays hand-rolled: the workspace has no argument parser today, and two
 subcommands with five flags do not earn `clap`'s dependency weight.
@@ -291,7 +295,7 @@ subcommands with five flags do not earn `clap`'s dependency weight.
 Record building is a second pure function so it can be tested without a socket:
 
 ```rust
-pub fn record(send: &Send, id: &str, created_at: &str) -> serde_json::Value
+pub fn record(send: &Send, id: &str) -> serde_json::Value
 ```
 
 Fields per CONVENTION.md: `id`, `message`, `targetDir` xor `targetSession`,
@@ -315,7 +319,8 @@ Unit tests, following `prompt.rs` and `history.rs`:
 
 - `cli::parse`: every accepted shape; both targets; neither target; missing
   message; unknown flag; `--` guarding a leading dash; `send` with an
-  over-cap message; bare `corral` and `--launcher` still yielding `Board`.
+  over-cap message; each of `help` / `--help` / `-h` yielding `Help`; bare
+  `corral` and `--launcher` still yielding `Board`.
 - `cli::record`: field presence and exclusivity, `hidden` true by default and
   false under `--visible`, `label` present only when given, no `fromSession`.
 - `cli::exit_code`: each ack word, plus garbage.
@@ -408,6 +413,14 @@ SECURITY.md T2 claimed `fromSession` "is verified against the curated registry"
 while no such verification existed in `crates/daemon` (`from_session` was parsed
 and used only to build the provenance tag), so any agent could forge a peer's
 reply handle and misdirect a recipient's reply.
+
+Calibrated: this was a confused deputy on the *reply* path, not a bypass of the
+sender's own gate. The tag's directory half stayed authenticated from the outbox
+location, so a forger could not send as another directory; it could only make a
+recipient's answer land on some session in a third directory. The giveaway that
+the check was intended is T2's next paragraph, which accepts *same-directory*
+forgery explicitly, a narrowing that only makes sense if the cross-directory case
+were blocked.
 
 **Fixed in `3bdc44c`**, independently of this spec:
 `mailbox::session_claims_other_dir` is a pure predicate, and `control.rs`
