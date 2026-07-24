@@ -81,6 +81,19 @@ model_res = json.loads(acp(f"model {sock_a} 20"))
 assert model_res.get("model") == "stub/smoke", \
     f"pi did not broadcast the model: {model_res}"
 
+# NSpid bridge: the record carries the window pid + its PID-namespace inode, so
+# a host consumer correlates to a host window (focus/kill) even for a sandboxed
+# agent. Here pi shares the host PID namespace, so the pid is host-level and
+# focus works via the identity shortcut. The socket filename is <sessionId>.sock
+# (opaque, no longer parsed for pid/label).
+for r in records_with_label(recs, "pi"):
+    assert isinstance(r.get("pid"), int) and r["pid"] > 0, \
+        f"record missing pid: {r}"
+    assert isinstance(r.get("pidNamespace"), int) and r["pidNamespace"] > 0, \
+        f"record missing pidNamespace: {r}"
+    assert r["socket"].endswith(f"/{r['sessionId']}.sock"), \
+        f"pi socket filename should be <sessionId>.sock: {r}"
+
 # --- 2. a plain turn: running -> idle -----------------------------------
 acp(f"prompt {sock_a} {sid_a} 'smoke:reply operator-turn'")
 acp(f"state {sock_a} idle 30")

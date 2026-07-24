@@ -29,7 +29,12 @@ try:
         timeout=90, desc="cursor gui record")
     rec = next(r for r in recs if r.get("label") == "cursor")
     assert rec.get("gui") is True, rec
-    machine.log(f"e2e-cursor: extension announced gui record: {rec.get('sessionId')}")
+    # NSpid bridge: a gui record carries the Electron window pid (+ its
+    # PID-namespace inode) so corral focuses the window by that pid. Best-effort
+    # (Electron pid resolution is UNVERIFIED): warn rather than fail.
+    if not (isinstance(rec.get("pid"), int) and rec["pid"] > 0):
+        machine.log(f"e2e-cursor: WARN gui record missing pid: {rec}")
+    machine.log(f"e2e-cursor: extension announced gui record: {rec.get('sessionId')} pid={rec.get('pid')}")
 
     # session/load (history export, corral's `o` key): Cursor exposes no API to
     # read the Composer transcript, so the adapter's existing default case

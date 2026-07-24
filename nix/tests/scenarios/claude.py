@@ -27,8 +27,15 @@ if announced:
     rec = next(r for r in records_with_label(recs, "claude") if r.get("socket"))
     sock_cl, sid_cl = rec["socket"], rec.get("sessionId", "")
     assert "proj-cl" in rec.get("cwd", ""), rec
-    # The socket pid is the interactive Claude process (focus correlation).
-    machine.log(f"e2e-claude: announced socket={sock_cl} sid={sid_cl}")
+    # NSpid bridge: the record's pid is the interactive Claude process (not the
+    # detached sidecar that authored it), with its PID-namespace inode, so a
+    # host consumer correlates to the Claude window. Best-effort on this first
+    # live run: warn rather than fail if the sidecar could not stat it.
+    if not (isinstance(rec.get("pid"), int) and rec["pid"] > 0):
+        machine.log(f"e2e-claude: WARN record missing pid: {rec}")
+    if rec.get("pidNamespace") is not None and not isinstance(rec["pidNamespace"], int):
+        machine.log(f"e2e-claude: WARN pidNamespace not an int: {rec}")
+    machine.log(f"e2e-claude: announced socket={sock_cl} sid={sid_cl} pid={rec.get('pid')}")
 
     # State + delivery are turn-dependent (Claude vs the Anthropic stub) and
     # thus best-effort on this first live run.

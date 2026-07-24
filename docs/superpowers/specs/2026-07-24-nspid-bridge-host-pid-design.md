@@ -181,11 +181,17 @@ complete once translation works with `unshare-pid` on.
 
 ## E2E (nix/tests/, hard rule)
 
-Extend the VM scenario: run an adapter under `nono` with a private PID namespace
-and assert corral resolves its host PID (focus/kill correlation succeeds).
-Assert the negative too: with `unshare-pid` on, the agent cannot read a host
-process's `/proc/<pid>/environ` (the leak the bridge removes), keeping the
-location=identity checks honest.
+Landed: every adapter scenario asserts its vetted record carries `pid` (+
+`pidNamespace`), and the pi scenario also asserts the `<sessionId>.sock`
+filename. Under the current VM the agent shares the host PID namespace, so the
+translation takes its identity shortcut and existing focus assertions still hold
+(proving backward compatibility).
+
+Follow-up (needs the `nono` profile to `unshare-pid`, a `~/nixos` change not
+validated from this repo): run an adapter in a private PID namespace and assert
+corral resolves its host PID (focus/kill succeeds through real NSpid
+translation), plus the negative that the agent can no longer read a host
+process's `/proc/<pid>/environ` (the env-var leak the bridge removes).
 
 ## Backward Compatibility and Degradation
 

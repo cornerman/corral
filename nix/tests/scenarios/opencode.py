@@ -38,6 +38,14 @@ if announced:
     sock_o = next(r["socket"] for r in records_with_label(recs, "opencode") if r.get("socket"))
     sid_o = next(r.get("sessionId", "") for r in records_with_label(recs, "opencode"))
     assert any("proj-o" in r.get("cwd", "") for r in recs)
+    # NSpid bridge: the record carries the window pid + its PID-namespace inode
+    # for host-window correlation (opencode keeps its opencode-<pid>.sock name,
+    # bound before the session id exists; the pid lives in the record).
+    orec = next(r for r in records_with_label(recs, "opencode") if r.get("socket"))
+    assert isinstance(orec.get("pid"), int) and orec["pid"] > 0, \
+        f"opencode record missing pid: {orec}"
+    assert isinstance(orec.get("pidNamespace"), int) and orec["pidNamespace"] > 0, \
+        f"opencode record missing pidNamespace: {orec}"
 
     # Operator delivery: turn is best-effort (opencode provider config UNVERIFIED).
     acp(f"prompt {sock_o} {sid_o} 'reply operator-to-opencode'")
