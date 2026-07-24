@@ -258,17 +258,25 @@ assert window_count() == before, "hidden spawn opened a visible window"
 # --- 3 (moved last, since a blocked question wedges A). requires_action via
 #     the question tool: the card must flip to requires_action. Done after all
 #     A-driven messaging because pi's question blocks the turn and abort does
-#     not reliably unblock it (UNVERIFIED per AGENTS.md), so A is spent after.
+#     not unblock it (ACCEPTED limitation, AGENTS.md), so A is spent after.
 acp(f"prompt {sock_a} {sid_a} 'smoke:ask'")
 acp(f"state {sock_a} requires_action 30")
 machine.log("e2e-pi: question tool -> requires_action confirmed")
+# ACCEPTED (AGENTS.md): pi's abort does NOT dismiss a pending question. Pin it
+# as a hard assert -- the session must STAY blocked (never reach idle). If pi
+# ever gains question-abort this flips to expect idle, and AGENTS.md's accepted
+# limitation must be revisited. At the board level a Requires Action -> Idle
+# card-move therefore does not fire this cancel; both shells surface an
+# informative status instead (that UI path is not observable over raw ACP here).
 acp(f"cancel {sock_a} {sid_a}")
+reached_idle = True
 try:
-    acp(f"state {sock_a} idle 20")
-    machine.log("e2e-pi: session/cancel unblocked the question -> idle (abort VERIFIED)")
+    acp(f"state {sock_a} idle 15")
 except Exception:
-    machine.log("e2e-pi: session/cancel did NOT unblock the question "
-                "(pi abort-unblocks-question still UNVERIFIED)")
+    reached_idle = False
+assert not reached_idle, \
+    "pi abort unexpectedly unblocked the question -> accepted limitation no longer holds"
+machine.log("e2e-pi: session/cancel left the question blocked (accepted, confirmed)")
 
 # --- 9. sandbox-negative: the confinement premise (BEST-EFFORT) ---------
 # Running arbitrary commands under nono needs per-command path discovery

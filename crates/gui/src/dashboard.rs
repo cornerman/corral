@@ -296,7 +296,18 @@ impl Board {
         let key = agent.move_key();
         let label = agent.title.clone().unwrap_or_else(|| "agent".into());
         let result: Result<(), String> = match transition::action_for(source, target) {
+            // Stop a running turn. corral cannot dismiss a blocked
+            // question/permission prompt (Requires Action): pi's abort leaves
+            // the question open and Claude/Cursor have no turn-abort (accepted).
+            // For a Requires Action source, surface an informative status
+            // instead of firing a cancel that never confirms.
             MoveAction::Cancel => {
+                if source == Column::RequiresAction {
+                    self.status =
+                        "cancel: answer the prompt in the agent — corral can't dismiss a blocked question"
+                            .into();
+                    return;
+                }
                 prompt::send_cancel(&agent.socket_path).map_err(|e| format!("cancel: {e}"))
             }
             MoveAction::Nudge => prompt::send_prompt(&agent.socket_path, "continue")

@@ -16,7 +16,12 @@ use crate::model::Column;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveAction {
     /// Running → Idle, or Requires Action → Idle: abort the current turn
-    /// (`session/cancel`). Aborting also unblocks a pending `question`.
+    /// (`session/cancel`). This reliably stops a *running* turn, but it does
+    /// NOT dismiss a blocked question/permission prompt (Requires Action): pi's
+    /// abort leaves the open `question` blocking, and Claude/Cursor have no
+    /// turn-abort at all (accepted limitation, see AGENTS.md). The shells
+    /// therefore surface an informative status for a Requires Action → Idle
+    /// move rather than firing a cancel that would never confirm.
     Cancel,
     /// Idle → Running: start a turn by sending the literal nudge `"continue"`
     /// (`session/prompt`; an empty prompt is rejected by corral-pi).

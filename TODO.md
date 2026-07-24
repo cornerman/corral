@@ -28,33 +28,26 @@ runtime.
    hard asserts. Also: the sandbox profile itself is `[designed]`, not
    `[in place]` — it lives in `~/nixos`, so corral ships a security story whose
    enforcement is out-of-repo and untested here.
-3. **pi `session/cancel` no-op against a blocked `question`** (confirmed bug,
-   below). User-facing: the board offers a Running/RequiresAction -> Idle
-   card-move that silently does nothing on a pi blocked in a question. Either
-   make corral-pi cancel the open `ctx.ui` prompt, or (if pi exposes no such
-   API) surface the limitation on the card so the operator is not misled.
-4. **corrald is unsandboxed, full-authority RCE surface** (SECURITY.md
-   "out of scope", TODO "Confine the broker"). It is the one process that parses
-   every untrusted record and message. Systemd unit hardening in `~/nixos` is a
-   real blast-radius reduction and the highest-value defense-in-depth left.
+3. **corrald is unsandboxed, full-authority RCE surface** (SECURITY.md
+   "out of scope", the "Confine the broker" item below). It is the one process
+   that parses every untrusted record and message. Systemd unit hardening in
+   `~/nixos` is a real blast-radius reduction and the highest-value
+   defense-in-depth left.
 
-Docs corrected in this review (no code change): SECURITY.md's stale `normalize`
-language (the refactor to adapter-authored `{sessionId}`/`{cwd}` placeholders
-removed that step; corrald stores/compares verbatim and only `denormalize`s at
-launch), the `approved_commands.rs` `Approved`/`Template` docstrings (one
-template per label, latent overwrite bug now documented in-code), and the
-misleading `scenarios/pi.py` header that claimed "nono-confined" sessions.
+Each of the three is expanded in a section below. Items 1-2 are the land-grab
+validation (VISION #1-2); item 3 is hardening.
+
+Accepted this review (no longer open work): pi's `session/cancel` does not
+dismiss a blocked `question`, and Claude/Cursor have no turn-abort. Rather than
+fix the platform, a Requires Action -> Idle card-move now surfaces an
+informative status in both shells instead of firing a cancel that never
+confirms (see AGENTS.md Known Limitations).
 
 ## VM E2E Smoke Test (follow-ups)
 
 The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
 `docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md`). Open items:
 
-- [ ] pi bug found by the test: `session/cancel` does NOT unblock a pending
-      `question` tool, so the card-move Running/RequiresAction -> Idle action
-      is a no-op against a blocked pi question. corral-pi should cancel the
-      open question explicitly on `session/cancel` (its `ctx.ui` prompt), not
-      only `ctx.abort()`. This was UNVERIFIED in AGENTS.md; now confirmed.
 - [ ] Full nono confinement in the VM. Agents currently run UNCONFINED in the
       scenarios; running a full agent (or `sh`/`cat`) under nono needs
       per-command path discovery (`nono learn` -> a vendored profile with the

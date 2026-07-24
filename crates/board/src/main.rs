@@ -218,8 +218,19 @@ fn commit_move(
     let key = ui::agent_key(agent);
     let label = ui::focus_label(agent);
     let result: Result<(), String> = match transition::action_for(source, target) {
-        // Stop the turn (also unblocks a pending question).
+        // Stop a running turn. But corral cannot dismiss a blocked
+        // question/permission prompt (Requires Action): pi's abort leaves the
+        // question open and Claude/Cursor have no turn-abort (accepted). So for
+        // a Requires Action source, surface an informative status instead of
+        // firing a cancel that never confirms and leaves a stuck in-flight
+        // badge.
         MoveAction::Cancel => {
+            if source == Column::RequiresAction {
+                *status =
+                    "cancel: answer the prompt in the agent — corral can't dismiss a blocked question"
+                        .into();
+                return None;
+            }
             prompt::send_cancel(&agent.socket_path).map_err(|e| format!("cancel: {e}"))
         }
         // Start a turn with the literal nudge.

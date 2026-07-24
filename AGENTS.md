@@ -832,12 +832,16 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
 
 ## Known Limitations (v1, deliberate)
 
-- Card-move state actions degrade per harness: `session/cancel` is a no-op on
-  the Claude and Cursor adapters, so Running/RequiresAction → Idle moves do
-  nothing there (nudge / kill / resume still work). Whether pi's `ctx.abort()`
-  actually unblocks a pending `question` is UNVERIFIED (coded from the state
-  machine: question-tool-ends → briefly running → turn-end → idle); if it does
-  not, corral-pi must cancel the question explicitly on `session/cancel`.
+- Card-move state actions degrade per harness: `session/cancel` reliably stops a
+  *running* turn, but corral cannot dismiss a blocked question/permission prompt
+  (Requires Action). pi's `ctx.abort()` does NOT unblock a pending `question`
+  (confirmed by the e2e test), and Claude/Cursor have no turn-abort at all
+  (nudge / kill / resume still work everywhere). **Accepted, not fixed:** a
+  Requires Action → Idle move does not fire a cancel that would never confirm;
+  instead both shells surface an informative status ("answer the prompt in the
+  agent — corral can't dismiss a blocked question"), the same way the `o` key
+  reports history is unavailable on a dormant card. corral cannot open a
+  question (never a drop *target*) and, symmetrically, cannot close one.
 - `requires_action` is emitted today only for the interactive `question` tool
   (the one user-input gate an extension can observe). pi's built-in
   tool-approval prompt is not surfaced to extensions, so an approval-blocked
