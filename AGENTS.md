@@ -498,7 +498,9 @@ ratatui / iced, the daemon keeps ksni).
   connected before it existed, not only explicit renames). Serves `initialize`, `session/list` (id, title,
   cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
   while busy; responds with stopReason once the message queue drains, coarse,
-  documented in-file), `session/cancel` -> abort. Broadcasts to all connected
+  documented in-file), `session/load` (replays the effective system prompt as a
+  synthetic `system_prompt` update, then user/assistant message text),
+  `session/cancel` -> abort. Broadcasts to all connected
   clients: `session/update` message and tool events (whole messages on
   `message_end`; token deltas deferred), `session_info_update` on rename; and
   the standard `state_update` (running/idle/requires_action) on
@@ -870,7 +872,12 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   reconnects. A genuinely dead socket (crashed pi) reconnects-and-drops cheaply
   once per second until its file disappears.
 - corral-pi and corral-opencode serve `session/load` with full message-history
-  replay (user/assistant text only, not tool calls); corral-claude serves it
+  replay (user/assistant text only, not tool calls). corral-pi additionally
+  leads the replay with the effective system prompt as a synthetic
+  `system_prompt` update (from `ctx.getSystemPrompt()`), since pi stores no
+  system-prompt session entry (`session-format.md`: it is rebuilt per LLM
+  call) so `getEntries()` cannot carry it — pi-only, like `context_update`.
+  corral-claude serves it
   best-effort from Claude Code's on-disk transcript (UNVERIFIED — no Claude
   Code install in this repo); corral-cursor does not support it (no transcript
   API). `session/new` remains unsupported everywhere (no client needs to

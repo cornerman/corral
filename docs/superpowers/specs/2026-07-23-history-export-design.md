@@ -40,6 +40,13 @@ logic changes.
 - TUI/GUI parity (hard rule): the key, the footer hint, the context-menu entry,
   and the fetch/write/open logic all live once in `corral-core`; both shells
   just call it.
+- System prompt (added post-v1): corral-pi leads its `session/load` replay with
+  the effective system prompt as a synthetic `system_prompt` update
+  (`ctx.getSystemPrompt()`), since pi keeps no system-prompt session entry
+  (`session-format.md`: it is rebuilt per LLM call) so `getEntries()` cannot
+  carry it. It rides the export's `updates[]` verbatim (no `corral-core`
+  change) and the live board ignores the unknown update. pi-only, like
+  `context_update`; other adapters expose no equivalent surface.
 
 ## Protocol and Data Flow
 

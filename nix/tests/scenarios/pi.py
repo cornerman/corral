@@ -103,6 +103,9 @@ assert stub_saw("operator-turn"), "stub never saw the operator turn"
 load_res = json.loads(acp(f"load {sock_a} {sid_a} 15"))
 assert load_res.get("ok"), f"pi session/load failed: {load_res}"
 assert load_res["chunks"] >= 2, f"expected at least a user+assistant chunk: {load_res}"
+# pi has no system-prompt session entry (session-format.md), so the export
+# must synthesize it from ctx.getSystemPrompt() as a system_prompt update.
+assert load_res.get("systemPrompt"), f"pi session/load did not replay the system prompt: {load_res}"
 
 # Context exposure: after a turn, pi has at least one session-log entry, so
 # the live broadcast and the persisted record must both carry it.

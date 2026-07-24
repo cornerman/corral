@@ -184,6 +184,7 @@ def cmd_load(path, sid, secs):
     send(s, {"jsonrpc": "2.0", "id": 2, "method": "session/load",
               "params": {"sessionId": sid, "cwd": "", "mcpServers": []}})
     chunks = 0
+    system_prompt = False
     buf = b""
     while time.time() < deadline:
         try:
@@ -200,14 +201,18 @@ def cmd_load(path, sid, secs):
             msg = json.loads(line)
             if msg.get("method") == "session/update":
                 upd = msg.get("params", {}).get("update", {})
-                if upd.get("sessionUpdate") in ("user_message_chunk", "agent_message_chunk"):
+                kind = upd.get("sessionUpdate")
+                if kind in ("user_message_chunk", "agent_message_chunk"):
                     chunks += 1
+                elif kind == "system_prompt":
+                    system_prompt = True
                 continue
             if msg.get("id") == 2:
                 if "error" in msg:
                     print(json.dumps({"ok": False, "error": "unsupported"}))
                     return
-                print(json.dumps({"ok": True, "chunks": chunks}))
+                print(json.dumps({"ok": True, "chunks": chunks,
+                                  "systemPrompt": system_prompt}))
                 return
     print(json.dumps({"ok": False, "error": "timeout"}))
 

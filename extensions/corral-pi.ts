@@ -18,9 +18,11 @@
  *   session/list          this session: id, title, cwd
  *   session/prompt        inject a user message (queued as follow-up while
  *                         the agent is busy); responds on turn completion
- *   session/load           replay the full message history (user/assistant
- *                          text only, not tool calls) as session/update
- *                          notifications, then respond (ACP v1 session/load;
+ *   session/load           replay the effective system prompt (getSystemPrompt,
+ *                          a synthetic system_prompt update) then the full
+ *                          message history (user/assistant text only, not tool
+ *                          calls) as session/update notifications, then respond
+ *                          (ACP v1 session/load;
  *                          agentclientprotocol.com/protocol/session-setup
  *                          #loading-sessions)
  *   session/cancel        abort the current turn (notification)
@@ -694,6 +696,23 @@ export default function (pi: ExtensionAPI) {
 				// a fresh session restore, so there is nothing to reconnect.
 				(async () => {
 					try {
+						// Replay the effective system prompt first (ctx.getSystemPrompt,
+						// docs/extensions.md), so the export reads in real context order
+						// (system first, then the turns). pi never stores the system
+						// prompt as a session entry (session-format.md: it is rebuilt per
+						// LLM call), so getEntries() cannot carry it -- this synthetic
+						// update is the only way it reaches a history export. Non-standard
+						// sessionUpdate, same footing as context_update; corral forwards
+						// it verbatim into the export and the live board ignores it.
+						const systemPrompt = ctxAtRequest.getSystemPrompt();
+						if (systemPrompt) {
+							conn.write(
+								sessionUpdateLine({
+									sessionUpdate: "system_prompt",
+									content: { type: "text", text: systemPrompt },
+								}),
+							);
+						}
 						const entries = await ctxAtRequest.sessionManager.getEntries();
 						for (const e of entries as Array<{
 							type?: string;
