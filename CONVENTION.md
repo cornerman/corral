@@ -418,7 +418,7 @@ Request fields (the JSON written to the outbox file):
 | `targetSession` | string (one of)   | Deliver to this exact session id (resuming it if dormant). Exactly one of `targetDir` / `targetSession` is set. |
 | `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. |
 | `label`         | string (optional) | With `targetDir`: which agent kind to spawn (matched against a record's `label`). Omitted falls back to the directory's own kind; an unknown label fails loud. |
-| `hidden`        | boolean (optional)| Whether a spawn/resume this message triggers runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. `false` requests a visible window and always requires operator approval (a visible window is a stronger action than a message, so the whitelist alone never authorizes it). Ignored when the target is already live. |
+| `hidden`        | boolean (optional)| Whether a spawn/resume this message triggers runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. Window placement only: it does not affect authorization, which keys on the `(sender -> target)` directory pair alone. Ignored when the target is already live. |
 | `createdAt`     | string            | ISO-8601 creation time. |
 
 Ack (one line, `{"status":"…"}`), computed synchronously from the registry and
