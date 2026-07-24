@@ -419,7 +419,7 @@ Request fields (the JSON written to the outbox file):
 | `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. |
 | `label`         | string (optional) | With `targetDir`: which agent kind to spawn (matched against a record's `label`). Omitted falls back to the directory's own kind; an unknown label fails loud. |
 | `hidden`        | boolean (optional)| Whether a spawn/resume this message triggers runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. Window placement only: it does not affect authorization, which keys on the `(sender -> target)` directory pair alone. Ignored when the target is already live. |
-| `createdAt`     | string            | ISO-8601 creation time. |
+| `createdAt`     | string (optional) | ISO-8601 creation time. Informational: no consumer reads it, so a producer without a date formatter MAY omit it. |
 
 Ack (one line, `{"status":"…"}`), computed synchronously from the registry and
 whitelist:

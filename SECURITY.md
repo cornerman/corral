@@ -160,10 +160,17 @@ gates exist, but the identity they key on is unauthenticated.
 message to `<cwd>/.corral/outbox/<id>.json` and sends only `{"submit": path}`.
 corrald opens the file, then derives `fromCwd` from that open fd's real path via
 `/proc/self/fd` (never realpath-then-reopen, so a symlink swapped after open
-cannot redirect it to a victim directory). `fromSession` is verified against the
-curated registry: the claimed session must be one corrald already authenticated
-to that same directory. The act of writing inside `D` is the proof of identity
-`D`, unforgeable from another box.
+cannot redirect it to a victim directory). The act of writing inside `D` is the
+proof of identity `D`, unforgeable from another box.
+
+`fromSession` is checked against the curated registry
+(`mailbox::session_claims_other_dir`): a handle the registry pins to a
+*different* directory is a forgery, and the whole message is refused as
+`malformed` rather than delivered with a tag that would misdirect the
+recipient's reply. A handle absent from the registry is accepted, because
+absence is not evidence: an adapter writes its record and may message before
+the next curation tick publishes it, so refusing unknown ids would break a
+legitimate first message.
 
 **Limitation `[accepted]`:** physical location authenticates the *directory*,
 not the session within it. Two sessions in one box can each claim the other's

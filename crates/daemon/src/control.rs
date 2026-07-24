@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use corral_core::discovery::RegistryEntry;
 use corral_core::{curation, discovery};
 
 use crate::mailbox::{self, Ack, Message, Target};
@@ -133,7 +134,19 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         return;
     };
     msg.from_cwd = from_cwd; // authenticated, overrides any content fromCwd
-    let target_cwd = resolve(&msg.target, registry_dir);
+    let entries = discovery::scan_registry(registry_dir);
+    // T2: the reply handle is checkable even though it is self-reported, because
+    // the directory it must belong to is authenticated. A handle the registry
+    // pins to another directory is a forgery, so refuse the whole message rather
+    // than deliver a tag that misdirects the recipient's reply. A stop needs no
+    // such check: it carries no tag and delivers no text.
+    if let Some(sid) = msg.from_session.as_deref() {
+        if mailbox::session_claims_other_dir(&entries, sid, &msg.from_cwd) {
+            let _ = ack(&mut conn, "malformed");
+            return;
+        }
+    }
+    let target_cwd = resolve(&msg.target, &entries);
     let whitelisted = target_cwd
         .as_deref()
         .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
@@ -183,13 +196,13 @@ fn handle_stop(
 /// Resolve the recipient's directory: a session's cwd from the registry, or an
 /// existing target directory. `None` means "no recipient found" (the ack then
 /// reports why, per target kind).
-fn resolve(target: &Target, registry_dir: &Path) -> Option<String> {
+fn resolve(target: &Target, entries: &[RegistryEntry]) -> Option<String> {
     match target {
         Target::Dir(d) => Path::new(d).is_dir().then(|| d.clone()),
-        Target::Session(sid) => discovery::scan_registry(registry_dir)
-            .into_iter()
+        Target::Session(sid) => entries
+            .iter()
             .find(|e| &e.session_id == sid)
-            .and_then(|e| e.cwd),
+            .and_then(|e| e.cwd.clone()),
     }
 }
 
@@ -326,6 +339,57 @@ mod tests {
         );
         assert_eq!(ack, r#"{"status":"already_stopped"}"#);
         assert!(rx.try_recv().is_err(), "no-op success -> not enqueued");
+    }
+
+    #[test]
+    fn t2_forged_reply_handle_from_another_dir_is_refused() {
+        // A sender in `from` claims a reply handle that the registry pins to a
+        // different directory: provable forgery, so the message never routes.
+        let (tmp, socket, registry, whitelist, from) = setup();
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        write_registry(&registry, "sid-victim", victim.to_str().unwrap());
+        let target = tmp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        mailbox::whitelist_add(&whitelist, &from_str(&from), target.to_str().unwrap()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            &from,
+            &format!(
+                r#"{{"id":"1","fromCwd":"/a","fromSession":"sid-victim","targetDir":"{}","message":"hi"}}"#,
+                target.to_str().unwrap()
+            ),
+        );
+        assert_eq!(ack, r#"{"status":"malformed"}"#);
+        assert!(rx.try_recv().is_err(), "a forged handle must not route");
+    }
+
+    #[test]
+    fn t2_unknown_reply_handle_still_routes() {
+        // An id absent from the registry is not evidence of forgery: a fresh
+        // record may not be curated yet, so a legitimate first message survives.
+        let (tmp, socket, registry, whitelist, from) = setup();
+        let target = tmp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        mailbox::whitelist_add(&whitelist, &from_str(&from), target.to_str().unwrap()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            &from,
+            &format!(
+                r#"{{"id":"1","fromCwd":"/a","fromSession":"not-curated-yet","targetDir":"{}","message":"hi"}}"#,
+                target.to_str().unwrap()
+            ),
+        );
+        assert_eq!(ack, r#"{"status":"accepted"}"#);
+        assert_eq!(rx.recv().unwrap().id, "1");
     }
 
     #[test]

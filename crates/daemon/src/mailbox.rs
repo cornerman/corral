@@ -152,6 +152,24 @@ impl Ack {
     }
 }
 
+/// Whether a claimed `fromSession` provably names a session in a **different**
+/// directory than the authenticated sender (SECURITY.md T2). Physical location
+/// authenticates the directory, so a reply handle pinned by the registry to
+/// another directory is a forgery: the sender is trying to make a recipient's
+/// reply land somewhere it could not itself reach.
+///
+/// An id absent from the registry passes. Absence is not proof of forgery: an
+/// adapter writes its record and may message before corrald's next curation
+/// tick publishes it, so rejecting unknown ids would break a legitimate first
+/// message. Only a record pinning the id to another cwd is evidence, and
+/// same-directory siblings remain mutually forgeable (accepted in T2: the
+/// directory is the unit of identity).
+pub fn session_claims_other_dir(entries: &[RegistryEntry], sid: &str, from_cwd: &str) -> bool {
+    entries
+        .iter()
+        .any(|e| e.session_id == sid && e.cwd.as_deref().is_some_and(|c| c != from_cwd))
+}
+
 /// Classify a parsed message from resolved facts (pure, trivially tested).
 /// `target_cwd` is `Some` when the recipient is found (a known session's cwd,
 /// or an existing target directory), else `None`. `whitelisted` is consulted
@@ -445,6 +463,20 @@ mod tests {
     fn already_stopped_is_a_non_routable_success() {
         assert_eq!(Ack::AlreadyStopped.wire(), "already_stopped");
         assert!(!Ack::AlreadyStopped.routable(), "nothing left to kill");
+    }
+
+    #[test]
+    fn session_claims_other_dir_needs_a_record_pinning_it_elsewhere() {
+        let entries = [
+            rec("mine", "/a", "pi", true, None),
+            rec("theirs", "/b", "pi", true, None),
+        ];
+        // Pinned to another dir -> provable forgery.
+        assert!(session_claims_other_dir(&entries, "theirs", "/a"));
+        // My own session in my own dir -> fine.
+        assert!(!session_claims_other_dir(&entries, "mine", "/a"));
+        // Absent from the registry -> not yet curated, so not evidence.
+        assert!(!session_claims_other_dir(&entries, "unknown", "/a"));
     }
 
     #[test]
