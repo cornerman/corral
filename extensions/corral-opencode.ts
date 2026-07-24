@@ -493,6 +493,18 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		}
 	}
 
+	// nsfs inode of this process's PID namespace (the NSpid bridge key): lets a
+	// host consumer translate our namespace-local pid to a host pid. statSync
+	// follows the magic ns/pid symlink; best-effort (undefined off Linux, then
+	// the consumer treats pid as already host-level).
+	function pidNamespaceIno(): number | undefined {
+		try {
+			return fs.statSync("/proc/self/ns/pid").ino;
+		} catch {
+			return undefined;
+		}
+	}
+
 	// Announce: write the record into this workdir's `.corral/registry/` and drop
 	// our pointer in the store. corrald authenticates by physical location, so
 	// the record carries no `cwd` field. No-op until the active session id is known.
@@ -517,6 +529,12 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				// Adapter-authored, not model output.
 				description: "opencode: terminal coding agent",
 				socket: socketPath ?? null,
+				// Window-owning pid (getpid()) + its PID-namespace inode, so a host
+				// consumer translates it to a host pid for focus/kill (the NSpid
+				// bridge, CONVENTION §3). Under no PID namespace pidNamespace equals
+				// the consumer's own, so the pid is used directly.
+				pid: process.pid,
+				pidNamespace: pidNamespaceIno(),
 				spawnCommand: ["opencode"],
 				// opencode's TUI reads a trailing positional as a project path and
 				// exits; its initial prompt rides a dedicated flag instead, so corral

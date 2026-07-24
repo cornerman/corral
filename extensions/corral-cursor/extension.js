@@ -26,8 +26,18 @@ function readProc(pid) {
   } catch { return null; }
 }
 
+// nsfs inode of a pid's PID namespace (the NSpid bridge key), so a host consumer
+// translates the Electron window pid to a host pid. statSync follows the magic
+// ns/pid symlink; best-effort (undefined off Linux, then pid is host-level).
+function pidNamespaceIno(pid) {
+  try { return fs.statSync(`/proc/${pid}/ns/pid`).ino; } catch { return undefined; }
+}
+
 let servers = [];
 let recordFile;
+// The Electron window pid, resolved in activate() and read by writeRegistry
+// (module-level so both see it). corral matches the gui window by this pid.
+let electronPid;
 let state = "idle";
 let title = null;
 // Last-known model (a Cursor model string) from the beforeSubmitPrompt hook,
@@ -47,7 +57,7 @@ function start(context) {
   // Stable per-workspace identity, persisted so reopening maps to the same record.
   let sessionId = context.workspaceState.get("corralSessionId");
   if (!sessionId) { sessionId = crypto.randomUUID(); context.workspaceState.update("corralSessionId", sessionId); }
-  const electronPid = lib.resolveWindowPid(process.pid, readProc);
+  electronPid = lib.resolveWindowPid(process.pid, readProc);
   const env = process.env;
   const sockDir = lib.socketDir(cwd, env);
   const acpPath = lib.acpSocketPath(cwd, electronPid, env);
@@ -195,7 +205,7 @@ function writeRegistry(acpPath) {
     const recordDir = path.join(lib.socketDir(ctx.cwd, process.env), "registry");
     fs.mkdirSync(recordDir, { recursive: true, mode: 0o700 });
     recordFile = path.join(recordDir, `${ctx.sessionId}.json`);
-    const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1", model });
+    const record = lib.buildRecord({ sessionId: ctx.sessionId, cwd: ctx.cwd, title, socket: acpPath, nowIso: new Date().toISOString(), hidden: process.env.CORRAL_HIDDEN === "1", model, pid: electronPid, pidNamespace: pidNamespaceIno(electronPid) });
     const tmp = `${recordFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, recordFile);

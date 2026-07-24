@@ -3,7 +3,7 @@
  * clients while the interactive TUI keeps running.
  *
  * Binds an ACP socket inside this session's own workdir at
- * <cwd>/.corral/pi-<pid>.sock (override the dir with $CORRAL_SOCKET_DIR) and
+ * <cwd>/.corral/<sessionId>.sock (override the dir with $CORRAL_SOCKET_DIR) and
  * writes its registry record inside this workdir at
  * <cwd>/.corral/registry/<sessionId>.json and drops a pointer file at
  * $HOME/.corral/input/registry/<sessionId> (content = this cwd; override
@@ -345,8 +345,13 @@ export default function (pi: ExtensionAPI) {
 		// 0700: the socket grants prompt access to this session; directory
 		// permissions are the only peer authentication we rely on.
 		fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-		socketPath = path.join(socketDir, `pi-${process.pid}.sock`);
-		fs.rmSync(socketPath, { force: true }); // stale leftover from a crashed pid reuse
+		// Socket name is the sessionId (unique per session, pairs with the
+		// <sessionId>.json record). The window-owning pid moved into the record
+		// (`pid`/`pidNamespace`, the NSpid bridge) so corral can correlate a
+		// sandboxed pid to a host pid without a shared PID namespace.
+		const sessionId = ctx.sessionManager.getSessionId();
+		socketPath = path.join(socketDir, `${sessionId}.sock`);
+		fs.rmSync(socketPath, { force: true }); // stale leftover from a prior run of this session
 		writeRegistry(ctx, socketPath); // announce in the registry store
 
 		server = net.createServer((conn) => {
@@ -824,6 +829,19 @@ export default function (pi: ExtensionAPI) {
 	// our pointer in the store. corrald authenticates the record by where it
 	// physically lives, so the record carries no `cwd` field (it cannot be
 	// trusted to name its own directory).
+	// nsfs inode of this process's PID namespace, the key that lets a host
+	// consumer translate our namespace-local pid to a host pid (the NSpid
+	// bridge). `fs.statSync` follows the magic `ns/pid` symlink to the nsfs node.
+	// Best-effort: a non-Linux or /proc-less host yields undefined, and the
+	// consumer then treats `pid` as already host-level (pre-bridge behavior).
+	function pidNamespaceIno(): number | undefined {
+		try {
+			return fs.statSync("/proc/self/ns/pid").ino;
+		} catch {
+			return undefined;
+		}
+	}
+
 	function writeRegistry(ctx: ExtensionContext, socket: string | null) {
 		try {
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -865,6 +883,13 @@ export default function (pi: ExtensionAPI) {
 			// model output.
 			description: "pi: terminal TUI coding agent",
 			socket,
+			// The window-owning pid as this process observes it (getpid()), plus
+			// its PID-namespace inode, so a host consumer translates it to a host
+			// pid for focus/kill (the NSpid bridge, CONVENTION §3). Under no PID
+			// namespace pidNamespace equals the consumer's own, so the pid is used
+			// directly (pre-bridge behavior).
+			pid: process.pid,
+			pidNamespace: pidNamespaceIno(),
 			spawnCommand: ["pi"],
 			resumeCommand: ["pi", "--session", "{sessionId}"],
 			hidden,

@@ -88,6 +88,19 @@ const socketDir = process.env.CORRAL_SOCKET_DIR ?? path.join(cwd, ".corral");
 const acpSocketPath = path.join(socketDir, `claude-${claudePid}.sock`);
 const controlSocketPath = path.join(socketDir, `.claude-ctl-${sessionId}.sock`);
 
+// nsfs inode of a pid's PID namespace (the NSpid bridge key), so a host consumer
+// translates the namespace-local claudePid to a host pid for focus/kill. We
+// stat the interactive Claude process's own ns/pid (same sandbox as this
+// detached sidecar), which is why SO_PEERCRED on our socket could not work here.
+// Best-effort: undefined off Linux, then the consumer treats pid as host-level.
+function pidNamespaceIno(pid: string | number): number | undefined {
+	try {
+		return fs.statSync(`/proc/${pid}/ns/pid`).ino;
+	} catch {
+		return undefined;
+	}
+}
+
 // --- mutable session state ---
 let title: string | null = null;
 let lastTitle: string | null | undefined;
@@ -483,6 +496,13 @@ function writeRegistry() {
 			// Adapter-authored, not model output.
 			description: "claude: Claude Code terminal agent",
 			socket: acpSocketPath,
+			// The interactive Claude pid + its PID-namespace inode, so a host
+			// consumer translates it to a host pid for focus/kill (the NSpid
+			// bridge). This detached sidecar is not in Claude's process tree, so
+			// the pid must be reported explicitly (SO_PEERCRED would give the
+			// sidecar's pid, not Claude's).
+			pid: Number(claudePid),
+			pidNamespace: pidNamespaceIno(claudePid),
 			// resumeCommand is a stable TEMPLATE: corral substitutes the literal
 			// `{sessionId}` token at launch (CONVENTION.md), so the record shape never
 			// changes across sessions and the approved launch set does not flap. A

@@ -147,3 +147,12 @@ test("buildRecord carries model when set, omits it when unknown", () => {
   const without = lib.buildRecord({ sessionId: "s", title: "t", socket: "x", nowIso: "n" });
   assert.equal(without.model, undefined);
 });
+
+test("buildRecord carries pid and pidNamespace for the NSpid bridge, omits when unknown", () => {
+  const withPid = lib.buildRecord({ sessionId: "s", title: "t", socket: "x", nowIso: "n", pid: 4242, pidNamespace: 4026532999 });
+  assert.equal(withPid.pid, 4242);
+  assert.equal(withPid.pidNamespace, 4026532999);
+  const without = lib.buildRecord({ sessionId: "s", title: "t", socket: "x", nowIso: "n" });
+  assert.equal(without.pid, undefined);
+  assert.equal(without.pidNamespace, undefined);
+});

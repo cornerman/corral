@@ -29,7 +29,7 @@ function controlSocketPath(cwd, sessionId, env) {
 // the literal `{cwd}` TEMPLATE token, which corral substitutes with the trusted
 // dir at launch (CONVENTION.md) — so a cursor kind is approved once for all
 // directories, not re-verified per workspace.
-function buildRecord({ sessionId, title, socket, nowIso, hidden, model }) {
+function buildRecord({ sessionId, title, socket, nowIso, hidden, model, pid, pidNamespace }) {
   return {
     sessionId,
     title: title ?? null,
@@ -38,6 +38,11 @@ function buildRecord({ sessionId, title, socket, nowIso, hidden, model }) {
     // Adapter-authored, not model output.
     description: "cursor: Cursor desktop IDE agent",
     socket,
+    // The Electron window pid + its PID-namespace inode (the NSpid bridge), so a
+    // host consumer translates it to a host pid. For a gui record corral matches
+    // the window by this pid directly. Omitted (undefined) when unknown.
+    pid: pid ?? undefined,
+    pidNamespace: pidNamespace ?? undefined,
     gui: true,
     spawnCommand: ["cursor", "{cwd}"],
     resumeCommand: ["cursor", "{cwd}"],
