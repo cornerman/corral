@@ -26,6 +26,30 @@ def stub_saw(substr):
     return False
 
 
+def roster_agents():
+    # The capability roster corrald returns to a `list_corral_agents` tool
+    # call, parsed out of the stub's request log (the roster arrives as the
+    # tool-result content of a role:"tool" message). `stub_saw` cannot be used
+    # here: it runs json.dumps on the content, which backslash-escapes the
+    # roster's inner quotes, so a key like `"title"` would never match.
+    for req in stub_requests():
+        for m in req["body"].get("messages", []):
+            if m.get("role") != "tool":
+                continue
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", "") for p in content if isinstance(p, dict))
+            try:
+                doc = json.loads(content)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(doc, dict) and doc.get("status") == "ok" \
+                    and isinstance(doc.get("agents"), list):
+                return doc["agents"]
+    return []
+
+
 boot()
 
 # --- 1. two pi sessions announce ---------------------------------------
@@ -175,7 +199,8 @@ acp(f"state {sock_a} idle 30")  # list_corral_agents executed without error
 # The roster reply (corrald's JSON, returned to the stub as the tool result)
 # now exposes the title for a reachable session. proj-a is its own dir, so its
 # own entry carries its title (the first-user-message fallback set in step 2).
-assert stub_saw('"title"'), "roster did not expose the reachable session's title"
+assert any(a.get("title") for a in roster_agents()), \
+    "roster did not expose the reachable session's title"
 
 # Stop B by session id (whitelisted pair). Rule baked with B's sid.
 stub_post_rule(json.dumps({
