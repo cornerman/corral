@@ -137,7 +137,7 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
     let whitelisted = target_cwd
         .as_deref()
         .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
-    let verdict = mailbox::classify(&msg.target, target_cwd.as_deref(), whitelisted, !msg.hidden);
+    let verdict = mailbox::classify(&msg.target, target_cwd.as_deref(), whitelisted);
     let _ = ack(&mut conn, verdict.wire());
     if verdict.routable() {
         let _ = tx.send(msg);
@@ -171,7 +171,7 @@ fn handle_stop(
                 .cwd
                 .as_deref()
                 .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
-            mailbox::classify(&msg.target, e.cwd.as_deref(), whitelisted, false)
+            mailbox::classify(&msg.target, e.cwd.as_deref(), whitelisted)
         }
     };
     let _ = ack(conn, verdict.wire());

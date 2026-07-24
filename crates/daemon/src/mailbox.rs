@@ -47,10 +47,9 @@ pub struct Message {
     /// choose; the router falls back to the dir's own record.
     pub label: Option<String>,
     /// Whether a spawn/resume this message triggers runs hidden (no window).
-    /// Defaults true, so an uninvited agent never pops a window; `false`
-    /// requests a visible window and always passes the operator approval gate
-    /// (a visible window is a stronger action than a message, so the whitelist
-    /// alone never authorizes it — see `classify`).
+    /// Defaults true, so an uninvited agent never pops a window. Purely a
+    /// window-placement flag: it has no bearing on authorization, which keys on
+    /// the `(sender dir -> target dir)` whitelist alone (see `classify`).
     pub hidden: bool,
     /// Deliver the message, or stop (kill) the target. A `Stop` carries a
     /// `Session` target, an empty body, and never a charter or spawn.
@@ -152,24 +151,16 @@ impl Ack {
 /// or an existing target directory), else `None`. `whitelisted` is consulted
 /// only when the recipient is found.
 ///
-/// `force_approval` names an explicit gate reason: the action is stronger than
-/// a plain message (a **visible** spawn, `hidden:false`), so it always needs
-/// the operator, whitelisted or not. It replaces the old overloading of the
-/// `hidden` flag — a stop, which never spawns, simply passes `false`.
-pub fn classify(
-    target: &Target,
-    target_cwd: Option<&str>,
-    whitelisted: bool,
-    force_approval: bool,
-) -> Ack {
+/// The whitelist is the single authorization axis: a whitelisted pair goes
+/// through, anything else asks the operator. Message, stop, hidden spawn and
+/// visible spawn all authorize identically — the operator grants trust per
+/// directory pair, and that grant covers every action the pair can take.
+pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) -> Ack {
     match target_cwd {
         None => match target {
             Target::Session(_) => Ack::RecipientNotFound,
             Target::Dir(_) => Ack::DirectoryNotKnown,
         },
-        // A stronger-than-message action is operator-gated regardless of the
-        // whitelist.
-        Some(_) if force_approval => Ack::ApprovalNeeded,
         Some(_) if whitelisted => Ack::Accepted,
         Some(_) => Ack::ApprovalNeeded,
     }
@@ -203,10 +194,9 @@ pub fn parse_message(text: &str) -> Option<Message> {
 /// Parse a stop submission (`{"op":"stop","id":..,"fromCwd":..,"targetSession":..}`).
 /// A stop always targets an exact session (killing whoever-works-in-a-dir would
 /// be ambiguous), so it requires `targetSession` and ignores `targetDir`. The
-/// body is empty; a stop never spawns, so the stop path passes
-/// `force_approval:false` to `classify` explicitly (a stop authorizes exactly
-/// like a message) — no `hidden`-flag contortion. Returns `None` unless `op`
-/// is `"stop"` (so the caller falls through to a message).
+/// body is empty; a stop never spawns, and it authorizes exactly like a
+/// message (the whitelist decides). Returns `None` unless `op` is `"stop"` (so
+/// the caller falls through to a message).
 pub fn parse_stop(text: &str) -> Option<Message> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     if v.get("op").and_then(|o| o.as_str()) != Some("stop") {
@@ -222,8 +212,7 @@ pub fn parse_stop(text: &str) -> Option<Message> {
         message: String::new(),
         force_new: false,
         label: None,
-        // A stop never spawns, so visibility is irrelevant; the stop path gates
-        // it explicitly (force_approval:false), not via this flag.
+        // A stop never spawns, so visibility is irrelevant.
         hidden: false,
         action: Action::Stop,
     })
@@ -453,18 +442,14 @@ mod tests {
     fn classify_covers_every_ack() {
         let sess = Target::Session("sid".into());
         let dir = Target::Dir("/b".into());
-        // Recipient found, no force -> whitelisted decides accepted vs approval.
-        assert_eq!(classify(&sess, Some("/b"), true, false), Ack::Accepted);
-        assert_eq!(
-            classify(&sess, Some("/b"), false, false),
-            Ack::ApprovalNeeded
-        );
-        assert_eq!(classify(&dir, Some("/b"), true, false), Ack::Accepted);
-        // force_approval (a visible spawn) always needs the operator, even whitelisted.
-        assert_eq!(classify(&dir, Some("/b"), true, true), Ack::ApprovalNeeded);
-        // Recipient not found -> reason depends on the target kind (force moot).
-        assert_eq!(classify(&sess, None, false, false), Ack::RecipientNotFound);
-        assert_eq!(classify(&dir, None, false, false), Ack::DirectoryNotKnown);
+        // Recipient found -> the whitelist alone decides accepted vs approval.
+        assert_eq!(classify(&sess, Some("/b"), true), Ack::Accepted);
+        assert_eq!(classify(&sess, Some("/b"), false), Ack::ApprovalNeeded);
+        assert_eq!(classify(&dir, Some("/b"), true), Ack::Accepted);
+        assert_eq!(classify(&dir, Some("/b"), false), Ack::ApprovalNeeded);
+        // Recipient not found -> reason depends on the target kind.
+        assert_eq!(classify(&sess, None, false), Ack::RecipientNotFound);
+        assert_eq!(classify(&dir, None, false), Ack::DirectoryNotKnown);
         // Only resolvable targets are routed onward.
         assert!(Ack::Accepted.routable());
         assert!(Ack::ApprovalNeeded.routable());

@@ -710,7 +710,11 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"Replying is expected: delivery is one-way and fire-and-forget — corral does NOT route " +
 					"a response back automatically. If you asked something, wait for the other agent to " +
 					"message you back; if you received a message and a reply would help, send one to its " +
-					"session id. Every message is tagged with your identity so the recipient can reply to you.",
+					"session id. Every message is tagged with your identity so the recipient can reply to you.\n\n" +
+					"Gating: if the (your dir → target dir) pair is not whitelisted the operator must " +
+					"approve the message, so it is delivered only once they do. A whitelisted pair goes " +
+					"straight through. Approval keys on the directory pair alone — no parameter of this " +
+					"tool changes it.",
 				args: {
 					target_session: {
 						type: "string",
@@ -748,8 +752,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						description:
 							"Whether a newly spawned agent runs hidden (alive and working, but no window). " +
 							"Defaults true, so an agent you summon never pops a window on the operator; they " +
-							"reveal it from the board. Set false to request a visible window, which the operator " +
-							"must approve. Ignored when the target agent is already running.",
+							"reveal it from the board. Set false to request a visible window. Window placement " +
+							"only: it does not affect whether the operator is asked to approve. Ignored when " +
+							"the target agent is already running.",
 					},
 				},
 				async execute(args: {

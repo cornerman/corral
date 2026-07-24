@@ -415,8 +415,9 @@ ratatui / iced, the daemon keeps ksni).
     (accepted / approval_needed / recipient_not_found / directory_not_known)
     from resolved facts, add the `[from <dir> (session <id>)]`
     provenance/reply-handle tag, and read/append the `(sender -> target)`
-    whitelist. `classify` also forces the approval gate on a visible spawn
-    (`hidden:false`) regardless of the whitelist. It also builds the read-only
+    whitelist. The whitelist is `classify`'s single authorization axis:
+    message, stop, hidden spawn and visible spawn all gate identically, since
+    the operator grants trust per directory pair. It also builds the read-only
     capability roster (`build_roster` + `roster_json`): every session is a
     per-session entry addressable by `sessionId`; a reachable directory's entry
     adds `title` + `cwd` + `description`, an unreachable one hides all three,
@@ -714,10 +715,11 @@ new message back using the reply handle.
 
 A spawn defaults **hidden**: the `hidden` param on `corral_message_agent`
 (default true) governs a spawn/resume the message triggers, so an uninvited
-agent never pops a window. `hidden: false` requests a visible window and always
-requires operator approval, whitelisted or not — a visible window is a stronger
-action than a message, so `classify` forces the approval gate on it regardless
-of the whitelist. A freshly spawned agent's first prompt is prefixed with a
+agent never pops a window. It is purely a window-placement flag and plays no
+part in authorization: a whitelisted pair may spawn visibly without asking, and
+an unwhitelisted pair needs approval even for a hidden one. Approval keys on the
+directory pair alone, so a granted pair covers every action it can take.
+A freshly spawned agent's first prompt is prefixed with a
 **charter** (ported from the subagents extension, adapted to corral's two
 verbs): confirm the task before working, communicate only through
 `corral_message_agent`, escalate uncertainty up, stay event-driven. A resume
