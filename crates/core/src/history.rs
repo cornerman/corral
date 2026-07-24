@@ -139,8 +139,7 @@ pub fn write_and_open(
         "capturedAt": captured_at,
         "updates": entries,
     });
-    let path =
-        std::env::temp_dir().join(format!("corral-history-{session_id}-{captured_at}.json"));
+    let path = std::env::temp_dir().join(format!("corral-history-{session_id}-{captured_at}.json"));
     std::fs::write(&path, serde_json::to_vec_pretty(&doc)?)?;
     // Detached like launch.rs's spawns: the board must not block on (or be
     // killed alongside) the viewer program.
@@ -183,7 +182,9 @@ mod tests {
             state_since: Instant::now(),
             last_activity: Instant::now(),
         };
-        let entries = vec![serde_json::json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}})];
+        let entries = vec![
+            serde_json::json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}),
+        ];
         let path = super::write_and_open(&agent, entries).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&contents).unwrap();
@@ -204,12 +205,14 @@ mod tests {
             let mut r = BufReader::new(conn);
             let mut line = String::new();
             r.read_line(&mut line).unwrap();
-            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n").unwrap();
+            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n")
+                .unwrap();
             line.clear();
             r.read_line(&mut line).unwrap();
             w.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"user_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hi\"}}}}\n").unwrap();
             w.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hello\"}}}}\n").unwrap();
-            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n").unwrap();
+            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n")
+                .unwrap();
         });
         let entries = super::fetch_history(&sock, "s1", "/tmp/proj").unwrap();
         h.join().unwrap();
@@ -229,7 +232,8 @@ mod tests {
             let mut r = BufReader::new(conn);
             let mut line = String::new();
             r.read_line(&mut line).unwrap();
-            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n").unwrap();
+            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n")
+                .unwrap();
             line.clear();
             r.read_line(&mut line).unwrap();
             w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"method not supported by corral-cursor: session/load\"}}\n").unwrap();
@@ -250,7 +254,8 @@ mod tests {
             let mut r = BufReader::new(conn);
             let mut line = String::new();
             r.read_line(&mut line).unwrap();
-            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n").unwrap();
+            w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n")
+                .unwrap();
             line.clear();
             r.read_line(&mut line).unwrap();
             std::thread::sleep(std::time::Duration::from_secs(6));

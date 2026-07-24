@@ -394,7 +394,10 @@ mod tests {
         assert_eq!(cwd, std::fs::canonicalize(&boxd).unwrap().to_string_lossy());
         assert!(content.contains("\"message\":\"hi\""));
         // The boundary consumes the file, so the caller never re-touches it.
-        assert!(!msg.exists(), "resolve_submission must unlink the outbox file");
+        assert!(
+            !msg.exists(),
+            "resolve_submission must unlink the outbox file"
+        );
 
         // A file not under .corral/outbox is rejected (corrald never reads an
         // arbitrary path).

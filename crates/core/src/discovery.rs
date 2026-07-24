@@ -625,7 +625,10 @@ mod tests {
         // No namespace -> pid is already host-level (pre-bridge behavior).
         assert_eq!(resolve_socket_host_pid(&table, Some(999), None), Some(999));
         // Both present -> translated.
-        assert_eq!(resolve_socket_host_pid(&table, Some(7), Some(5001)), Some(34521));
+        assert_eq!(
+            resolve_socket_host_pid(&table, Some(7), Some(5001)),
+            Some(34521)
+        );
     }
 
     #[test]

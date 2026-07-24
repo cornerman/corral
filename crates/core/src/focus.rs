@@ -105,8 +105,12 @@ impl SwayFocuser {
     fn window(&self, agent: &Agent) -> Result<(i64, u32), String> {
         let pids = match_pids(agent);
         let tree = sway_get_tree()?;
-        find_window(&tree, &pids)
-            .ok_or_else(|| format!("no sway window found for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))
+        find_window(&tree, &pids).ok_or_else(|| {
+            format!(
+                "no sway window found for pid {}",
+                agent.pid.map_or("unknown".to_string(), |p| p.to_string())
+            )
+        })
     }
 }
 
@@ -270,7 +274,12 @@ impl WindowFocuser for HyprlandFocuser {
         let pids = match_pids(agent);
         let addr = entry_for_pid(&clients, &pids)
             .and_then(|e| e.get("address").and_then(|a| a.as_str()))
-            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
+            .ok_or_else(|| {
+                format!(
+                    "no hyprland window for pid {}",
+                    agent.pid.map_or("unknown".to_string(), |p| p.to_string())
+                )
+            })?;
         let ok = Command::new("hyprctl")
             .args(["dispatch", "focuswindow", &format!("address:{addr}")])
             .status()
@@ -288,7 +297,12 @@ impl WindowFocuser for HyprlandFocuser {
         let pids = match_pids(agent);
         let pid = entry_for_pid(&clients, &pids)
             .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
-            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
+            .ok_or_else(|| {
+                format!(
+                    "no hyprland window for pid {}",
+                    agent.pid.map_or("unknown".to_string(), |p| p.to_string())
+                )
+            })?;
         kill_pid(pid as u32)
     }
 }
@@ -303,7 +317,12 @@ impl WindowFocuser for NiriFocuser {
         let pids = match_pids(agent);
         let id = entry_for_pid(&windows, &pids)
             .and_then(|e| e.get("id").and_then(|i| i.as_u64()))
-            .ok_or_else(|| format!("no niri window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
+            .ok_or_else(|| {
+                format!(
+                    "no niri window for pid {}",
+                    agent.pid.map_or("unknown".to_string(), |p| p.to_string())
+                )
+            })?;
         let ok = Command::new("niri")
             .args(["msg", "action", "focus-window", "--id", &id.to_string()])
             .status()
@@ -321,7 +340,12 @@ impl WindowFocuser for NiriFocuser {
         let pids = match_pids(agent);
         let pid = entry_for_pid(&windows, &pids)
             .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
-            .ok_or_else(|| format!("no niri window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
+            .ok_or_else(|| {
+                format!(
+                    "no niri window for pid {}",
+                    agent.pid.map_or("unknown".to_string(), |p| p.to_string())
+                )
+            })?;
         kill_pid(pid as u32)
     }
 }
@@ -409,7 +433,10 @@ impl X11Focuser {
                 }
             }
         }
-        Err(format!("no x11 window found for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))
+        Err(format!(
+            "no x11 window found for pid {}",
+            agent.pid.map_or("unknown".to_string(), |p| p.to_string())
+        ))
     }
 }
 

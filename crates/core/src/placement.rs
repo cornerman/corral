@@ -55,7 +55,11 @@ pub fn apply_placement(
         Placement::Reveal => {
             // Hidden agent has no host window; kill its pid directly. cage
             // exits when its only app does, so the record then goes dormant.
-            kill(agent.pid.ok_or("placement reveal: agent has no pid to kill")?)?;
+            kill(
+                agent
+                    .pid
+                    .ok_or("placement reveal: agent has no pid to kill")?,
+            )?;
             mode.hidden = false;
         }
         Placement::Hide => {
