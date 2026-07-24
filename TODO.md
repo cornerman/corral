@@ -37,12 +37,6 @@ runtime.
 Each of the three is expanded in a section below. Items 1-2 are the land-grab
 validation (VISION #1-2); item 3 is hardening.
 
-Accepted this review (no longer open work): pi's `session/cancel` does not
-dismiss a blocked `question`, and Claude/Cursor have no turn-abort. Rather than
-fix the platform, a Requires Action -> Idle card-move now surfaces an
-informative status in both shells instead of firing a cancel that never
-confirms (see AGENTS.md Known Limitations).
-
 ## VM E2E Smoke Test (follow-ups)
 
 The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
