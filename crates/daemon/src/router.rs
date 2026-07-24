@@ -309,8 +309,8 @@ fn deliver_dir(
         },
     };
     // Spawns default hidden so an uninvited window never pops up; a caller that
-    // set hidden:false asked for a visible window and already passed the
-    // operator gate (control.rs classify) to get here.
+    // set hidden:false asked for a visible window. Window placement only: the
+    // whitelist alone authorized this message (control.rs classify).
     mode.hidden = msg.hidden;
     // A fresh spawn is a brand-new agent that does not yet know it is part of a
     // swarm: prepend the charter so it confirms the task and communicates only
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn visible_request_launches_unhidden() {
-        // A hidden:false message (already past the operator gate) spawns a
+        // A hidden:false message (authorized by the whitelist) spawns a
         // visible window: the router honors the requested visibility.
         let msg = mailbox::parse_message(
             r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","hidden":false}"#,
