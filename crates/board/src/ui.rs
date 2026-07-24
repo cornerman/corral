@@ -814,7 +814,7 @@ mod tests {
     fn upsert(board: &mut Board, path: &str, state: State) {
         board.apply(Update::Upsert(Box::new(Agent {
             socket_path: PathBuf::from(path),
-            pid: 1,
+            pid: Some(1),
             label: "pi".into(),
             session_id: None,
             title: None,
@@ -902,7 +902,7 @@ mod card_tests {
     fn agent(state: State, activity: Option<&str>) -> Agent {
         Agent {
             socket_path: PathBuf::from("/s/a.sock"),
-            pid: 1,
+            pid: Some(1),
             label: "pi".into(),
             session_id: Some("sid".into()),
             title: Some("fix the auth flow".into()),

@@ -249,9 +249,19 @@ fn deliver_stop(
         return format!("stop: session {sid} gone");
     };
     match discovery::live_socket(entry) {
-        Some(sock) => match kill(sock.pid) {
-            Ok(()) => format!("stopped {}", msg.target_label()),
-            Err(e) => format!("stop kill: {e}"),
+        // Translate the agent-observed pid to a host pid (the NSpid bridge)
+        // before killing; corrald runs on the host, so RealProc sees the whole
+        // tree. No host pid -> not correlatable, so we cannot kill it.
+        Some(sock) => match discovery::resolve_socket_host_pid(
+            &discovery::RealProc,
+            sock.pid,
+            sock.pid_namespace,
+        ) {
+            Some(host) => match kill(host) {
+                Ok(()) => format!("stopped {}", msg.target_label()),
+                Err(e) => format!("stop kill: {e}"),
+            },
+            None => format!("stop: {} has no correlatable host pid", msg.target_label()),
         },
         None => format!("stop: {} already dormant", msg.target_label()),
     }
@@ -439,6 +449,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: None,
             socket: Some(PathBuf::from(format!("{cwd}/.corral/pi-{pid}.sock"))),
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: Some(vec!["pi".into(), "--session".into(), "x".into()]),
             label: Some("pi".into()),
@@ -483,6 +495,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: None,
             socket: None,
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec![label.into()]),
             resume_command: None,
             label: Some(label.into()),
@@ -506,6 +520,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: None,
             socket: None,
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: None,
             label: Some("pi".into()),
@@ -527,6 +543,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: None,
             socket: None,
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: Some(vec!["pi".into(), "--session".into(), resume.into()]),
             label: Some("pi".into()),
@@ -762,6 +780,8 @@ mod tests {
             cwd: Some("/b".into()),
             title: None,
             socket: Some(sock.clone()),
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: Some(vec![
                 "pi".into(),

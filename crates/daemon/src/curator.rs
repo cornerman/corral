@@ -122,6 +122,14 @@ fn record_json(rec: &corral_core::discovery::RegistryEntry) -> Result<String, se
     if let Some(s) = &rec.socket {
         m.insert("socket".into(), s.to_string_lossy().into_owned().into());
     }
+    // The window-owning pid + its PID-namespace inode (the NSpid bridge), so a
+    // board reading the vetted store can translate to a host pid for focus/kill.
+    if let Some(p) = rec.pid {
+        m.insert("pid".into(), p.into());
+    }
+    if let Some(ns) = rec.pid_namespace {
+        m.insert("pidNamespace".into(), ns.into());
+    }
     if let Some(c) = &rec.spawn_command {
         m.insert("spawnCommand".into(), c.clone().into());
     }
@@ -221,6 +229,30 @@ mod tests {
         // Absent model is omitted, not written as null.
         rec.model = None;
         assert!(!record_json(&rec).unwrap().contains("model"));
+    }
+
+    #[test]
+    fn record_json_roundtrips_pid_and_namespace() {
+        // Regression: record_json hand-lists fields, so pid/pidNamespace must be
+        // written or the board reading the vetted store cannot translate to a
+        // host pid (focus/kill silently break for sandboxed agents).
+        let mut rec = corral_core::discovery::parse_registry_json(
+            r#"{"sessionId":"s1","pid":42,"pidNamespace":4026532999}"#,
+        )
+        .unwrap();
+        rec.cwd = Some("/tmp/p".into());
+        let json = record_json(&rec).unwrap();
+        assert!(json.contains("\"pid\": 42"));
+        assert!(json.contains("\"pidNamespace\": 4026532999"));
+        let back = corral_core::discovery::parse_registry_json(&json).unwrap();
+        assert_eq!(back.pid, Some(42));
+        assert_eq!(back.pid_namespace, Some(4026532999));
+        // Absent -> omitted, not null.
+        rec.pid = None;
+        rec.pid_namespace = None;
+        let json = record_json(&rec).unwrap();
+        assert!(!json.contains("pid"));
+        assert!(!json.contains("pidNamespace"));
     }
 
     #[test]

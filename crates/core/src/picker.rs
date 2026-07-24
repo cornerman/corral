@@ -181,7 +181,7 @@ mod tests {
     fn agent(title: &str, cwd: &str, origin: Origin) -> Agent {
         Agent {
             socket_path: PathBuf::from(format!("/s/{title}.sock")),
-            pid: 1,
+            pid: Some(1),
             label: "pi".into(),
             session_id: Some(title.into()),
             title: Some(title.into()),

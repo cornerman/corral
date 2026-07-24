@@ -55,7 +55,7 @@ pub fn apply_placement(
         Placement::Reveal => {
             // Hidden agent has no host window; kill its pid directly. cage
             // exits when its only app does, so the record then goes dormant.
-            kill(agent.pid)?;
+            kill(agent.pid.ok_or("placement reveal: agent has no pid to kill")?)?;
             mode.hidden = false;
         }
         Placement::Hide => {
@@ -103,7 +103,7 @@ mod tests {
     fn live_agent(hidden: bool) -> Agent {
         Agent {
             socket_path: PathBuf::from("/tmp/p/.corral/pi-7.sock"),
-            pid: 7,
+            pid: Some(7),
             label: "pi".into(),
             session_id: Some("s1".into()),
             title: None,
@@ -136,7 +136,9 @@ mod tests {
             Ok(())
         }
         fn close(&self, a: &Agent) -> Result<(), String> {
-            self.closed.borrow_mut().push(a.pid);
+            self.closed
+                .borrow_mut()
+                .push(a.pid.expect("close needs a host pid"));
             Ok(())
         }
     }
@@ -202,7 +204,7 @@ mod tests {
         let s = Stub::default();
         let mut a = live_agent(false);
         a.origin = Origin::Dormant;
-        a.pid = 0;
+        a.pid = None;
         apply_placement(&a, &s, &s, &|_p| panic!("dormant has no process to kill")).unwrap();
         assert!(s.closed.borrow().is_empty());
         let launched = s.launched.borrow();

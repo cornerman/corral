@@ -231,6 +231,8 @@ mod tests {
             cwd: cwd.map(String::from),
             title: None,
             socket: None,
+            pid: None,
+            pid_namespace: None,
             spawn_command: None,
             resume_command: None,
             label: label.map(String::from),

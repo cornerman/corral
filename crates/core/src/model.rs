@@ -85,7 +85,12 @@ pub struct ContextInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub socket_path: PathBuf,
-    pub pid: u32,
+    /// Host pid owning this agent's window, for focus/kill correlation, already
+    /// translated from the record's namespace-local pid (see
+    /// `discovery::resolve_socket_host_pid`). `None` when the agent is not
+    /// window-correlatable (no pid announced, or translation failed); focus and
+    /// kill then fail loud rather than acting on a wrong pid.
+    pub pid: Option<u32>,
     pub label: String,
     pub session_id: Option<String>,
     pub title: Option<String>,
@@ -394,7 +399,7 @@ impl Board {
             .into_iter()
             .map(|e| Agent {
                 socket_path: PathBuf::new(),
-                pid: 0,
+                pid: None,
                 // Agent kind from the record; the board stays agent-agnostic.
                 label: e.label.clone().unwrap_or_else(|| "agent".into()),
                 session_id: Some(e.session_id.clone()),
@@ -537,7 +542,7 @@ mod tests {
     fn agent(path: &str, state: State) -> Agent {
         Agent {
             socket_path: PathBuf::from(path),
-            pid: 1,
+            pid: Some(1),
             label: "pi".into(),
             session_id: Some(path.into()),
             title: None,
@@ -636,6 +641,8 @@ mod tests {
             cwd: Some("/tmp/p".into()),
             title: None,
             socket: Some(PathBuf::from("/tmp/p/.corral/pi-9.sock")),
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: Some(vec!["pi".into(), "--session".into(), "sess-1".into()]),
             label: Some("pi".into()),
@@ -712,6 +719,8 @@ mod tests {
             cwd: Some("/tmp/p".into()),
             title: None,
             socket: Some(PathBuf::from("/tmp/p/.corral/pi-9.sock")),
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: Some(vec!["pi".into(), "--session".into(), "sess-1".into()]),
             label: Some("pi".into()),
@@ -746,6 +755,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: Some(id.into()),
             socket: None,
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["pi".into()]),
             resume_command: Some(vec![
                 "pi".into(),
@@ -773,6 +784,8 @@ mod tests {
             cwd: Some("/tmp/q".into()),
             title: None,
             socket: None, // cleared => dormant
+            pid: None,
+            pid_namespace: None,
             spawn_command: Some(vec!["quine".into(), "--corral".into()]),
             resume_command: Some(vec![
                 "quine".into(),
@@ -948,6 +961,8 @@ mod tests {
             // Same sessionId as the live agent -> not dormant.
             RegistryEntry {
                 socket: None,
+                pid: None,
+                pid_namespace: None,
                 ..dormant_record("live-1", "/p1", "2026-06-02T00:00:00Z")
             },
         ];
@@ -967,6 +982,8 @@ mod tests {
             // Still live: socket present.
             RegistryEntry {
                 socket: Some(PathBuf::from("/p/.corral/pi-1.sock")),
+                pid: None,
+                pid_namespace: None,
                 ..dormant_record("a", "/p", "t")
             },
             // Ephemeral: no resume command.
@@ -986,6 +1003,8 @@ mod tests {
         // Record still names a socket (no clean shutdown), but it is dead.
         let entries = vec![RegistryEntry {
             socket: Some(sock.clone()),
+            pid: None,
+            pid_namespace: None,
             ..dormant_record("crashed", "/p", "t")
         }];
         // Not yet known dead -> treated as live/connecting, not dormant.

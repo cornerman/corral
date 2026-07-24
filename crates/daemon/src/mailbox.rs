@@ -479,6 +479,8 @@ mod tests {
             cwd: Some(cwd.into()),
             title: Some("secret title".into()),
             socket: live.then(|| std::path::PathBuf::from(format!("{cwd}/.corral/{label}-1.sock"))),
+            pid: None,
+            pid_namespace: None,
             spawn_command: None,
             resume_command: None,
             label: Some(label.into()),

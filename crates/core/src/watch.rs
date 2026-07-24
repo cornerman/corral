@@ -192,6 +192,16 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
     let stream = UnixStream::connect(&entry.path).ok()?;
     stream.set_read_timeout(None).ok()?;
 
+    // Translate the agent-observed (namespace-local) pid to a host pid once,
+    // over the real host `/proc` (the NSpid bridge). `None` when not
+    // window-correlatable; focus/kill then fail loud instead of acting on a
+    // wrong pid. Done here so it happens once per watcher, off the UI thread.
+    let host_pid = crate::discovery::resolve_socket_host_pid(
+        &crate::discovery::RealProc,
+        entry.pid,
+        entry.pid_namespace,
+    );
+
     // initialize + session/list on one connection.
     let mut w = stream.try_clone().ok()?;
     let init = serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{}});
@@ -236,7 +246,7 @@ fn run(entry: &SocketEntry, tx: &Sender<Update>) -> Option<()> {
             let (session_id, title, cwd) = parse_session_list(&msg);
             let _ = tx.send(Update::Upsert(Box::new(Agent {
                 socket_path: entry.path.clone(),
-                pid: entry.pid,
+                pid: host_pid,
                 label: entry.label.clone(),
                 session_id,
                 title,
@@ -417,7 +427,8 @@ mod tests {
         let (tx, rx) = channel();
         let entry = SocketEntry {
             path: sock.clone(),
-            pid: 1,
+            pid: Some(1),
+            pid_namespace: None,
             label: "pi".into(),
         };
         let h = spawn(entry, tx);
@@ -447,7 +458,8 @@ mod tests {
         let (tx, rx) = channel();
         let entry = SocketEntry {
             path: sock.clone(),
-            pid: 1,
+            pid: Some(1),
+            pid_namespace: None,
             label: "pi".into(),
         };
         let h = spawn(entry, tx);
@@ -482,7 +494,8 @@ mod tests {
         let (tx, rx) = channel();
         let entry = SocketEntry {
             path: sock.clone(),
-            pid: 1,
+            pid: Some(1),
+            pid_namespace: None,
             label: "pi".into(),
         };
         let h = spawn(entry, tx);

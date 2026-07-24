@@ -163,7 +163,7 @@ mod tests {
         use std::time::Instant;
         let agent = Agent {
             socket_path: std::path::PathBuf::from("/tmp/x.sock"),
-            pid: 1,
+            pid: Some(1),
             label: "pi".into(),
             session_id: Some("sess-1".into()),
             title: Some("fix bug".into()),

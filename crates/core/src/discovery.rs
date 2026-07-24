@@ -11,7 +11,16 @@ use std::path::{Path, PathBuf};
 pub struct SocketEntry {
     pub path: PathBuf,
     pub label: String,
-    pub pid: u32,
+    /// The window-owning pid **as the agent observed it in its own PID
+    /// namespace** (from the record's `pid`, or a legacy `<label>-<pid>.sock`
+    /// filename). `None` when the record names no pid. This is not yet a host
+    /// pid: the consumer translates it via `pid_namespace` (see
+    /// `resolve_host_pid`) before correlating it to a host window.
+    pub pid: Option<u32>,
+    /// The nsfs inode of `pid`'s PID namespace (record `pidNamespace`), the key
+    /// that translates `pid` to a host pid. `None` means `pid` is already
+    /// host-level (the agent shares the consumer's PID namespace).
+    pub pid_namespace: Option<u64>,
 }
 
 /// One session's registry record. `socket` is present only while the session
@@ -24,6 +33,19 @@ pub struct RegistryEntry {
     pub cwd: Option<String>,
     pub title: Option<String>,
     pub socket: Option<PathBuf>,
+    /// The window-owning pid as the agent observes it in its own PID namespace
+    /// (pi/opencode: `getpid()`; cursor: the Electron pid; claude: the
+    /// interactive Claude pid). Moved off the socket filename into the record
+    /// so the filename can be a plain `<sessionId>.sock`. Consumers translate
+    /// it to a host pid via `pid_namespace`. Absent for a producer that does
+    /// not report it (then not window-correlatable).
+    pub pid: Option<u32>,
+    /// The nsfs inode of `pid`'s PID namespace,
+    /// `stat("/proc/<pid>/ns/pid").st_ino`. Lets a host consumer translate the
+    /// namespace-local `pid` to a host pid (the NSpid bridge). Absent means
+    /// `pid` is already host-level (agent shares the consumer's PID namespace),
+    /// preserving pre-bridge behavior.
+    pub pid_namespace: Option<u64>,
     /// argv to spawn a fresh session of this kind, rooted at a cwd the consumer
     /// supplies (e.g. `["pi"]`). The consumer runs it verbatim and never parses
     /// it, so it stays agent-neutral. `None` means this producer did not
@@ -136,6 +158,8 @@ pub fn parse_registry_json(text: &str) -> Option<RegistryEntry> {
         cwd: str_field("cwd"),
         title: str_field("title"),
         socket: str_field("socket").map(PathBuf::from),
+        pid: v.get("pid").and_then(|x| x.as_u64()).map(|n| n as u32),
+        pid_namespace: v.get("pidNamespace").and_then(|x| x.as_u64()),
         spawn_command: cmd_field("spawnCommand"),
         resume_command: cmd_field("resumeCommand"),
         label: str_field("label"),
@@ -172,13 +196,128 @@ pub fn scan_registry(dir: &Path) -> Vec<RegistryEntry> {
 }
 
 /// The connectable socket of a live registry entry, if any. Dormant records
-/// (no `socket`) and records whose socket filename breaks the `<label>-<pid>`
-/// convention yield `None`.
+/// (no `socket`) yield `None`. `label`/`pid`/`pid_namespace` come from the
+/// record; a legacy `<label>-<pid>.sock` filename is a fallback only for a
+/// record written before those moved into the JSON (transition compatibility).
+/// A live socket without a resolvable pid is still returned (watched); it is
+/// just not window-correlatable (focus fails loud).
 pub fn live_socket(entry: &RegistryEntry) -> Option<SocketEntry> {
     let path = entry.socket.clone()?;
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let (label, pid) = parse_socket_filename(&name)?;
-    Some(SocketEntry { path, label, pid })
+    let legacy = path
+        .file_name()
+        .and_then(|n| parse_socket_filename(&n.to_string_lossy()));
+    let label = entry
+        .label
+        .clone()
+        .or_else(|| legacy.as_ref().map(|(l, _)| l.clone()))
+        .unwrap_or_else(|| "agent".to_string());
+    let pid = entry.pid.or_else(|| legacy.map(|(_, p)| p));
+    Some(SocketEntry {
+        path,
+        label,
+        pid,
+        pid_namespace: entry.pid_namespace,
+    })
+}
+
+/// One process as the host sees it, for the NSpid bridge. `pid_ns_ino` is the
+/// nsfs inode of its PID namespace; `deepest_nspid` is the rightmost `NSpid:`
+/// value in `/proc/<host_pid>/status`, i.e. its pid in its own (deepest)
+/// namespace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcInfo {
+    pub host_pid: u32,
+    pub pid_ns_ino: u64,
+    pub deepest_nspid: u32,
+}
+
+/// A view of the host `/proc`, injectable so `resolve_host_pid` is unit-testable
+/// without a real process tree.
+pub trait ProcTable {
+    /// nsfs inode of the *reader's own* PID namespace (`/proc/self/ns/pid`).
+    fn self_pid_ns_ino(&self) -> Option<u64>;
+    /// Every process the reader can see, with its namespace inode and deepest
+    /// namespace-local pid.
+    fn processes(&self) -> Vec<ProcInfo>;
+}
+
+/// Translate a namespace-local pid to a host pid (the NSpid bridge). The
+/// namespace inode selects the sandbox; the namespace-local pid selects the
+/// process within it. When the target shares the reader's own PID namespace the
+/// pid is already host-level and returned directly (the common, no-sandbox
+/// case). `None` when no host process matches (vanished, or a kernel without
+/// `NSpid`).
+pub fn resolve_host_pid(table: &impl ProcTable, ns_pid: u32, pidns_ino: u64) -> Option<u32> {
+    if table.self_pid_ns_ino() == Some(pidns_ino) {
+        return Some(ns_pid);
+    }
+    table
+        .processes()
+        .into_iter()
+        .find(|p| p.pid_ns_ino == pidns_ino && p.deepest_nspid == ns_pid)
+        .map(|p| p.host_pid)
+}
+
+/// Resolve a socket's `(pid, pid_namespace)` to a host pid for window
+/// correlation. No pid -> `None` (not correlatable). No namespace -> the pid is
+/// already host-level (pre-bridge behavior). Otherwise translate via the NSpid
+/// bridge.
+pub fn resolve_socket_host_pid(
+    table: &impl ProcTable,
+    pid: Option<u32>,
+    pid_namespace: Option<u64>,
+) -> Option<u32> {
+    let pid = pid?;
+    match pid_namespace {
+        Some(ino) => resolve_host_pid(table, pid, ino),
+        None => Some(pid),
+    }
+}
+
+/// The real host `/proc`, used in production. Reads `/proc/self/ns/pid` for the
+/// reader's namespace and scans numeric `/proc/<pid>` entries. Processes the
+/// reader cannot stat (permission, or vanished) are skipped.
+pub struct RealProc;
+
+impl ProcTable for RealProc {
+    fn self_pid_ns_ino(&self) -> Option<u64> {
+        pid_ns_ino(Path::new("/proc/self"))
+    }
+    fn processes(&self) -> Vec<ProcInfo> {
+        let Ok(rd) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        rd.filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let host_pid: u32 = e.file_name().to_str()?.parse().ok()?;
+                let dir = e.path();
+                Some(ProcInfo {
+                    host_pid,
+                    pid_ns_ino: pid_ns_ino(&dir)?,
+                    deepest_nspid: deepest_nspid(&dir)?,
+                })
+            })
+            .collect()
+    }
+}
+
+/// nsfs inode of a `/proc/<pid>` (or `/proc/self`) entry's PID namespace.
+/// `metadata` follows the magic `ns/pid` symlink to the nsfs node, whose
+/// `st_ino` is the namespace identity (the key `lsns` correlates on).
+fn pid_ns_ino(proc_dir: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(proc_dir.join("ns/pid"))
+        .ok()
+        .map(|m| m.ino())
+}
+
+/// The deepest (rightmost) `NSpid:` value in `/proc/<pid>/status` — the
+/// process's pid in its own namespace. man7 proc_pid_status(5): leftmost is the
+/// pid in the reader's (host) namespace, rightmost the deepest.
+fn deepest_nspid(proc_dir: &Path) -> Option<u32> {
+    let status = std::fs::read_to_string(proc_dir.join("status")).ok()?;
+    let line = status.lines().find(|l| l.starts_with("NSpid:"))?;
+    line.split_whitespace().last()?.parse().ok()
 }
 
 /// Whether a `sessionId` is safe to trust and to substitute into a launch
@@ -367,10 +506,50 @@ mod tests {
             e.resume_command.as_deref().unwrap(),
             ["pi", "--session", "/s/abc.jsonl"]
         );
+        // Legacy filename (no record pid) still resolves label+pid for a
+        // record written before pid/label moved into the JSON.
         let sock = live_socket(&e).unwrap();
         assert_eq!(sock.label, "pi");
-        assert_eq!(sock.pid, 42);
+        assert_eq!(sock.pid, Some(42));
+        assert_eq!(sock.pid_namespace, None);
         assert_eq!(sock.path, PathBuf::from("/tmp/p/.corral/pi-42.sock"));
+    }
+
+    #[test]
+    fn live_socket_reads_pid_label_ns_from_record() {
+        // New shape: <sessionId>.sock filename, structured fields in the record.
+        let json = r#"{"sessionId":"abc","label":"pi","pid":42,"pidNamespace":4026532999,
+            "socket":"/tmp/p/.corral/abc.sock"}"#;
+        let e = parse_registry_json(json).unwrap();
+        assert_eq!(e.pid, Some(42));
+        assert_eq!(e.pid_namespace, Some(4026532999));
+        let sock = live_socket(&e).unwrap();
+        assert_eq!(sock.label, "pi");
+        assert_eq!(sock.pid, Some(42));
+        assert_eq!(sock.pid_namespace, Some(4026532999));
+        assert_eq!(sock.path, PathBuf::from("/tmp/p/.corral/abc.sock"));
+    }
+
+    #[test]
+    fn live_socket_without_pid_is_still_watched_uncorrelatable() {
+        // A <sessionId>.sock with no record pid: still a live socket (watched),
+        // just not window-correlatable (pid None).
+        let e = parse_registry_json(
+            r#"{"sessionId":"abc","label":"pi","socket":"/tmp/p/.corral/abc.sock"}"#,
+        )
+        .unwrap();
+        let sock = live_socket(&e).unwrap();
+        assert_eq!(sock.label, "pi");
+        assert_eq!(sock.pid, None);
+    }
+
+    #[test]
+    fn live_socket_missing_label_defaults_to_agent() {
+        let e = parse_registry_json(
+            r#"{"sessionId":"abc","pid":9,"socket":"/tmp/p/.corral/abc.sock"}"#,
+        )
+        .unwrap();
+        assert_eq!(live_socket(&e).unwrap().label, "agent");
     }
 
     #[test]
@@ -381,6 +560,72 @@ mod tests {
         let e = parse_registry_json(json).unwrap();
         assert_eq!(e.resume_argv().unwrap(), vec!["pi", "--session", "s9"]);
         assert_eq!(e.spawn_argv().unwrap(), vec!["cursor", "/p"]);
+    }
+
+    struct FakeProc {
+        self_ino: Option<u64>,
+        procs: Vec<ProcInfo>,
+    }
+    impl ProcTable for FakeProc {
+        fn self_pid_ns_ino(&self) -> Option<u64> {
+            self.self_ino
+        }
+        fn processes(&self) -> Vec<ProcInfo> {
+            self.procs.clone()
+        }
+    }
+
+    fn proc(host_pid: u32, ns: u64, nspid: u32) -> ProcInfo {
+        ProcInfo {
+            host_pid,
+            pid_ns_ino: ns,
+            deepest_nspid: nspid,
+        }
+    }
+
+    #[test]
+    fn resolve_translates_namespaced_pid_to_host_pid() {
+        // Two sandboxes each have a process with namespace-local pid 7; the
+        // namespace inode disambiguates, and NSpid picks the process within.
+        let table = FakeProc {
+            self_ino: Some(1000), // corral's own ns, unrelated to either sandbox
+            procs: vec![
+                proc(34521, 5001, 7), // sandbox A
+                proc(34600, 5002, 7), // sandbox B, same namespaced pid
+                proc(34700, 5001, 9), // sandbox A, different process
+            ],
+        };
+        assert_eq!(resolve_host_pid(&table, 7, 5001), Some(34521));
+        assert_eq!(resolve_host_pid(&table, 7, 5002), Some(34600));
+        assert_eq!(resolve_host_pid(&table, 9, 5001), Some(34700));
+        // No process with that (ns, nspid) pair.
+        assert_eq!(resolve_host_pid(&table, 8, 5001), None);
+        assert_eq!(resolve_host_pid(&table, 7, 9999), None);
+    }
+
+    #[test]
+    fn resolve_shortcuts_when_target_shares_reader_namespace() {
+        // Agent in the reader's own PID namespace: the pid is already host-level,
+        // returned without scanning (works even with an empty process list).
+        let table = FakeProc {
+            self_ino: Some(1000),
+            procs: vec![],
+        };
+        assert_eq!(resolve_host_pid(&table, 42, 1000), Some(42));
+    }
+
+    #[test]
+    fn resolve_socket_host_pid_handles_optionals() {
+        let table = FakeProc {
+            self_ino: Some(1000),
+            procs: vec![proc(34521, 5001, 7)],
+        };
+        // No pid -> not correlatable.
+        assert_eq!(resolve_socket_host_pid(&table, None, Some(5001)), None);
+        // No namespace -> pid is already host-level (pre-bridge behavior).
+        assert_eq!(resolve_socket_host_pid(&table, Some(999), None), Some(999));
+        // Both present -> translated.
+        assert_eq!(resolve_socket_host_pid(&table, Some(7), Some(5001)), Some(34521));
     }
 
     #[test]

@@ -289,6 +289,8 @@ mod tests {
             cwd: Some("/lie".into()),
             title: Some("t".into()),
             socket: socket.map(PathBuf::from),
+            pid: None,
+            pid_namespace: None,
             spawn_command: None,
             resume_command: None,
             label: Some("pi".into()),

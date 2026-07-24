@@ -314,7 +314,10 @@ impl Board {
                 .map_err(|e| format!("nudge: {e}")),
             MoveAction::Kill => {
                 let close = if agent.hidden {
-                    kill_pid(agent.pid)
+                    match agent.pid {
+                        Some(pid) => kill_pid(pid),
+                        None => Err("agent has no host pid".into()),
+                    }
                 } else {
                     self.focuser.close(&agent)
                 };
@@ -820,7 +823,10 @@ impl Board {
             // leaves a dormant record.
             Origin::Live => {
                 let close = if agent.hidden {
-                    kill_pid(agent.pid)
+                    match agent.pid {
+                        Some(pid) => kill_pid(pid),
+                        None => Err("agent has no host pid".into()),
+                    }
                 } else {
                     self.focuser.close(agent)
                 };

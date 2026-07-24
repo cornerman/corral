@@ -106,7 +106,7 @@ impl SwayFocuser {
         let pids = match_pids(agent);
         let tree = sway_get_tree()?;
         find_window(&tree, &pids)
-            .ok_or_else(|| format!("no sway window found for pid {}", agent.pid))
+            .ok_or_else(|| format!("no sway window found for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))
     }
 }
 
@@ -152,10 +152,15 @@ impl WindowFocuser for SwayFocuser {
 /// close, kill) the wrong one. A terminal agent (pi) owns no window itself,
 /// so its window is the terminal up the ancestor chain.
 fn match_pids(agent: &Agent) -> HashSet<u32> {
+    // No host pid -> no candidate windows; the focuser then finds nothing and
+    // fails loud rather than acting on a wrong pid.
+    let Some(pid) = agent.pid else {
+        return HashSet::new();
+    };
     if agent.gui {
-        std::iter::once(agent.pid).collect()
+        std::iter::once(pid).collect()
     } else {
-        ancestor_pids(agent.pid)
+        ancestor_pids(pid)
     }
 }
 
@@ -265,7 +270,7 @@ impl WindowFocuser for HyprlandFocuser {
         let pids = match_pids(agent);
         let addr = entry_for_pid(&clients, &pids)
             .and_then(|e| e.get("address").and_then(|a| a.as_str()))
-            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid))?;
+            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
         let ok = Command::new("hyprctl")
             .args(["dispatch", "focuswindow", &format!("address:{addr}")])
             .status()
@@ -283,7 +288,7 @@ impl WindowFocuser for HyprlandFocuser {
         let pids = match_pids(agent);
         let pid = entry_for_pid(&clients, &pids)
             .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
-            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid))?;
+            .ok_or_else(|| format!("no hyprland window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
         kill_pid(pid as u32)
     }
 }
@@ -298,7 +303,7 @@ impl WindowFocuser for NiriFocuser {
         let pids = match_pids(agent);
         let id = entry_for_pid(&windows, &pids)
             .and_then(|e| e.get("id").and_then(|i| i.as_u64()))
-            .ok_or_else(|| format!("no niri window for pid {}", agent.pid))?;
+            .ok_or_else(|| format!("no niri window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
         let ok = Command::new("niri")
             .args(["msg", "action", "focus-window", "--id", &id.to_string()])
             .status()
@@ -316,7 +321,7 @@ impl WindowFocuser for NiriFocuser {
         let pids = match_pids(agent);
         let pid = entry_for_pid(&windows, &pids)
             .and_then(|e| e.get("pid").and_then(|p| p.as_u64()))
-            .ok_or_else(|| format!("no niri window for pid {}", agent.pid))?;
+            .ok_or_else(|| format!("no niri window for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))?;
         kill_pid(pid as u32)
     }
 }
@@ -404,7 +409,7 @@ impl X11Focuser {
                 }
             }
         }
-        Err(format!("no x11 window found for pid {}", agent.pid))
+        Err(format!("no x11 window found for pid {}", agent.pid.map_or("unknown".to_string(), |p| p.to_string())))
     }
 }
 
@@ -513,7 +518,7 @@ mod tests {
         use crate::model::{Origin, State};
         let mk = |gui: bool, pid: u32| Agent {
             socket_path: std::path::PathBuf::from("/s.sock"),
-            pid,
+            pid: Some(pid),
             label: "quine".into(),
             session_id: None,
             title: None,

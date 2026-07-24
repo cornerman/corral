@@ -241,7 +241,10 @@ fn commit_move(
         // (same as `d`); pi goes dormant and resumable.
         MoveAction::Kill => {
             if agent.hidden {
-                kill_pid(agent.pid).map_err(|e| format!("close: {e}"))
+                match agent.pid {
+                    Some(pid) => kill_pid(pid).map_err(|e| format!("close: {e}")),
+                    None => Err("close: agent has no host pid".into()),
+                }
             } else {
                 focuser.close(agent).map_err(|e| format!("close: {e}"))
             }
@@ -986,9 +989,12 @@ fn dismiss_selected(
         // focuser. Either way pi shuts down cleanly and leaves a dormant record.
         Origin::Live => {
             *status = if agent.hidden {
-                match kill_pid(agent.pid) {
-                    Ok(()) => format!("closing {}", ui::focus_label(agent)),
-                    Err(e) => format!("close: {e}"),
+                match agent.pid {
+                    Some(pid) => match kill_pid(pid) {
+                        Ok(()) => format!("closing {}", ui::focus_label(agent)),
+                        Err(e) => format!("close: {e}"),
+                    },
+                    None => "close: agent has no host pid".into(),
                 }
             } else {
                 match focuser.close(agent) {
