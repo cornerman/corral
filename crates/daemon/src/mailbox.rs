@@ -74,21 +74,27 @@ impl Message {
         format!("{tag}\n{}", self.message)
     }
 
-    /// Full human label for the target (used in the detail popup).
-    pub fn target_label(&self) -> String {
+    /// Full human label for the target, built from the target's **resolved**
+    /// working directory: authorization is keyed on the `(sender dir -> target
+    /// dir)` pair, so the operator must always see that directory. A session
+    /// target names the dir *and* its session id — the id alone would hide
+    /// where that agent works, which is the thing being approved. Used in the
+    /// detail popup, the audit trail, and the router's status lines.
+    pub fn target_label(&self, target_cwd: &str) -> String {
         match &self.target {
-            Target::Dir(d) => d.clone(),
-            Target::Session(s) => format!("session {s}"),
+            Target::Dir(_) => target_cwd.to_string(),
+            Target::Session(s) => format!("{target_cwd} (session {s})"),
         }
     }
 
-    /// Compact target label for the tray menu: a directory target shows only
-    /// its basename, so the `from → to` line stays short and symmetric with the
-    /// basenamed sender.
-    pub fn target_label_short(&self) -> String {
+    /// Compact target label for the tray menu and the notification: the target
+    /// directory's basename, so the `from → to` line stays short and symmetric
+    /// with the basenamed sender; a session target keeps its full id after it.
+    pub fn target_label_short(&self, target_cwd: &str) -> String {
+        let dir = basename(target_cwd);
         match &self.target {
-            Target::Dir(d) => basename(d).to_string(),
-            Target::Session(s) => format!("session {s}"),
+            Target::Dir(_) => dir.to_string(),
+            Target::Session(s) => format!("{dir} (session {s})"),
         }
     }
 }
@@ -377,7 +383,10 @@ mod tests {
             "targetSession":"sid-7","message":"hi"}"#;
         let m = parse_message(json).unwrap();
         assert_eq!(m.target, Target::Session("sid-7".into()));
-        assert_eq!(m.target_label(), "session sid-7");
+        // The resolved target dir stays visible beside the session id, in both
+        // the full and the compact form (it is the authorization axis).
+        assert_eq!(m.target_label("/work/proj"), "/work/proj (session sid-7)");
+        assert_eq!(m.target_label_short("/work/proj"), "proj (session sid-7)");
         // The reply handle (sender's session) rides in the provenance tag; the
         // dir shows as its basename, the session id stays full.
         assert_eq!(m.tagged(), "[from a (session sid-9)]\nhi");
@@ -536,7 +545,10 @@ mod tests {
         let entries = [rec("s1", "/a", "pi", true, Some("terminal agent"))];
         let json = roster_json(&build_roster(&entries, |cwd| cwd == "/a"));
         // A reachable session surfaces its title alongside cwd + description.
-        assert!(json.contains("\"title\":\"secret title\""), "expose reachable title");
+        assert!(
+            json.contains("\"title\":\"secret title\""),
+            "expose reachable title"
+        );
         assert!(json.contains("\"cwd\":\"/a\""));
         assert!(json.contains("\"description\":\"terminal agent\""));
     }

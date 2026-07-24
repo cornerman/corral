@@ -80,10 +80,11 @@ pub enum ApprovalAction {
 }
 
 /// A message awaiting an operator decision, with its resolved target directory
-/// (for the whitelist, which is keyed on dir pairs).
-struct Pending {
-    msg: Message,
-    target_cwd: String,
+/// (for the whitelist, which is keyed on dir pairs, and for every operator-
+/// facing label: the dir is what the approval actually grants).
+pub struct Pending {
+    pub msg: Message,
+    pub target_cwd: String,
 }
 
 pub struct Router {
@@ -124,21 +125,21 @@ impl Router {
 
     /// The first message awaiting an operator decision, if any (the tray shows
     /// one at a time). Every pending message is surfaced via `pending_messages`.
-    pub fn pending(&self) -> Option<&Message> {
-        self.pending.first().map(|p| &p.msg)
+    pub fn pending(&self) -> Option<&Pending> {
+        self.pending.first()
     }
 
     /// Every message awaiting an operator decision, so the loop can surface each
     /// one (a notification per pending message) and resolve any by id — no
     /// approval hides behind another.
-    pub fn pending_messages(&self) -> impl Iterator<Item = &Message> {
-        self.pending.iter().map(|p| &p.msg)
+    pub fn pending_messages(&self) -> impl Iterator<Item = &Pending> {
+        self.pending.iter()
     }
 
     /// A specific pending message by id, for surfacing details / auditing a
     /// decision that may target any pending item, not just the first.
-    pub fn pending_by_id(&self, id: &str) -> Option<&Message> {
-        self.pending.iter().find(|p| p.msg.id == id).map(|p| &p.msg)
+    pub fn pending_by_id(&self, id: &str) -> Option<&Pending> {
+        self.pending.iter().find(|p| p.msg.id == id)
     }
 
     /// Route the queue: deliver every whitelisted or already-approved message,
@@ -248,6 +249,9 @@ fn deliver_stop(
     let Some(entry) = entries.iter().find(|e| &e.session_id == sid) else {
         return format!("stop: session {sid} gone");
     };
+    // The label names the dir the record physically lives in; unknown only if a
+    // vetted record somehow lacks it.
+    let target_dir = entry.cwd.clone().unwrap_or_else(|| "?".into());
     match discovery::live_socket(entry) {
         // Translate the agent-observed pid to a host pid (the NSpid bridge)
         // before killing; corrald runs on the host, so RealProc sees the whole
@@ -258,12 +262,15 @@ fn deliver_stop(
             sock.pid_namespace,
         ) {
             Some(host) => match kill(host) {
-                Ok(()) => format!("stopped {}", msg.target_label()),
+                Ok(()) => format!("stopped {}", msg.target_label(&target_dir)),
                 Err(e) => format!("stop kill: {e}"),
             },
-            None => format!("stop: {} has no correlatable host pid", msg.target_label()),
+            None => format!(
+                "stop: {} has no correlatable host pid",
+                msg.target_label(&target_dir)
+            ),
         },
-        None => format!("stop: {} already dormant", msg.target_label()),
+        None => format!("stop: {} already dormant", msg.target_label(&target_dir)),
     }
 }
 
@@ -280,7 +287,7 @@ fn deliver_dir(
     if !msg.force_new {
         if let Some(sock) = live_socket_in_dir(entries, dir) {
             if prompt::send_prompt(&sock, &msg.tagged()).is_ok() {
-                return format!("routed to {}", msg.target_label());
+                return format!("routed to {}", msg.target_label(dir));
             }
             // Socket present but dead: fall through and spawn a fresh agent.
         }
@@ -314,7 +321,7 @@ fn deliver_dir(
     // spawn has no `{sessionId}`).
     let launch_command = approved_commands::denormalize(command, "", Some(dir));
     match launcher.launch(Path::new(dir), &launch_command, Some(&first_prompt), &mode) {
-        Ok(()) => format!("routed to {} (spawned)", msg.target_label()),
+        Ok(()) => format!("routed to {} (spawned)", msg.target_label(dir)),
         Err(e) => format!("route spawn: {e}"),
     }
 }
@@ -356,9 +363,10 @@ fn deliver_session(
     let Some(entry) = entries.iter().find(|e| e.session_id == session_id) else {
         return format!("route: session {session_id} not found");
     };
+    let target_dir = entry.cwd.clone().unwrap_or_else(|| "?".into());
     if let Some(sock) = &entry.socket {
         if prompt::send_prompt(sock, &msg.tagged()).is_ok() {
-            return format!("routed to {}", msg.target_label());
+            return format!("routed to {}", msg.target_label(&target_dir));
         }
         // Socket present but dead: fall through and resume from the record.
     }
@@ -368,7 +376,7 @@ fn deliver_session(
             // Resume honors the requested visibility, same rationale as dir spawn.
             mode.hidden = msg.hidden;
             match launcher.launch(Path::new(&cwd), &command, Some(&msg.tagged()), &mode) {
-                Ok(()) => format!("routed to {} (resumed)", msg.target_label()),
+                Ok(()) => format!("routed to {} (resumed)", msg.target_label(&target_dir)),
                 Err(e) => format!("route resume: {e}"),
             }
         }
@@ -600,7 +608,7 @@ mod tests {
         let launcher = StubLauncher::default();
 
         assert!(r.poll(&[], &launcher).is_none());
-        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
+        assert_eq!(r.pending().map(|p| p.msg.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0, "no delivery before approval");
     }
 
@@ -673,7 +681,7 @@ mod tests {
         let entries = [dir_record("/b")];
 
         r.poll(&entries, &launcher); // -> pending (not yet whitelisted)
-        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
+        assert_eq!(r.pending().map(|p| p.msg.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0);
 
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
@@ -875,7 +883,7 @@ mod tests {
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
-        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("1"));
+        assert_eq!(r.pending().map(|p| p.msg.id.as_str()), Some("1"));
         assert!(killed.lock().unwrap().is_empty(), "no kill before approval");
         r.apply("1", ApprovalAction::AllowOnce).unwrap();
         r.poll(&entries, &launcher);
@@ -898,7 +906,7 @@ mod tests {
         r.poll(&entries, &launcher);
         assert_eq!(launcher.spawns.get(), 1, "B delivered despite A pending");
         assert_eq!(
-            r.pending().map(|m| m.id.as_str()),
+            r.pending().map(|p| p.msg.id.as_str()),
             Some("A"),
             "A still parked for approval"
         );
@@ -916,7 +924,7 @@ mod tests {
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
-        let ids: Vec<&str> = r.pending_messages().map(|m| m.id.as_str()).collect();
+        let ids: Vec<&str> = r.pending_messages().map(|p| p.msg.id.as_str()).collect();
         assert_eq!(ids, vec!["A", "B"], "both parked for approval");
         assert_eq!(launcher.spawns.get(), 0);
     }
@@ -937,7 +945,7 @@ mod tests {
         r.poll(&entries, &launcher); // B delivers
         assert_eq!(launcher.spawns.get(), 1);
         assert_eq!(
-            r.pending().map(|m| m.id.as_str()),
+            r.pending().map(|p| p.msg.id.as_str()),
             Some("A"),
             "A remains parked"
         );
@@ -954,6 +962,10 @@ mod tests {
         let launcher = StubLauncher::default();
         r.poll(&entries, &launcher);
         r.apply("ghost", ApprovalAction::AllowOnce).unwrap();
-        assert_eq!(r.pending().map(|m| m.id.as_str()), Some("A"), "A untouched");
+        assert_eq!(
+            r.pending().map(|p| p.msg.id.as_str()),
+            Some("A"),
+            "A untouched"
+        );
     }
 }

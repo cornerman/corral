@@ -14,7 +14,9 @@ use crate::router::ApprovalAction;
 /// Fire a notification for a pending approval; the chosen action comes back on
 /// a channel, tagged with the message id so a stale reply can be ignored.
 /// `action` distinguishes a message delivery from a destructive stop so the
-/// operator sees which they are approving.
+/// operator sees which they are approving. `from` and `target` arrive as
+/// ready display labels (the caller owns how a target reads, since only it
+/// knows the resolved target directory behind a session id).
 pub trait ApprovalNotifier {
     fn notify(
         &self,
@@ -79,18 +81,15 @@ impl ApprovalNotifier for NotifySendNotifier {
         action: Action,
         tx: Sender<(String, ApprovalAction)>,
     ) {
-        // Compact: basename the paths, clip the message.
-        let from_s = from.rsplit('/').next().unwrap_or(from);
-        let to_s = target.rsplit('/').next().unwrap_or(target);
         // A stop has no body; say what it does so the operator sees the kill.
         let (title, body) = match action {
             Action::Stop => (
                 "corral: stop agent",
-                format!("{from_s} → stop {to_s}\n(kill the agent, leaving it resumable)"),
+                format!("{from} → stop {target}\n(kill the agent, leaving it resumable)"),
             ),
             Action::Deliver => (
                 "corral: agent message",
-                format!("{from_s} → {to_s}\n{}", clip(message, 140)),
+                format!("{from} → {target}\n{}", clip(message, 140)),
             ),
         };
         thread::spawn(move || {

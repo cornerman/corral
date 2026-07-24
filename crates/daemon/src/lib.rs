@@ -165,12 +165,13 @@ pub fn run() {
         // (fired once, tracked by id), and the first on the tray (it shows one
         // at a time). Because each notification carries its own id and the
         // router resolves by id, approvals never block on ordering.
-        for msg in router.pending_messages() {
+        for p in router.pending_messages() {
+            let msg = &p.msg;
             if announced.insert(msg.id.clone()) {
                 notifier.notify(
                     msg.id.clone(),
-                    &msg.from_cwd,
-                    &msg.target_label(),
+                    mailbox::basename(&msg.from_cwd),
+                    &msg.target_label_short(&p.target_cwd),
                     &msg.message,
                     msg.action,
                     napp_tx.clone(),
@@ -179,7 +180,8 @@ pub fn run() {
         }
         // The tray reflects the first pending message (or clears when none),
         // updating only when that head changes.
-        let head = router.pending().map(|msg| {
+        let head = router.pending().map(|p| {
+            let msg = &p.msg;
             let from = mailbox::basename(&msg.from_cwd);
             // A stop is destructive, so the operator must see it is a kill, not
             // a message: the verb prefixes the tray label.
@@ -189,7 +191,7 @@ pub fn run() {
             };
             (
                 msg.id.clone(),
-                format!("{from} → {verb}{}", msg.target_label_short()),
+                format!("{from} → {verb}{}", msg.target_label_short(&p.target_cwd)),
             )
         });
         if head.as_ref().map(|(id, _)| id) != tray_shown.as_ref() {
@@ -197,8 +199,10 @@ pub fn run() {
             tray_shown = head.map(|(id, _)| id);
         }
         // Forget ids no longer pending, so a later re-submission re-notifies.
-        let live: std::collections::HashSet<String> =
-            router.pending_messages().map(|m| m.id.clone()).collect();
+        let live: std::collections::HashSet<String> = router
+            .pending_messages()
+            .map(|p| p.msg.id.clone())
+            .collect();
         announced.retain(|id| live.contains(id));
 
         // Apply decisions from the tray and the notification. Both are guarded
@@ -223,11 +227,11 @@ pub fn run() {
                     announced_reg = None; // re-evaluate what to surface next tick
                 }
                 TrayCommand::ShowDetails(id) => {
-                    if let Some(msg) = router.pending_by_id(&id) {
+                    if let Some(p) = router.pending_by_id(&id) {
                         notify::show_detail(
-                            msg.from_cwd.clone(),
-                            msg.target_label(),
-                            msg.message.clone(),
+                            p.msg.from_cwd.clone(),
+                            p.msg.target_label(&p.target_cwd),
+                            p.msg.message.clone(),
                         );
                     }
                 }
@@ -256,10 +260,13 @@ fn apply_decision(
     action: ApprovalAction,
     audit_log: &std::path::Path,
 ) {
-    let Some(line) = router
-        .pending_by_id(id)
-        .map(|m| format!("message {action:?}: {} -> {}", m.from_cwd, m.target_label()))
-    else {
+    let Some(line) = router.pending_by_id(id).map(|p| {
+        format!(
+            "message {action:?}: {} -> {}",
+            p.msg.from_cwd,
+            p.msg.target_label(&p.target_cwd)
+        )
+    }) else {
         return;
     };
     if let Err(e) = router.apply(id, action) {
