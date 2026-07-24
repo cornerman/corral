@@ -73,8 +73,8 @@ location = identity (see SECURITY.md, CONVENTION.md v2):
 
 ```
 <cwd>/.corral/registry/<sessionId>.json    (dirs 0700; override $CORRAL_SOCKET_DIR)
-  { sessionId, title, label, socket, spawnCommand, resumeCommand, lastSeen, … }   ← NO cwd field
-<cwd>/.corral/<label>-<pid>.sock           (dir 0700)
+  { sessionId, title, label, socket, pid, pidNamespace, spawnCommand, resumeCommand, lastSeen, … }   ← NO cwd field
+<cwd>/.corral/<name>.sock                   (dir 0700; opaque unique name, <sessionId>.sock recommended)
 $HOME/.corral/input/registry/<sessionId>   (agent-writable per-session POINTER, content=cwd; write-only dir; override $CORRAL_INPUT_REGISTRY)
 $HOME/.corral/state/registry/<id>.json     (corrald-written, VETTED; the boards read only this)
 $HOME/.corral/state/{whitelist,approved-commands.json,audit.log}   (sealed, daemon-only)
@@ -140,7 +140,14 @@ ratatui / iced, the daemon keeps ksni).
 - `crates/core` — `corral-core` (lib): the shared foundation, UI-free
   (`serde_json`, `libc`, `inotify`).
   - `src/discovery.rs` — parse a `<sessionId>.json` record and resolve a live
-    record to its socket (parsing the `<label>-<pid>.sock` filename);
+    record to its socket (`live_socket` reads `label`/`pid`/`pidNamespace` from
+    the record, not the filename — the filename is opaque now; a legacy
+    `<label>-<pid>.sock` parse survives only as a transition fallback).
+    `resolve_host_pid` / `resolve_socket_host_pid` are the **NSpid bridge**:
+    over a `ProcTable` seam (`RealProc` reads host `/proc`) they translate an
+    agent's namespace-local pid to a host pid by matching the `pidNamespace`
+    nsfs inode and the deepest `NSpid:` value, so focus/kill correlate a
+    sandboxed (private-PID-namespace) agent without a shared host PID namespace.
     `scan_registry` is a plain trusted read of a dir of records (used by the
     boards over the **vetted** `state/registry/`, and by corrald over its own
     output). Also `valid_session_id` (charset gate) and the `cwd_from_*`
@@ -285,7 +292,9 @@ ratatui / iced, the daemon keeps ksni).
   - `src/focus.rs` — `WindowFocuser` seam, with `focus::detect()` picking an
     implementation by session: EWMH on X11; sway / Hyprland / niri on Wayland.
     `X11Focuser` (via `x11rb`, no libX11) finds the
-    window by matching `_NET_WM_PID` against the agent's pid and its ancestors
+    window by matching `_NET_WM_PID` against the agent's **host** pid (the
+    record's namespace-local `pid` translated via the NSpid bridge in
+    `discovery`) and its ancestors
     (the terminal owning the window is an ancestor of the socket pid; a GUI
     agent's own pid owns its window, so `match_pids` narrows the set to just
     the socket pid for `gui` records — never climbing to the launching
@@ -731,7 +740,8 @@ pi/opencode) before spawning.
 
 An agent stops a peer with **`corral_stop_agent`** (`target_session` only): it
 submits `{"op":"stop",…}` over the control socket and `corrald` kills the target
-session's process (by the pid in its socket filename), leaving a dormant,
+session's process (by the record's `pid`, translated to a host pid via the
+NSpid bridge), leaving a dormant,
 resumable record — the same effect as the operator's board `d`, reached through
 the daemon. Stopping is gated exactly like a message: the `(sender-dir ->
 target-dir)` whitelist authorizes it (a whitelisted pair kills straight through,
@@ -846,11 +856,16 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   (the one user-input gate an extension can observe). pi's built-in
   tool-approval prompt is not surfaced to extensions, so an approval-blocked
   agent still shows as Running until pi exposes that gate (see Future).
-- Focus correlation assumes the pi process and its terminal window share the
-  host PID namespace (true under the current nono/bwrap sandbox). If a sandbox
-  unshares PIDs, the `/proc` parent-walk cannot reach the window pid.
-  Board-spawned windows are detached (`setsid --fork`) so the walk terminates
-  at the agent's own terminal rather than climbing into corral's window.
+- Focus correlation no longer needs the agent and its window to share the host
+  PID namespace: the adapter announces its namespace-local `pid` plus its
+  `pidNamespace` nsfs inode, and corral translates to a host pid via the NSpid
+  bridge (`discovery::resolve_host_pid`), so a sandbox MAY `unshare-pid` (no
+  host `/proc` exposed to the agent, no env-var leak). The remaining assumption
+  is only that **corral itself** runs in the host PID namespace (it already
+  reads host `/proc` for the parent-walk); a sandbox that omits `pidNamespace`
+  falls back to using the raw pid (pre-bridge behavior). Board-spawned windows
+  are detached (`setsid --fork`) so the walk terminates at the agent's own
+  terminal rather than climbing into corral's window.
 - A transient watch read error reports the agent gone; the next 1s scan
   reconnects. A genuinely dead socket (crashed pi) reconnects-and-drops cheaply
   once per second until its file disappears.
@@ -899,7 +914,9 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   the `corral-pi` adapter. The stable contract any ACP agent joins by:
   (1) write `<cwd>/.corral/registry/<sessionId>.json` (no `cwd` field) with
   `label` set to the agent kind and `socket` pointing at (2) a workdir-local
-  `<label>-<pid>.sock` speaking ACP (initialize, session/list, session/prompt),
+  `<name>.sock` (opaque unique name, `<sessionId>.sock` recommended; plus
+  `pid`/`pidNamespace` in the record for window correlation) speaking ACP
+  (initialize, session/list, session/prompt),
   a `spawnCommand`/`resumeCommand` argv template (with `{sessionId}`/`{cwd}`
   placeholders corral substitutes at launch), write a
   per-session pointer at `~/.corral/input/registry/<sessionId>` (content =

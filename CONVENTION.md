@@ -89,9 +89,11 @@ Fields:
 |-------------|-----------------|---------|
 | `sessionId` | string          | Stable session identity, charset `[A-Za-z0-9._-]` (no leading `-`). MUST match the record's filename and the `sessionId` returned by `session/list`. MUST NOT be the session-file path. |
 | `title`     | string \| null  | Human-readable session title; `null` when unnamed. A consumer sanitizes it for display (it is untrusted content). |
-| `label`     | string          | Agent kind (e.g. `"pi"`). Appears in the socket filename; a consumer MAY use it to identify a dormant session's kind. |
+| `label`     | string          | Agent kind (e.g. `"pi"`). A consumer MAY use it to identify a session's kind (live or dormant). |
 | `description` | string \| null | Optional. A one-line, human-readable description of the agent kind (e.g. `"pi: terminal TUI coding agent"`), authored by the adapter. A consumer MAY surface it in a capability roster so a caller can pick a kind to spawn; latest-seen per `label` wins. The string is adapter code, not model output. |
 | `socket`    | string \| null  | Absolute path to the live socket, or `null` when the session is dormant (cleanly shut down, resumable). |
+| `pid`       | number \| null  | Optional. The pid of the process whose window represents this session (a terminal agent: its own `getpid()`; a self-windowing or externally-hosted agent: the window process, e.g. the Electron or interactive-editor pid), **as the agent observes it in its own PID namespace**. A consumer uses it to correlate the session to a host window (focus, close, kill). Absent when the agent is not window-correlatable. |
+| `pidNamespace` | number \| null | Optional. The nsfs inode of `pid`'s PID namespace (`stat("/proc/<pid>/ns/pid").st_ino` on Linux). Lets a host consumer translate the namespace-local `pid` to a **host** pid when the agent runs in a private PID namespace (a sandbox), by matching `/proc/<hostpid>/ns/pid` inode and the deepest `NSpid:` value. Absent means `pid` is already host-level (the agent shares the consumer's PID namespace), preserving pre-sandbox behavior. |
 | `spawnCommand`  | string[] \| null | argv **template** a consumer runs (rooted at a chosen cwd, terminal-wrapped unless `gui`) to start a *fresh* session of this kind, e.g. `["pi"]`. May carry the `{cwd}` placeholder (see below). `null` when the agent does not support consumer-launched spawn. |
 | `resumeCommand` | string[] \| null | argv **template** a consumer runs to relaunch *this exact* session, e.g. `["pi", "--session", "{sessionId}"]`. Carries the `{sessionId}` (and/or `{cwd}`) placeholder rather than the literal id, so the argv is identical for every session of the kind. `null` when the session is not resumable (ephemeral). A record is dormant/resumable exactly when this is set. |
 | `lastSeen`  | string          | ISO-8601 timestamp, refreshed while the session runs. Lets a consumer age out stale dormant records. |
@@ -132,7 +134,9 @@ Example:
   "cwd": "/home/dev/projects/widget",
   "title": "fix the flaky retry test",
   "label": "pi",
-  "socket": "/home/dev/projects/widget/.corral/pi-48213.sock",
+  "socket": "/home/dev/projects/widget/.corral/6f1c2e7a-3b4d-4c5e-9a10-2f8b1d0e4c33.sock",
+  "pid": 48213,
+  "pidNamespace": 4026531836,
   "spawnCommand": ["pi"],
   "resumeCommand": ["pi", "--session", "{sessionId}"],
   "lastSeen": "2026-07-13T09:41:07.512Z"
@@ -185,11 +189,15 @@ clean-shutdown and resume behavior it already implements.
 
 ## 3. Workdir-Local Socket (MUST)
 
-- Path: `<cwd>/.corral/<label>-<pid>.sock`. An agent MAY override the directory
+- Path: `<cwd>/.corral/<name>.sock`. An agent MAY override the directory
   with `$CORRAL_SOCKET_DIR`.
 - The directory MUST be created mode `0700`.
-- The filename MUST encode the agent `label` and process id as
-  `<label>-<pid>.sock`, so a consumer can read both from the path.
+- The filename is **opaque and MUST be unique** within the directory; it is not
+  a data channel. `<sessionId>.sock` is RECOMMENDED (unique by construction, and
+  it pairs with the `<sessionId>.json` record), but any unique name works
+  (e.g. `<label>-<pid>.sock` for an agent that binds before its session id
+  exists). The agent kind and window pid travel in the record (`label`, `pid`,
+  `pidNamespace`), not the filename.
 - The socket MUST speak newline-delimited JSON-RPC 2.0: one JSON object per
   line, `\n`-terminated, in both directions. This is ACP exactly as spoken over
   stdio, framed by newlines on the stream.
@@ -351,8 +359,8 @@ MUST:
       write) with the fields of §2 (no `cwd` field), `sessionId` matching the
       filename and its charset, and write the workdir into the pointer file
       `$HOME/.corral/input/registry/<sessionId>`.
-- [ ] Bind `<cwd>/.corral/<label>-<pid>.sock` (dir `0700`) speaking
-      newline-delimited JSON-RPC 2.0.
+- [ ] Bind `<cwd>/.corral/<name>.sock` (dir `0700`, filename opaque + unique,
+      `<sessionId>.sock` recommended) speaking newline-delimited JSON-RPC 2.0.
 - [ ] Answer `initialize` with `agentInfo`.
 - [ ] Answer `session/list` with `sessionId` equal to the registry id.
 - [ ] Broadcast `state_update` (running/idle/requires_action) on transitions and
@@ -365,6 +373,9 @@ SHOULD:
 - [ ] Serve `session/prompt` (makes the session messageable) and `session/cancel`.
 - [ ] Broadcast `session_info_update` on rename.
 - [ ] Refresh `lastSeen` while running.
+- [ ] Write `pid` + `pidNamespace` so a consumer can correlate the session to a
+      host window (focus/close/kill); required for those actions on a sandboxed
+      (private-PID-namespace) agent.
 
 MAY:
 

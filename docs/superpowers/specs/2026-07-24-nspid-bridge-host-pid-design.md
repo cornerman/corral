@@ -100,11 +100,14 @@ New record fields, and a filename change:
 | `pid` | number \| null | Optional. The window-owning PID **as the agent observes it in its own PID namespace**, for window correlation. Was previously encoded in the socket filename. Absent when the agent is not window-correlatable. |
 | `pidNamespace` | number \| null | Optional. The nsfs inode (`stat("/proc/<pid>/ns/pid").st_ino`) of `pid`'s PID namespace. Lets a consumer translate the namespace-local `pid` to a host PID. Absent means `pid` is already host-level (the agent runs in the consumer's PID namespace); a consumer uses it directly, preserving today's behavior. |
 
-**Socket filename** (§3) becomes `<sessionId>.sock` (was `<label>-<pid>.sock`):
-unique per directory by construction (it mirrors the record file
-`<sessionId>.json`), and no longer a data channel. A consumer reads `label`,
-`pid`, and `pidNamespace` from the record, never from the filename. `label`
-lives only in the record now (dormant cards already read it there).
+**Socket filename** (§3) becomes **opaque and unique per directory**, no longer
+a data channel: a consumer reads `label`, `pid`, and `pidNamespace` from the
+record, never from the filename. pi uses `<sessionId>.sock` (the sessionId is
+known at bind time and pairs with the `<sessionId>.json` record). opencode keeps
+`opencode-<pid>.sock` (it binds at plugin-load, before any session id exists),
+and claude/cursor keep `<label>-<pid>.sock` (the pid there is a *foreign*
+process — the interactive Claude / Electron window — not `getpid()`). All are
+fine because the name is no longer parsed; only its uniqueness matters.
 
 Backward compatible on the *reader* side: a consumer that sees no `pid` field
 falls back to parsing a legacy `<label>-<pid>.sock` name during the transition,
@@ -139,18 +142,18 @@ Adapters in this repo all move to the new shape at once.
 
 ## Adapters (all four)
 
-Each binds `<cwd>/.corral/<sessionId>.sock` (was `<label>-<pid>.sock`) and writes
-`pid` + `pidNamespace` into the record, read once at bind time:
+Each writes `pid` + `pidNamespace` into the record, read once at bind time via
+`fs.statSync("/proc/<pid>/ns/pid").ino` (best-effort, undefined off Linux):
 
-- `corral-pi.ts` / `corral-opencode.ts`: `pid = process.pid`;
-  `pidNamespace = fs.statSync("/proc/" + process.pid + "/ns/pid").ino`.
-- `corral-cursor`: `pid = electronPid`; stat `/proc/<electronPid>/ns/pid`.
-- `corral-claude`: `pid = claudePid`; stat `/proc/<claudePid>/ns/pid`
-  (same-sandbox read; the sidecar shares Claude's PID namespace). The ACP socket
-  filename becomes `<sessionId>.sock` too, so the sidecar no longer encodes
-  `claudePid` in the name — it goes in the record's `pid`.
+- `corral-pi.ts`: `pid = process.pid`; socket renamed to `<sessionId>.sock`.
+- `corral-opencode.ts`: `pid = process.pid`; socket filename unchanged
+  (`opencode-<pid>.sock`, bound before the session id is known).
+- `corral-cursor`: `pid = electronPid` (stat its `/proc/<electronPid>/ns/pid`);
+  built in the pure `lib.buildRecord`; socket filename unchanged.
+- `corral-claude`: `pid = claudePid` (stat the interactive Claude's
+  `/proc/<claudePid>/ns/pid`, a same-sandbox read); socket filename unchanged.
 
-`ino` is a JS `number`/`bigint` from `fs.statSync`; serialize as a JSON number.
+`ino` is a JS `number` from `fs.statSync`; serialized as a JSON number.
 Guard the stat (a non-Linux or `/proc`-less host omits the field; correlation
 then falls back to the raw PID, today's behavior). Wrap in the existing
 defensive-probe style so it never throws into the host.

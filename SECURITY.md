@@ -143,7 +143,7 @@ to trust.
 An agent connecting directly to a peer's ACP socket could drive it.
 
 **Mitigation `[in place]`:** sockets are workdir-local
-(`<cwd>/.corral/<label>-<pid>.sock`), and a whole-process workdir sandbox makes
+(`<cwd>/.corral/<name>.sock`), and a whole-process workdir sandbox makes
 a sibling's workdir unreachable. Cross-agent contact is only through corrald.
 Relies on the load-bearing precondition above.
 
@@ -331,12 +331,16 @@ is a v2 direction, gated on harness support.
 
 ### T9. Pid-Based Focus or Kill of an Arbitrary Process
 
-Focus, close, and stop trust a pid parsed from the socket filename. A rogue
-record naming `pi-<victimPid>.sock` can make corral focus or send `SIGTERM` to
-an operator-chosen process, including corrald or the compositor. The
+Focus, close, and stop trust a pid the record declares (the `pid` field, plus
+`pidNamespace` for the NSpid-bridge translation; previously encoded in the
+socket filename). A rogue record naming a `pid` of `<victimPid>` (with a
+`pidNamespace` matching the host) can make corral focus or send `SIGTERM` to an
+operator-chosen process, including corrald or the compositor. The
 agent-initiated stop path is the sharper case: a self-stop approval that reads
 "stop agent in `<its own dir>`" can carry a forged pid that signals an unrelated
-process.
+process. Moving the pid from the filename into the record does not change this:
+it is the same adapter-declared, unverified value, now translated host-side via
+`/proc` `NSpid` matching rather than read raw.
 
 **Accepted risk `[accepted]`:** we do not verify the pid. The operator is always
 in the loop (a stop is gated, a focus or close is an operator action), the
