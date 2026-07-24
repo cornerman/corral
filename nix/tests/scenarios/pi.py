@@ -1,8 +1,11 @@
-# e2e-pi: the deep scenario. Two nono-confined pi sessions drive the whole
-# corral loop against the stub LLM. Ground-truth assertions dominate (records,
-# stub request log, socket state, nono exit codes); OCR/focus are generous
-# best-effort where the terminal UI is hard to read deterministically -- those
-# are marked and should be hardened once validated in a live VM run.
+# e2e-pi: the deep scenario. Two pi sessions drive the whole corral loop against
+# the stub LLM. The sessions currently run UNCONFINED (open_kitty runs plain
+# `pi`, not `nono run`); full nono confinement is the tracked follow-up in
+# TODO.md, and the sandbox-negative section below is BEST-EFFORT until it lands
+# (see section 9). Ground-truth assertions dominate (records, stub request log,
+# socket state); OCR/focus are generous best-effort where the terminal UI is
+# hard to read deterministically -- those are marked and should be hardened
+# once validated in a live VM run.
 
 PROJ_A = HOME + "/proj-a"
 PROJ_B = HOME + "/proj-b"

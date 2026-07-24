@@ -16,15 +16,18 @@ use std::path::Path;
 
 use crate::discovery::RegistryEntry;
 
-/// The placeholder a record's own `sessionId` normalizes to, so every session
-/// of a kind collapses to one template (a resume argv carries a unique id).
+/// The reserved placeholder the adapter writes in place of the session id, so
+/// every session of a kind proposes one identical template (a resume argv
+/// carries a unique id). `denormalize` substitutes the real id back at launch.
 pub const SESSION_PLACEHOLDER: &str = "{sessionId}";
-/// The placeholder a record's own `cwd` normalizes to (a launch argv may carry
-/// the working directory, e.g. cursor).
+/// The reserved placeholder the adapter writes in place of the working
+/// directory (a launch argv may carry it, e.g. cursor). `denormalize`
+/// substitutes the real cwd back at launch.
 pub const CWD_PLACEHOLDER: &str = "{cwd}";
 
-/// The approved **launch set** for one registered kind: the normalized argv
-/// plus the launch-affecting flags. A record is a citizen only when its whole
+/// The approved **launch set** for one registered kind: the template argv
+/// (carrying the `{sessionId}`/`{cwd}` placeholders verbatim) plus the
+/// launch-affecting flags. A record is a citizen only when its whole
 /// set matches (see [`registered`]) — any change to any field is a new set that
 /// needs its own approval, so a flipped `gui` or `message_flag` cannot ride in
 /// under an already-approved argv.
@@ -38,8 +41,16 @@ pub struct Template {
     pub message_flag: Option<String>,
 }
 
-/// The store: `label -> approved templates`. Read by everyone (corrald and both
-/// viewers); written only by corrald on operator approval.
+/// The store: `label -> the one approved template`. Read by everyone (corrald
+/// and both viewers); written only by corrald on operator approval.
+///
+/// KNOWN LIMITATION (TODO.md "Harness Registration"): exactly one template per
+/// label, so `approve` OVERWRITES. A kind with genuinely different vetted
+/// command sets per session (e.g. `quine --model A` vs `--model B`) can hold
+/// only one at a time. Harmless today because the `{sessionId}`/`{cwd}`
+/// placeholders remove all FAKE per-session variation, so every session of a
+/// kind proposes the same template; the fix (a SET per label) is only needed
+/// once a kind carries real vetted variation.
 pub type Approved = BTreeMap<String, Template>;
 
 /// Which launch mode an action needs, so a caller can ask "is this record's

@@ -4,6 +4,47 @@ Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design. Only open, founded next steps live
 here; shipped work is described in AGENTS.md, not tracked here.
 
+## Most Urgent (review 2026-07-24)
+
+Ranked by risk to the project's core claims. The top two are validation gaps:
+the code is written and unit-green (210 tests, clippy clean), but the two
+headline claims — cross-harness and the security boundary — are not proven at
+runtime.
+
+1. **Prove the cross-harness claim at runtime.** VISION item #2 ("two harnesses
+   on one board is the demonstration that makes the claim real") is still
+   UNVERIFIED: only `e2e-pi` runs green; opencode/claude/cursor have never taken
+   a real turn. opencode is the load-bearing second adapter and its runtime
+   event field paths are guessed (`properties.sessionID`, message-part text).
+   Until one non-pi adapter is validated end-to-end, "the open coordination
+   layer for many harnesses" rests on one harness. (Details in the four
+   adapter sections below.)
+2. **Validate the security precondition in the VM.** The whole SECURITY.md model
+   rests on "whole-process workdir sandbox", but the e2e agents run UNCONFINED
+   (`open_kitty` runs plain `pi`, not `nono run`), so every T1-T18 gate is
+   exercised only by best-effort probes that no-op when nono cannot run a bare
+   command. Land full nono confinement (`nono learn` -> vendored profile) and
+   flip the sandbox-negative checks in `scenarios/pi.py` §9 from best-effort to
+   hard asserts. Also: the sandbox profile itself is `[designed]`, not
+   `[in place]` — it lives in `~/nixos`, so corral ships a security story whose
+   enforcement is out-of-repo and untested here.
+3. **pi `session/cancel` no-op against a blocked `question`** (confirmed bug,
+   below). User-facing: the board offers a Running/RequiresAction -> Idle
+   card-move that silently does nothing on a pi blocked in a question. Either
+   make corral-pi cancel the open `ctx.ui` prompt, or (if pi exposes no such
+   API) surface the limitation on the card so the operator is not misled.
+4. **corrald is unsandboxed, full-authority RCE surface** (SECURITY.md
+   "out of scope", TODO "Confine the broker"). It is the one process that parses
+   every untrusted record and message. Systemd unit hardening in `~/nixos` is a
+   real blast-radius reduction and the highest-value defense-in-depth left.
+
+Docs corrected in this review (no code change): SECURITY.md's stale `normalize`
+language (the refactor to adapter-authored `{sessionId}`/`{cwd}` placeholders
+removed that step; corrald stores/compares verbatim and only `denormalize`s at
+launch), the `approved_commands.rs` `Approved`/`Template` docstrings (one
+template per label, latent overwrite bug now documented in-code), and the
+misleading `scenarios/pi.py` header that claimed "nono-confined" sessions.
+
 ## VM E2E Smoke Test (follow-ups)
 
 The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see

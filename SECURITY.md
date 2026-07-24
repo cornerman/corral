@@ -103,8 +103,8 @@ exist, so corral introduces no tokens and no signatures.
 
 Each mechanism reduces to a small, pure, reused function, and they all run in
 one process (corrald, the curator): one `resolve(fd)` deriving a trusted `cwd`,
-one `registered(record)` predicate, one `normalize` for command templates. The
-viewers hold none of it — they read only corrald's vetted output. This is
+one `registered(record)` predicate, and one `denormalize` substituting a
+template's placeholders at launch. The viewers hold none of it — they read only corrald's vetted output. This is
 deliberate:
 **simple code is reviewable, and reviewability is itself a security property** —
 a gate whose correctness a reader cannot hold in their head at once is not one
@@ -205,12 +205,16 @@ through the coordination layer.
 
 **Mitigation `[in place]`: harness registration.** A harness *kind* must be
 registered before any of its agents can be used. corrald is the sole registrar:
-watching the registry, on a never-seen `(label, normalized-template)` it asks
+watching the registry, on a never-seen `(label, template)` it asks
 the operator once, showing the full argv, and writes the template to the sealed
 `~/.corral/state/approved-commands.json`. A template pins the **whole
 launch-affecting set** — `spawnCommand`, `resumeCommand`, `gui`, and
-`messageFlag` — with the record's own `sessionId` normalized to a placeholder,
-so a kind is registered once but **any change to any of those fields is a new
+`messageFlag`. The adapter authors those commands as stable templates carrying
+the reserved `{sessionId}`/`{cwd}` placeholders (CONVENTION §2), so a kind's
+launch set is byte-identical across sessions and corrald stores and compares it
+verbatim (there is no `normalize` step — the stability is by construction,
+which is what stops the daemon re-prompting the same kind every session). A
+kind is registered once but **any change to any of those fields is a new
 unique set that needs its own approval**. The prompt shows the entire set, not
 just the argv, so a flip of `gui` (terminal vs direct launch) or `messageFlag`
 cannot ride in under an already-approved command. corrald applies one pure
