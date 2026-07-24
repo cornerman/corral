@@ -410,8 +410,8 @@ ratatui / iced, the daemon keeps ksni).
     (`hidden:false`) regardless of the whitelist. It also builds the read-only
     capability roster (`build_roster` + `roster_json`): every session is a
     per-session entry addressable by `sessionId`; a reachable directory's entry
-    adds `cwd` + `description`, an unreachable one hides both, and no entry
-    carries a title or activity. Pure, unit-tested.
+    adds `title` + `cwd` + `description`, an unreachable one hides all three,
+    and no entry carries activity. Pure, unit-tested.
   - `src/control.rs` — the control socket (`~/.corral/corrald.sock`, override
     `$CORRAL_CONTROL_SOCKET`). Each connection carries a `{"submit":path}`
     envelope; corrald resolves the outbox file (`curation::resolve_submission`)
@@ -521,8 +521,9 @@ ratatui / iced, the daemon keeps ksni).
   registers `list_corral_agents` (no args), a read-only roster query
   (`{"op":"list"}` over the same socket) returning the capability picture:
   every session as a per-session entry (kind, sessionId, live) addressable by
-  `target_session`, a reachable directory's entry adding cwd + description and
-  an unreachable one hiding both, never a session title or activity. The record now carries a
+  `target_session`, a reachable directory's entry adding title + cwd +
+  description and an unreachable one hiding all three, never a session's
+  activity. The record now carries a
   one-line adapter-authored `description` of the harness kind (CONVENTION §1),
   surfaced in that roster. Install:
   symlink into
@@ -718,10 +719,12 @@ returns the capability picture without leaking: every session is a per-session
 entry (kind, sessionId, liveness) the caller can address by `target_session`
 (any session is messageable, the operator gates an unwhitelisted pair); a
 reachable directory's entry (the caller's own, or a whitelisted pair)
-additionally carries cwd + description, an unreachable one hides both, so the
-caller can message a session without learning where it runs or what work it
-does. A roster never carries a session title or activity — messaging is not
-reading. The `description` is a one-line,
+additionally carries title + cwd + description, an unreachable one hides all
+three, so the caller can message a session without learning where it runs or
+what work it does. A roster never carries a session's activity — messaging is
+not reading, but the title (which session, what task) is exactly what a caller
+needs to pick among several sessions in a trusted dir, so it rides the same
+reachability gate as `cwd`. The `description` is a one-line,
 adapter-authored string in the record (CONVENTION §1; latest-seen per label
 wins), so a caller can pick a kind (GUI review → a GUI agent, terminal coding →
 pi/opencode) before spawning.

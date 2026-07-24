@@ -783,7 +783,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 			// list_corral_agents: read-only capability roster. Ungated — any session
 			// is messageable (operator approval may be asked). Every session is a
 			// per-session entry by sessionId; corral hides an unreachable directory's
-			// cwd and description, and never a session's title or activity.
+			// title, cwd and description. Activity is never revealed.
 			// corral_stop_agent: kill a peer session's process (it goes dormant and
 			// resumable). Gated exactly like corral_message_agent; an already-dormant
 			// target is a no-op success. target_session only (stopping is precise).
@@ -839,8 +839,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"or which kind to spawn. You can message any of them via target_session (the operator may " +
 					"be asked to approve if the directory pair is not whitelisted). Every session is an entry " +
 					"with kind, sessionId and live; a session in a directory you may reach also carries its " +
-					"cwd and description, an unreachable one hides both. Use an entry's sessionId as " +
-					"target_session for corral_message_agent. Never reveals a session's title or activity.",
+					"title, cwd and description, an unreachable one hides all three. Use an entry's sessionId as " +
+					"target_session for corral_message_agent. Never reveals a session's activity.",
 				args: {},
 				async execute() {
 					const home = process.env.HOME;

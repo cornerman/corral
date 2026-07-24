@@ -172,6 +172,10 @@ assert stub_saw("[from proj-a"), "provenance tag missing on delivery"
 # --- 6. roster + stop ---------------------------------------------------
 acp(f"prompt {sock_a} {sid_a} 'smoke:list'")
 acp(f"state {sock_a} idle 30")  # list_corral_agents executed without error
+# The roster reply (corrald's JSON, returned to the stub as the tool result)
+# now exposes the title for a reachable session. proj-a is its own dir, so its
+# own entry carries its title (the first-user-message fallback set in step 2).
+assert stub_saw('"title"'), "roster did not expose the reachable session's title"
 
 # Stop B by session id (whitelisted pair). Rule baked with B's sid.
 stub_post_rule(json.dumps({

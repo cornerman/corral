@@ -272,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 	// list_corral_agents: read-only capability roster. Ungated — any session is
 	// messageable (operator approval may be asked). Every session is a
 	// per-session entry addressable by sessionId; corral hides an unreachable
-	// directory's cwd and description, and never a title or activity.
+	// directory's title, cwd and description. Activity is never revealed.
 	pi.registerTool({
 		name: "list_corral_agents",
 		label: "List agents",
@@ -281,9 +281,10 @@ export default function (pi: ExtensionAPI) {
 			"or which kind to spawn. You can message any of them via target_session (the operator " +
 			"may be asked to approve if the directory pair is not whitelisted). Every session is an " +
 			"entry with kind, sessionId and live; a session in a directory you may reach also carries " +
-			"its cwd and description, an unreachable one hides both (so you learn a session exists and " +
-			"can message it, without learning where it runs). Use an entry's sessionId as the " +
-			"target_session for corral_message_agent. It never reveals a session's title or activity.",
+			"its title, cwd and description, an unreachable one hides all three (so you learn a session " +
+			"exists and can message it, without learning where it runs or what it works on). Use an " +
+			"entry's sessionId as the target_session for corral_message_agent. It never reveals a " +
+			"session's activity.",
 		parameters: Type.Object({}),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const home = process.env.HOME;

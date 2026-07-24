@@ -442,15 +442,19 @@ session is one per-session entry, always addressable by `sessionId`:
 - Every entry carries `kind`, `sessionId`, `live`. The `sessionId` is a
   `targetSession` the caller may message.
 - A **reachable** session (the caller's own directory, or a whitelisted
-  `(fromCwd -> dir)` pair) additionally carries `cwd` and `description`.
-- An **unreachable** session (a directory the caller may not reach) hides `cwd`
-  and `description`, so the caller can message it without learning where it runs
-  or what kind of work it does.
+  `(fromCwd -> dir)` pair) additionally carries `title`, `cwd`, and
+  `description`.
+- An **unreachable** session (a directory the caller may not reach) hides
+  `title`, `cwd`, and `description`, so the caller can message it without
+  learning where it runs or what kind of work it does.
 
-A roster entry never carries a session's `title` or activity: messaging is not
-reading. A charter prepended to a freshly spawned agent's first prompt teaches
-it these two verbs (message + list) and the swarm discipline (confirm the task,
-escalate uncertainty up, stay event-driven).
+A roster entry never carries a session's activity: messaging is not reading
+the transcript. The `title` (which session, what task) is exactly what a caller
+needs to pick among several sessions in a trusted directory, so it rides the
+same reachability gate as `cwd` rather than staying hidden. A charter
+prepended to a freshly spawned agent's first prompt teaches it these two verbs
+(message + list) and the swarm discipline (confirm the task, escalate
+uncertainty up, stay event-driven).
 
 ### Stop request (`stop`)
 

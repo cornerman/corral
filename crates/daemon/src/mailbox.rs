@@ -232,15 +232,22 @@ pub fn parse_stop(text: &str) -> Option<Message> {
 /// One line in the capability roster a `list` query returns. Every session is a
 /// per-session entry the caller can address by `sessionId` (approval still
 /// gates an unwhitelisted target). A reachable agent (its own directory or a
-/// whitelisted pair) also exposes `description` and `cwd`; an unreachable one
-/// hides both, so the caller gets an addressable handle without learning who
-/// runs where. It never carries a title, name, or activity: messaging is not
-/// reading, so the roster reveals that a session exists and lets the caller
-/// message it, never what any agent is doing.
+/// whitelisted pair) also exposes `title`, `description`, and `cwd`; an
+/// unreachable one hides all three, so the caller gets an addressable handle
+/// without learning who runs where. It never carries activity: messaging is
+/// not reading the transcript, so the roster reveals enough to decide who to
+/// message (which session, what task) and lets the caller message it, never
+/// what any agent is doing right now. `title` rides the same gate as
+/// `cwd`/`description`: the operator already trusts the pair enough to let a
+/// message through, so showing the task name is strictly weaker than the
+/// messaging already permitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterEntry {
     /// The harness kind (the record `label`, or `agent` if unlabeled).
     pub kind: String,
+    /// The session title (its current task). Set only on a reachable entry;
+    /// hidden on an unreachable one. Activity stays hidden either way.
+    pub title: Option<String>,
     /// Set only on a reachable entry (hidden on an unreachable one).
     pub description: Option<String>,
     /// Set only on a reachable entry (hidden on an unreachable one).
@@ -252,8 +259,8 @@ pub struct RosterEntry {
 /// Build the capability roster for a caller. `visible(target_cwd)` reports
 /// whether the caller may reach that directory (its own dir, or a whitelisted
 /// `(from -> target)` pair). Every session yields a per-session entry addressed
-/// by `sessionId`; a reachable one also carries `description` and `cwd`, an
-/// unreachable one hides both.
+/// by `sessionId`; a reachable one also carries `title`, `description`, and
+/// `cwd`, an unreachable one hides all three.
 pub fn build_roster(entries: &[RegistryEntry], visible: impl Fn(&str) -> bool) -> Vec<RosterEntry> {
     entries
         .iter()
@@ -261,6 +268,7 @@ pub fn build_roster(entries: &[RegistryEntry], visible: impl Fn(&str) -> bool) -
             let reachable = e.cwd.as_deref().is_some_and(&visible);
             RosterEntry {
                 kind: e.label.clone().unwrap_or_else(|| "agent".into()),
+                title: reachable.then(|| e.title.clone()).flatten(),
                 description: reachable.then(|| e.description.clone()).flatten(),
                 cwd: reachable.then(|| e.cwd.clone()).flatten(),
                 session_id: e.session_id.clone(),
@@ -271,14 +279,18 @@ pub fn build_roster(entries: &[RegistryEntry], visible: impl Fn(&str) -> bool) -
 }
 
 /// Serialize a roster as the `list` reply line. Every entry carries `sessionId`
-/// and `live`; a reachable entry adds `description`/`cwd`, an unreachable one
-/// omits them so nothing identifies where it runs.
+/// and `live`; a reachable entry adds `title`/`description`/`cwd`, an
+/// unreachable one omits all three so nothing identifies where it runs or what
+/// it works on.
 pub fn roster_json(roster: &[RosterEntry]) -> String {
     let agents: Vec<serde_json::Value> = roster
         .iter()
         .map(|r| {
             let mut m = serde_json::Map::new();
             m.insert("kind".into(), r.kind.clone().into());
+            if let Some(t) = &r.title {
+                m.insert("title".into(), t.clone().into());
+            }
             if let Some(d) = &r.description {
                 m.insert("description".into(), d.clone().into());
             }
@@ -483,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn roster_exposes_every_session_and_hides_unreachable_cwd_and_description() {
+    fn roster_exposes_every_session_and_hides_unreachable_fields() {
         let entries = [
             rec("s1", "/a", "pi", true, Some("terminal agent")),
             rec("s2", "/a", "pi", false, Some("terminal agent")),
@@ -495,21 +507,23 @@ mod tests {
         // Every session is a per-session entry addressable by sessionId.
         assert_eq!(roster.len(), 4);
         assert!(roster.iter().all(|r| !r.session_id.is_empty()));
-        // Reachable /a entries expose cwd + description; liveness is preserved.
+        // Reachable /a entries expose title + cwd + description; liveness preserved.
         let reachable: Vec<_> = roster.iter().filter(|r| r.cwd.is_some()).collect();
         assert_eq!(reachable.len(), 2);
         assert!(reachable
             .iter()
-            .all(|r| r.cwd.as_deref() == Some("/a") && r.description.is_some()));
+            .all(|r| r.title.as_deref() == Some("secret title")
+                && r.cwd.as_deref() == Some("/a")
+                && r.description.is_some()));
         assert_eq!(reachable[0].session_id, "s1");
         assert!(reachable[0].live && !reachable[1].live);
         // Unreachable /secret and /other still yield per-session entries, but
-        // hide cwd and description; live stays exposed.
+        // hide title, cwd, and description; live stays exposed.
         let unreachable: Vec<_> = roster.iter().filter(|r| r.cwd.is_none()).collect();
         assert_eq!(unreachable.len(), 2);
         assert!(unreachable
             .iter()
-            .all(|r| r.description.is_none() && !r.session_id.is_empty()));
+            .all(|r| r.title.is_none() && r.description.is_none() && !r.session_id.is_empty()));
         let sids: Vec<_> = unreachable.iter().map(|r| r.session_id.as_str()).collect();
         assert!(sids.contains(&"s3") && sids.contains(&"s4"));
     }
@@ -528,6 +542,16 @@ mod tests {
         assert!(json.contains("\"sessionId\":\"s1\""));
         assert!(json.contains("\"kind\":\"pi\"") && json.contains("\"live\":true"));
         assert!(!json.contains("canMessage"));
+    }
+
+    #[test]
+    fn roster_json_exposes_title_for_reachable() {
+        let entries = [rec("s1", "/a", "pi", true, Some("terminal agent"))];
+        let json = roster_json(&build_roster(&entries, |cwd| cwd == "/a"));
+        // A reachable session surfaces its title alongside cwd + description.
+        assert!(json.contains("\"title\":\"secret title\""), "expose reachable title");
+        assert!(json.contains("\"cwd\":\"/a\""));
+        assert!(json.contains("\"description\":\"terminal agent\""));
     }
 
     #[test]
