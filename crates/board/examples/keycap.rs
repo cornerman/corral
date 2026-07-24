@@ -16,21 +16,26 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_e
 
 fn main() {
     let enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    // CORRAL_KEYCAP_FLAGS picks the kitty flag set to test:
+    //   "normal"  -> DISAMBIGUATE only (the real board's navigation mode)
+    //   "move"   -> DISAMBIGUATE + REPORT_ALL + REPORT_EVENT_TYPES (move mode)
+    //   "none"   -> no enhancement at all (legacy escape sequences)
+    let mode = std::env::var("CORRAL_KEYCAP_FLAGS").unwrap_or_else(|_| "normal".into());
+    let flags = match mode.as_str() {
+        "move" => Some(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+        ),
+        "none" => None,
+        _ => Some(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+    };
     enable_raw_mode().unwrap();
-    if enhanced {
-        // Match the board: DISAMBIGUATE globally, plus move-mode's extra flags
-        // so we see event types (press/release/repeat) and the raw keys.
-        let _ = execute!(
-            std::io::stdout(),
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            )
-        );
+    if let Some(f) = flags {
+        let _ = execute!(std::io::stdout(), PushKeyboardEnhancementFlags(f));
     }
 
-    println!("supports_keyboard_enhancement = {enhanced}\r");
+    println!("supports_keyboard_enhancement = {enhanced}  flags = {mode}\r");
     println!("Press keys (Neo layer-4 arrows especially). Ctrl+C to quit.\r");
 
     loop {
@@ -45,7 +50,7 @@ fn main() {
         }
     }
 
-    if enhanced {
+    if flags.is_some() {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
     disable_raw_mode().unwrap();
