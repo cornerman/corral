@@ -872,7 +872,24 @@ impl Board {
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
-            keyboard::on_key_press(|key, mods| Some(Message::Key(key, mods))),
+            // Not `keyboard::on_key_press`: it hands over only the base-layer
+            // `key`, so a modifier-layer binding (Neo layer-4 arrows, `/` on
+            // layer 3, AltGr) never matches — see `effective_key`. This is that
+            // subscription rewritten to resolve the composed key, keeping its
+            // `Status::Ignored` filter so a focused filter field still captures
+            // its own Left/Right and typing.
+            iced::event::listen_with(|event, status, _window| match (event, status) {
+                (
+                    iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                        key,
+                        modified_key,
+                        modifiers,
+                        ..
+                    }),
+                    iced::event::Status::Ignored,
+                ) => Some(Message::Key(effective_key(key, modified_key), modifiers)),
+                _ => None,
+            }),
             // Shift-release commits an in-progress keyboard move.
             keyboard::on_key_release(|key, _mods| Some(Message::KeyReleased(key))),
             // A focused TextInput captures Escape (to blur itself), so
@@ -1150,14 +1167,17 @@ impl Board {
         idx: usize,
     ) -> Element<'a, Message> {
         let selected = idx == self.selected;
-        // Fade the Dormant column's cards (inactive, resumable records).
+        // Fade the Dormant column's left accent bar (inactive, resumable
+        // records) but not its text: a dimmed title/activity read as broken
+        // rather than intentional, so text stays full-strength everywhere and
+        // only the state bar mutes.
         let a = if matches!(col, Column::Dormant) {
             0.55
         } else {
             1.0
         };
-        let dim = Color { a, ..s.base[3] };
-        let fg = Color { a, ..s.base[5] };
+        let dim = s.base[3];
+        let fg = s.base[5];
         let accent = Color {
             a,
             ..state_color(agent, s)
@@ -1255,9 +1275,12 @@ impl Board {
             });
         // Every card sits on the elevated surface (base01) so it reads as a
         // card against the window background (base00); the selected card mixes
-        // in its state accent, so selection is obvious without shifting layout.
+        // in the fixed selection accent (base16 BLUE, "selection / links"),
+        // never the per-state `accent` — else the highlight color would swing
+        // with the card's column/state, which read as confusing rather than
+        // informative.
         let fill = if selected {
-            mix(s.base[1], accent, 0.22)
+            mix(s.base[1], s.accent[Base16::BLUE], 0.22)
         } else {
             s.base[1]
         };
@@ -1654,6 +1677,34 @@ fn tilde(path: &str) -> String {
     }
 }
 
+/// The key a binding should match: the *composed* keysym, not the base-layer
+/// one.
+///
+/// iced fills `KeyPressed.key` from winit's `key_without_modifiers()` (the
+/// keysym the physical key carries on the base layer) and `modified_key` from
+/// its `logical_key` (the keysym the active modifiers actually produced) — see
+/// `iced_winit::conversion`. `keyboard::on_key_press` hands over only `key`,
+/// which silently breaks every layout that puts a key behind a modifier layer:
+/// on Neo, arrows live on layer 4 (Mod3/Mod4 + a letter), so `key` is
+/// `Character("i")` while `modified_key` is `Named(ArrowUp)`. Matching `key`
+/// there means the board never sees an arrow at all — the TUI is immune since
+/// crossterm reports the terminal's already-composed keysym. `/` on Neo layer 3
+/// and any AltGr-layer binding have the same shape.
+///
+/// So bindings resolve against `modified_key`. Characters are lowercased,
+/// because `modified_key` also applies Shift (`Shift+m` composes `'M'`, which
+/// must still reach the `"m"` arm).
+fn effective_key(key: keyboard::Key, modified_key: keyboard::Key) -> keyboard::Key {
+    match modified_key {
+        keyboard::Key::Character(c) => keyboard::Key::Character(c.to_lowercase().into()),
+        // A named composed key (arrows, Enter, Escape) wins outright.
+        named @ keyboard::Key::Named(_) => named,
+        // Unidentified composed key: fall back to the base-layer key rather
+        // than dropping the press.
+        keyboard::Key::Unidentified => key,
+    }
+}
+
 /// Whether the desktop prefers a dark appearance (freedesktop settings portal;
 /// 1 = dark, 2 = light). Defaults to dark if the portal is absent.
 fn system_prefers_dark() -> bool {
@@ -1671,5 +1722,67 @@ fn system_prefers_dark() -> bool {
     match out {
         Ok(o) => !String::from_utf8_lossy(&o.stdout).contains("uint32 2"),
         Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::keyboard::key::Named;
+    use iced::keyboard::Key;
+
+    /// The Neo layer-4 regression: the physical key carries a letter on the
+    /// base layer, the active modifier layer composes an arrow. The binding
+    /// must see the arrow.
+    #[test]
+    fn neo_layer4_arrow_resolves_to_the_arrow() {
+        for named in [
+            Named::ArrowUp,
+            Named::ArrowDown,
+            Named::ArrowLeft,
+            Named::ArrowRight,
+        ] {
+            assert_eq!(
+                effective_key(Key::Character("i".into()), Key::Named(named)),
+                Key::Named(named),
+            );
+        }
+    }
+
+    /// A plain arrow key (both fields agree) keeps working.
+    #[test]
+    fn plain_arrow_is_unchanged() {
+        assert_eq!(
+            effective_key(Key::Named(Named::ArrowUp), Key::Named(Named::ArrowUp)),
+            Key::Named(Named::ArrowUp),
+        );
+    }
+
+    /// `/` sits on a modifier layer on Neo, so the composed character wins.
+    #[test]
+    fn layered_character_resolves_to_the_composed_character() {
+        assert_eq!(
+            effective_key(Key::Character("s".into()), Key::Character("/".into())),
+            Key::Character("/".into()),
+        );
+    }
+
+    /// `modified_key` applies Shift, so an uppercase compose still reaches the
+    /// lowercase command arm.
+    #[test]
+    fn shifted_letter_lowercases_to_its_command() {
+        assert_eq!(
+            effective_key(Key::Character("m".into()), Key::Character("M".into())),
+            Key::Character("m".into()),
+        );
+    }
+
+    /// An unidentified compose falls back to the base-layer key.
+    #[test]
+    fn unidentified_falls_back_to_base_key() {
+        assert_eq!(
+            effective_key(Key::Character("q".into()), Key::Unidentified),
+            Key::Character("q".into()),
+        );
     }
 }

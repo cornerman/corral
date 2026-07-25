@@ -391,7 +391,15 @@ ratatui / iced, the daemon keeps ksni).
   keys as the TUI — including **move mode** (Shift+Left/Right or a mouse drag →
   drop-boxes, shift-release / Enter / drop commits the `core::transition`
   action, the `→ <target> ⋯` pending badge; drag targets by `column_at_x` from
-  the window width, shift-release via iced's `on_key_release`). Each card is two rows: the title with the column age at the
+  the window width, shift-release via iced's `on_key_release`). Key bindings
+  resolve against the **composed** keysym (`effective_key`): iced fills
+  `KeyPressed.key` from winit's `key_without_modifiers()` (the base layer) and
+  only `modified_key` from the active layer, so matching `key` — as
+  `keyboard::on_key_press` forces — drops every modifier-layer binding (Neo
+  layer-4 arrows, `/` on Neo layer 3, AltGr); the subscription is therefore
+  hand-rolled over `listen_with`, keeping `on_key_press`'s `Status::Ignored`
+  filter so a focused filter field still captures its own keys. The TUI needs no
+  such step (crossterm reports the terminal's already-composed keysym). Each card is two rows: the title with the column age at the
   top-right, then a hash-colored cwd basename pill (`core::palette`, same color
   per directory) beside the dim kind badge and the activity hint; the Dormant
   column is faded. The footer shows the selected card's model at its far end
