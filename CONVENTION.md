@@ -416,7 +416,7 @@ Request fields (the JSON written to the outbox file):
 | `message`       | string            | The message text. |
 | `targetDir`     | string (one of)   | Deliver to whoever works in this directory (spawning one if none). |
 | `targetSession` | string (one of)   | Deliver to this exact session id (resuming it if dormant). Exactly one of `targetDir` / `targetSession` is set. |
-| `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. |
+| `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. An adapter's tool description SHOULD tell the caller to set it on the first contact of a new conversation, so a fresh conversation never intrudes on a session already in use; later turns address that agent by `targetSession`. |
 | `label`         | string (optional) | With `targetDir`: which agent kind to spawn (matched against a record's `label`). Omitted falls back to the directory's own kind; an unknown label fails loud. |
 | `hidden`        | boolean (optional)| Whether a spawn/resume this message triggers runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. Window placement only: it does not affect authorization, which keys on the `(sender -> target)` directory pair alone. Ignored when the target is already live. |
 | `createdAt`     | string (optional) | ISO-8601 creation time. Informational: no consumer reads it, so a producer without a date formatter MAY omit it. |

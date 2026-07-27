@@ -706,7 +706,10 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"as target_session and your answer lands on the exact agent that wrote to you (never a " +
 					"sibling in the same directory). A dormant session is resumed to receive it.\n" +
 					"• target_dir: reach whoever works in that directory (absolute path), starting a new " +
-					"agent there if none is running.\n\n" +
+					"agent there if none is running. On the FIRST contact of a new conversation, pass " +
+					"force_new: true so you get your own dedicated fresh agent instead of intruding on a " +
+					"session someone else is already using; afterwards keep talking to that same agent by " +
+					"target_session, using the reply handle in its message.\n\n" +
 					"Replying is expected: delivery is one-way and fire-and-forget — corral does NOT route " +
 					"a response back automatically. If you asked something, wait for the other agent to " +
 					"message you back; if you received a message and a reply would help, send one to its " +
@@ -727,7 +730,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						type: "string",
 						description:
 							"Absolute path: reach whoever works in this directory, starting a new agent there " +
-							"if none is live. Use it to start a conversation when you have no session id yet. " +
+							"if none is live. Use it to start a conversation when you have no session id yet — then " +
+							"pass force_new: true, since a first contact should get its own fresh agent. " +
 							"Give EITHER this OR target_session; leave the other one empty (\"\").",
 					},
 					message: {
@@ -738,7 +742,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						type: "boolean",
 						description:
 							"With target_dir only: always start a dedicated fresh agent instead of reusing the " +
-							"one already working there. Pass false when not needed.",
+							"one already working there. Pass true on a first contact, so you never intrude on a " +
+							"session another conversation (or the operator) is using. Pass false only when you " +
+							"deliberately want whoever is already working in that directory.",
 					},
 					label: {
 						type: "string",

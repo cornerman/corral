@@ -528,7 +528,8 @@ ratatui / iced, the daemon keeps ksni).
   adapters have no equivalent introspection API surfaced today.
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
   (`target_dir` or `target_session`, `message`, `force_new`, optional `label`,
-  optional `hidden` default true)
+  optional `hidden` default true; the tool description instructs a first contact
+  by `target_dir` to pass `force_new`)
   that submits a
   cross-session message over `~/.corral/corrald.sock` (stamped with the
   sender's `fromSession` as a reply handle) and reports corral's ack (accepted
@@ -708,7 +709,13 @@ the daemon boundary coincide.
 A message is addressed either by **directory** (`target_dir`: reach whoever
 works there, spawning one if none, or a dedicated one for `force_new`) or by
 **session id** (`target_session`: reach that exact agent, resuming it from its
-dormant record if not live). When a `target_dir` message has to spawn a fresh
+dormant record if not live). The convention the tool descriptions teach: the
+first contact of a new conversation targets a directory **with `force_new`**, so
+it gets its own dedicated agent rather than intruding on a session the operator
+or another conversation is already using; every later turn addresses that agent
+by `target_session`. Prose only — the wire default of `forceNew` stays false, so
+reaching whoever already works in a directory remains one flag away.
+When a `target_dir` message has to spawn a fresh
 agent, the optional `label` picks its kind (matched against a record's `label`,
 resolved from any directory so a kind seen anywhere can start here); omitted, it
 falls back to that directory's own record kind, and an unknown label fails loud
