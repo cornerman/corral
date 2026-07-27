@@ -401,27 +401,42 @@ const CWD_PALETTE: [Color; 8] = [
 ];
 
 /// The colored basename pill for a cwd: ` <leaf> ` on a hash-picked background
-/// with dark text for contrast. `dim` fades it for dormant cards. Returns None
-/// when the cwd is unknown (no pill drawn).
-fn cwd_pill(cwd: Option<&str>, dim: bool) -> Option<Span<'static>> {
+/// with dark text for contrast. Returns None when the cwd is unknown (no pill
+/// drawn).
+///
+/// A dormant card mutes the pill to a fixed neutral gray rather than the
+/// per-directory hash color, mirroring the GUI's `cwd_pill_colors` (which
+/// mixes the hue 50% toward the card surface). The GUI can do that math
+/// because it paints its own surface and knows its RGB; the TUI has no such
+/// knowledge of the terminal's real background, so `Modifier::DIM` used to
+/// carry the fading instead — but SGR2 (faint) is not specified against an
+/// explicit background: kitty blends the foreground toward the *cell's own*
+/// background rather than toward black, so a black-on-color pill rendered as
+/// washed-out gray text in the Dormant column while staying crisp elsewhere.
+/// A fixed gray fill sidesteps the terminal's own interpretation entirely.
+fn cwd_pill(cwd: Option<&str>, dormant: bool) -> Option<Span<'static>> {
     let cwd = cwd?;
-    let color = CWD_PALETTE[color_index(cwd, CWD_PALETTE.len())];
-    let mut style = Style::default().bg(color).fg(Color::Black);
-    if dim {
-        style = style.add_modifier(Modifier::DIM);
-    }
+    let color = if dormant {
+        Color::DarkGray
+    } else {
+        CWD_PALETTE[color_index(cwd, CWD_PALETTE.len())]
+    };
+    let style = Style::default().bg(color).fg(Color::Black);
     Some(Span::styled(format!(" {} ", basename(cwd)), style))
 }
 
 /// A muted gray pill (` <text> ` padded like the cwd pill, but a fixed
 /// neutral fill rather than a hashed color), used for the kind badge and the
 /// `hidden` badge so both read as tags distinct from the plain activity text.
-/// `dim` fades it for dormant cards.
-fn tag_pill(text: &str, dim: bool) -> Span<'static> {
-    let mut style = Style::default().bg(Color::DarkGray).fg(Color::White);
-    if dim {
-        style = style.add_modifier(Modifier::DIM);
-    }
+/// Dormant swaps to a darker fixed pair instead of `Modifier::DIM` — see
+/// `cwd_pill` for why relying on the terminal's own faint-attribute rendering
+/// is unreliable for an explicitly colored badge.
+fn tag_pill(text: &str, dormant: bool) -> Span<'static> {
+    let style = if dormant {
+        Style::default().bg(Color::Black).fg(Color::DarkGray)
+    } else {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    };
     Span::styled(format!(" {text} "), style)
 }
 
@@ -1011,5 +1026,30 @@ mod card_tests {
     #[test]
     fn cwd_pill_is_none_when_cwd_missing() {
         assert!(cwd_pill(None, false).is_none());
+    }
+
+    #[test]
+    fn cwd_pill_dormant_uses_fixed_gray_not_the_hash_color() {
+        // Regression: dormant used to add Modifier::DIM on top of the hashed
+        // bg + a hardcoded black fg, which kitty renders by blending the fg
+        // toward the pill's own (colorful) bg instead of toward black —
+        // washed-out gray text, inconsistent with the crisp pill elsewhere.
+        // Dormant now swaps to a fixed neutral pair instead, so the emitted
+        // style never depends on the terminal's own faint-attribute quirks.
+        let live = cwd_pill(Some("/a/corral"), false).unwrap();
+        let dormant = cwd_pill(Some("/a/corral"), true).unwrap();
+        assert_eq!(dormant.style.bg, Some(Color::DarkGray));
+        assert_ne!(dormant.style.bg, live.style.bg);
+        assert!(!dormant.style.add_modifier.contains(Modifier::DIM));
+        assert!(!live.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn tag_pill_dormant_uses_fixed_dark_pair_not_dim_modifier() {
+        let live = tag_pill("pi", false);
+        let dormant = tag_pill("pi", true);
+        assert_eq!(live.style.bg, Some(Color::DarkGray));
+        assert_eq!(dormant.style.bg, Some(Color::Black));
+        assert!(!dormant.style.add_modifier.contains(Modifier::DIM));
     }
 }
