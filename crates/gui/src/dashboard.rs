@@ -34,11 +34,13 @@ use iced::{
 
 use crate::theme::{self, Base16};
 
-/// Fixed card height (points): two text rows (title/age ~18, the
-/// pill+badge+activity row ~18) plus the 2px gap and 8px top/bottom padding,
-/// rounded up so the second row is never clipped. Compressed from three rows —
-/// the cwd pill replaced the full-path line and age moved onto the title row.
-const CARD_H: f32 = 56.0;
+/// Fixed card height (points): three text rows (title/age ~18, the
+/// pill+badge+activity row ~18, the model/context row ~16) plus the 2px gaps
+/// and 8px top/bottom padding, rounded up so no row is clipped. The model row
+/// is reserved even when the adapter reports neither model nor context stats,
+/// so all cards stay the same height (the column geometry and `column_at_x`
+/// hit-testing assume it).
+const CARD_H: f32 = 74.0;
 /// Vertical gap between cards in a column (the list `spacing`).
 const CARD_GAP: f32 = 6.0;
 /// Context-menu geometry (points): fixed width sized for the longest label
@@ -1261,6 +1263,27 @@ impl Board {
         }
         body = body.push(meta_row);
 
+        // Third row: the model on the left, the context stats (size/age, pi
+        // only today) right-aligned — health/progress at a glance,
+        // display-only. Always pushed (empty strings when unreported) so every
+        // card keeps the same fixed height, parity with the TUI card.
+        let model_row = row![
+            container(
+                text(agent.model.clone().unwrap_or_default())
+                    .size(11)
+                    .color(dim)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .clip(true),
+            text(agent.context_line().unwrap_or_default())
+                .size(11)
+                .color(dim),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        body = body.push(model_row);
+
         // Thin state-colored left bar + faint accent tint when selected. Cards
         // are a fixed height (like the TUI): variable content stays aligned,
         // and a fixed bar height sidesteps `Length::Fill` (illegal inside a
@@ -1329,13 +1352,6 @@ impl Board {
                     None => item.into(),
                 }
             };
-        // The selected card's footer line (context size/age + model,
-        // display-only, parity with the TUI footer), pushed to the far end of
-        // the row by a Fill spacer. Shared formatting: core::model::Agent::footer_line.
-        let footer_text = self
-            .selected_agent()
-            .and_then(|a| a.footer_line())
-            .unwrap_or_default();
         // Same keys, order and keycap styling as the TUI footer (ui.rs
         // footer_items / footer_layout). Verbs shared with the context menu
         // come from MenuAction::label so footer and menu cannot drift.
@@ -1357,8 +1373,6 @@ impl Board {
             ),
             hint("o", MenuAction::History.label(), Some(Message::History)),
             hint("q", "quit", Some(Message::Quit)),
-            Space::with_width(Length::Fill),
-            text(footer_text).size(13).color(dim),
         ]
         .spacing(14)
         .align_y(Alignment::Center)

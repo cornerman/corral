@@ -95,7 +95,7 @@ pub struct RegistryEntry {
     /// an honest size proxy for "how big this transcript is". Written by an
     /// adapter that can introspect its own transcript (pi only today); `None`
     /// for a producer that does not report it, which also gates the whole
-    /// entries/percent/age footer group off (see `Agent::footer_line`).
+    /// entries/percent/age card group off (see `Agent::context_line`).
     pub entries: Option<u64>,
     /// This session's context usage as a percentage of its model's context
     /// window (pi's own `ctx.getContextUsage()`), 0-100. `None` when the

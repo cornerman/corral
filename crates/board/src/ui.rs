@@ -12,9 +12,11 @@ use ratatui::text::{Line, Span, Text};
 const PAD: u16 = 1;
 /// Rows above a column's cards: the heading and its underline rule.
 const HEAD_ROWS: u16 = 2;
-/// Rows one card spans: title/age, the pill+badge+activity row, and a blank
-/// spacer for air.
-const CARD_ROWS: u16 = 3;
+/// Rows one card spans: title/age, the pill+badge+activity row, the
+/// model/context row, and a blank spacer for air. The model/context row is
+/// reserved even when the adapter reports neither, so every card is the same
+/// height (columns stay aligned and `hit_test` stays a division).
+const CARD_ROWS: u16 = 4;
 /// Rows reserved at the top for the filter: the input line, its underline, and
 /// breathing room beneath before the columns.
 const FILTER_ROWS: u16 = 4;
@@ -488,25 +490,26 @@ fn card_age(agent: &Agent, col: Column, meta: &CardMeta) -> Option<String> {
     .cloned()
 }
 
-/// The title line: the session name on the left, the column-specific age dim
-/// and right-aligned in the card width. Age moved here (off the info line) to
-/// keep the second row free for the cwd pill, badge, and activity.
-fn title_line(
-    name: &str,
-    age: Option<&str>,
+/// A card row split left/right within the card width: `left` truncates, `right`
+/// is pinned to the far edge. Used for the title row (session name + the
+/// column-specific age) and the model row (model + context stats), so both read
+/// on the same grid.
+fn split_line(
+    left: &str,
+    right: Option<&str>,
     width: usize,
-    title_style: Style,
-    age_style: Style,
+    left_style: Style,
+    right_style: Style,
 ) -> Line<'static> {
-    let age = age.unwrap_or("");
-    let age_w = age.chars().count();
-    // Reserve the age plus one separating space; the name takes the rest.
-    let name = truncate(name, width.saturating_sub(age_w + 1));
-    let pad = width.saturating_sub(name.chars().count() + age_w);
+    let right = right.unwrap_or("");
+    let right_w = right.chars().count();
+    // Reserve the right side plus one separating space; the left takes the rest.
+    let left = truncate(left, width.saturating_sub(right_w + 1));
+    let pad = width.saturating_sub(left.chars().count() + right_w);
     Line::from(vec![
-        Span::styled(name, title_style),
+        Span::styled(left, left_style),
         Span::raw(" ".repeat(pad)),
-        Span::styled(age.to_string(), age_style),
+        Span::styled(right.to_string(), right_style),
     ])
 }
 
@@ -563,8 +566,19 @@ fn card(agent: &Agent, col: Column, meta: &CardMeta, width: usize) -> ListItem<'
     }
 
     ListItem::new(vec![
-        title_line(name, age.as_deref(), width, title_style, dim),
+        split_line(name, age.as_deref(), width, title_style, dim),
         Line::from(row2),
+        // Third row: the model on the left, the context stats right-aligned —
+        // health/progress at a glance, display-only (corral never selects a
+        // model). Same left/right shape as the title row. Always rendered (as
+        // blanks when unreported) so all cards keep the same height.
+        split_line(
+            agent.model.as_deref().unwrap_or(""),
+            agent.context_line().as_deref(),
+            width,
+            dim,
+            dim,
+        ),
         Line::from(""), // blank spacer: air between cards
     ])
 }
@@ -736,7 +750,6 @@ pub fn render(
     status: &str,
     states: &mut [ListState; 4],
     meta: &CardMeta,
-    footer_text: Option<&str>,
 ) {
     let footer_area = footer_rect(frame.area());
     let cols = column_layout(frame.area());
@@ -767,27 +780,15 @@ pub fn render(
         );
     }
 
-    // The spacer row above the footer carries a transient action status on the
-    // left and the selected card's footer line (context size/age + model,
-    // display-only; corral never selects a model) on the right. Both dim so
-    // the columns stay the focus; the footer row below keeps the clickable
-    // key hints at a fixed position.
+    // The spacer row above the footer carries a transient action status, dim so
+    // the columns stay the focus; the footer row below keeps the clickable key
+    // hints at a fixed position. Model and context stats live on the cards.
     let spacer = Rect {
         y: footer_area.y.saturating_sub(1),
         ..footer_area
     };
     if !status.is_empty() {
         frame.render_widget(Paragraph::new(Line::from(status.dim())), spacer);
-    }
-    if let Some(text) = footer_text {
-        let w = text.chars().count() as u16;
-        let right = Rect {
-            x: spacer.x + spacer.width.saturating_sub(w),
-            y: spacer.y,
-            width: w.min(spacer.width),
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(Line::from(text.dim())), right);
     }
     let (spans, _) = footer_layout();
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_area);
@@ -847,11 +848,11 @@ mod tests {
         let no_scroll = [0usize; 4];
 
         // Columns start below FILTER_ROWS=4; then HEAD_ROWS=2 (heading+rule),
-        // so the first card's top row is 4 + 2 = 6, and cards are 3 rows tall.
+        // so the first card's top row is 4 + 2 = 6, and cards are 4 rows tall.
         assert_eq!(hit_test(area, &b, 5, 6, no_scroll), Some(0));
-        assert_eq!(hit_test(area, &b, 5, 9, no_scroll), Some(1));
+        assert_eq!(hit_test(area, &b, 5, 10, no_scroll), Some(1));
         assert_eq!(hit_test(area, &b, 5, 5, no_scroll), None); // heading/rule row
-        assert_eq!(hit_test(area, &b, 5, 12, no_scroll), None); // past the two cards
+        assert_eq!(hit_test(area, &b, 5, 14, no_scroll), None); // past the two cards
 
         // Second column (Idle) is empty.
         assert_eq!(hit_test(area, &b, 30, 6, no_scroll), None);
@@ -979,8 +980,8 @@ mod card_tests {
     }
 
     #[test]
-    fn title_line_puts_age_right_aligned() {
-        let line = title_line(
+    fn split_line_puts_right_side_right_aligned() {
+        let line = split_line(
             "fix the auth flow",
             Some("5m"),
             30,

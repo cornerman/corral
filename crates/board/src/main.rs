@@ -366,22 +366,8 @@ fn run(
         };
         let move_label =
             move_mode.and_then(|_| board.selectable().get(selected).map(|a| ui::focus_label(a)));
-        // The selected card's footer line (context size/age + model,
-        // display-only). None when nothing selected or unreported.
-        let selected_footer = board
-            .selectable()
-            .get(selected)
-            .and_then(|a| a.footer_line());
         terminal.draw(|f| {
-            ui::render(
-                f,
-                board,
-                selected,
-                &status,
-                &mut list_states,
-                &meta,
-                selected_footer.as_deref(),
-            );
+            ui::render(f, board, selected, &status, &mut list_states, &meta);
             // Move mode owns the screen (drop-boxes over the columns); the
             // filter/overlay/menu are all closed while moving.
             if let Some((src, target)) = &move_mode {

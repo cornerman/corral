@@ -126,10 +126,10 @@ pub struct Agent {
     /// `anthropic/claude-opus-4`). Live agents refresh it from a
     /// `config_options_update` broadcast; `sync_registry` also stamps the
     /// record's last-known model onto both live and dormant agents. Shown
-    /// verbatim in the footer for the selected card. `None` until reported.
+    /// verbatim on the card's model row. `None` until reported.
     pub model: Option<String>,
     /// Count of session-log entries (pi only today). `None` gates the whole
-    /// entries/percent/age footer group off — see `footer_line`.
+    /// entries/percent/age card group off — see `context_line`.
     pub entries: Option<u64>,
     /// Context usage as a percentage of the model's context window (pi's own
     /// estimate), 0-100. `None` when unknown (e.g. right after compaction) or
@@ -232,31 +232,23 @@ impl Agent {
         q.split_whitespace().all(|term| is_subsequence(term, &hay))
     }
 
-    /// The footer line for the selected card: context size/age (pi only, when
-    /// reported) followed by the model, display-only. The entries/percent/age
-    /// group is gated as a whole on `entries` being known (they are broadcast
-    /// together); within it, percent is separately omitted when unknown (e.g.
-    /// right after compaction). `None` when neither group has anything to show.
-    /// Shared by both shells so TUI/GUI parity is structural, not duplicated.
-    pub fn footer_line(&self) -> Option<String> {
+    /// The card's context line: session size and age (pi only, when reported),
+    /// e.g. `"12% ctx · 42 entries · 3d"` — a health/progress read at a glance,
+    /// display-only. Gated as a whole on `entries` being known (the three are
+    /// broadcast together); within it, percent is separately omitted when
+    /// unknown (e.g. right after compaction). Shared by both shells so TUI/GUI
+    /// parity is structural, not duplicated.
+    pub fn context_line(&self) -> Option<String> {
+        let entries = self.entries?;
         let mut parts: Vec<String> = Vec::new();
-        if let Some(entries) = self.entries {
-            if let Some(pct) = self.context_percent {
-                parts.push(format!("{pct}% ctx"));
-            }
-            parts.push(format!("{entries} entries"));
-            if let Some(age) = &self.context_age {
-                parts.push(age.clone());
-            }
+        if let Some(pct) = self.context_percent {
+            parts.push(format!("{pct}% ctx"));
         }
-        if let Some(m) = &self.model {
-            parts.push(format!("model: {m}"));
+        parts.push(format!("{entries} entries"));
+        if let Some(age) = &self.context_age {
+            parts.push(age.clone());
         }
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join(" \u{b7} "))
-        }
+        Some(parts.join(" \u{b7} "))
     }
 }
 
@@ -283,10 +275,10 @@ pub enum Update {
     /// summary like "edit model.rs" shown on the card.
     SetActivity(PathBuf, String),
     /// The current model (from a `config_options_update` broadcast): a
-    /// `"provider/id"` string shown in the footer for the selected card.
+    /// `"provider/id"` string shown on the agent's card.
     SetModel(PathBuf, String),
     /// Context size/age (from a `context_update` broadcast, pi only): shown
-    /// alongside the model in the footer for the selected card.
+    /// alongside the model on the agent's card.
     SetContext(PathBuf, ContextInfo),
     /// The socket closed or refused: the agent is gone.
     Gone(PathBuf),
@@ -666,33 +658,27 @@ mod tests {
     }
 
     #[test]
-    fn footer_line_formats_full_and_partial_and_none() {
+    fn context_line_formats_full_and_partial_and_none() {
         let mut a = agent("x", State::Idle);
-        // Nothing known at all.
-        assert_eq!(a.footer_line(), None);
-        // Model only (every non-pi adapter, or pi before its first broadcast).
+        // Nothing reported (every non-pi adapter today).
+        assert_eq!(a.context_line(), None);
+        // The model alone never produces a context line: it renders separately.
         a.model = Some("anthropic/claude-opus-4".into());
-        assert_eq!(
-            a.footer_line().as_deref(),
-            Some("model: anthropic/claude-opus-4")
-        );
+        assert_eq!(a.context_line(), None);
         // Full pi group.
         a.entries = Some(42);
         a.context_percent = Some(12);
         a.context_age = Some("3d".into());
         assert_eq!(
-            a.footer_line().as_deref(),
-            Some("12% ctx \u{b7} 42 entries \u{b7} 3d \u{b7} model: anthropic/claude-opus-4")
+            a.context_line().as_deref(),
+            Some("12% ctx \u{b7} 42 entries \u{b7} 3d")
         );
         // Percent unknown (e.g. right after compaction): omit just that segment.
         a.context_percent = None;
-        assert_eq!(
-            a.footer_line().as_deref(),
-            Some("42 entries \u{b7} 3d \u{b7} model: anthropic/claude-opus-4")
-        );
-        // entries known but no model reported: no trailing " \u{b7} model: ..".
-        a.model = None;
-        assert_eq!(a.footer_line().as_deref(), Some("42 entries \u{b7} 3d"));
+        assert_eq!(a.context_line().as_deref(), Some("42 entries \u{b7} 3d"));
+        // Age unreported: entries alone still says something.
+        a.context_age = None;
+        assert_eq!(a.context_line().as_deref(), Some("42 entries"));
     }
 
     #[test]

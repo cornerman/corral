@@ -259,7 +259,8 @@ ratatui / iced, the daemon keeps ksni).
     the `Update::SetModel` variant (from a `config_options_update` broadcast);
     `sync_registry` also stamps the record's last-known model onto both live
     (only when the live value is still `None`) and dormant agents, shown
-    display-only in the footer for the selected card. Pure, unit-tested.
+    display-only on the card's third row beside `context_line()` (the
+    entries/percent/age stats). Pure, unit-tested.
   - `src/watch.rs` — one reader thread per live socket: seeds from
     `initialize` + `session/list`, then streams `state_update`, `tool_call`
     (summarized to a card activity string), and title updates; EOF = gone. The
@@ -335,11 +336,14 @@ ratatui / iced, the daemon keeps ksni).
   state; launch it as many times as you like.
   - `src/ui.rs` — ratatui: a prominent centered filter box (underline, top
     padding) over four columns (Requires Action / Idle / Running / Dormant) of
-    fixed-height cards, and a clickable key-hint footer. Each card is two rows:
-    the session title with the column age dim at the top-right, then a
+    fixed-height cards, and a clickable key-hint footer. Each card is three
+    rows: the session title with the column age dim at the top-right, then a
     hash-colored cwd basename pill (see `core::palette`), the kind badge, and
-    the activity hint. The row above the footer shows the selected card's model
-    right-aligned (`model: <x>`, display-only) beside any transient status.
+    the activity hint, then the model dim on the left with the context stats
+    (`12% ctx · 42 entries · 3d`, `core::model::Agent::context_line`)
+    right-aligned — both display-only, the row reserved even when an adapter
+    reports neither, so every card keeps the same height. The row above the
+    footer carries only a transient action status.
     Owns card / heading / footer / filter-box / cwd-pill /
     age formatting; `column_layout` and `hit_test` share one geometry (top rows
     reserved for the filter).
@@ -399,11 +403,11 @@ ratatui / iced, the daemon keeps ksni).
   layer-4 arrows, `/` on Neo layer 3, AltGr); the subscription is therefore
   hand-rolled over `listen_with`, keeping `on_key_press`'s `Status::Ignored`
   filter so a focused filter field still captures its own keys. The TUI needs no
-  such step (crossterm reports the terminal's already-composed keysym). Each card is two rows: the title with the column age at the
+  such step (crossterm reports the terminal's already-composed keysym). Each card is three rows: the title with the column age at the
   top-right, then a hash-colored cwd basename pill (`core::palette`, same color
-  per directory) beside the dim kind badge and the activity hint; the Dormant
-  column is faded. The footer shows the selected card's model at its far end
-  (`model: <x>`, display-only, parity with the TUI). `src/theme.rs` is the base16 theming
+  per directory) beside the dim kind badge and the activity hint, then the model
+  with the context stats right-aligned (display-only, parity with the TUI); the
+  Dormant column is faded. `src/theme.rs` is the base16 theming
   system: a lenient tinted-theming YAML parser (no YAML dependency), Solarized
   dark/light built-ins, and an env-selected (`CORRAL_THEME_DARK` /
   `CORRAL_THEME_LIGHT`) dark/light preset pair loaded from built-ins plus
@@ -523,8 +527,8 @@ ratatui / iced, the daemon keeps ksni).
   percent from `ctx.getContextUsage()`, and a pre-formatted age string derived
   from the session's own creation entry), refreshed on `turn_start`/`turn_end`
   and persisted in the record (`entries`/`contextPercent`/`contextAge`), seeded
-  on connect like state and model. Shown next to the model in the footer for the
-  selected card (`core::model::Agent::footer_line`), pi only for now — other
+  on connect like state and model. Shown next to the model on every card's third
+  row (`core::model::Agent::context_line`), pi only for now — other
   adapters have no equivalent introspection API surfaced today.
   Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
   (`target_dir` or `target_session`, `message`, `force_new`, optional `label`,
@@ -789,7 +793,7 @@ Session Config Option, reserved category `model`), broadcast on model change
 and seeded on connect. corral reads only
 `configOptions[category=="model"].currentValue` and is display-only — it never
 sends `session/set_config_option`, so the selectable `options` list is
-irrelevant to it. Shown verbatim in the footer for the selected card.
+irrelevant to it. Shown verbatim on the agent's card.
 
 ## Interfaces to the Outside World
 
@@ -824,8 +828,9 @@ irrelevant to it. Shown verbatim in the footer for the selected card.
   footer actions (go / message / history / spawn / toggle-hidden / dismiss) acting on the
   card under the cursor (Esc or a click outside closes it). Shift+Enter needs the kitty keyboard protocol
   (corral pushes it where supported). Long columns scroll to keep the selection
-  visible; live cards show time-in-state. The footer shows the selected card's
-  model (`model: <x>`, display-only). Reads `$HOME` (or
+  visible; live cards show time-in-state. Every card's third row shows its model
+  and, where the adapter reports them, its context stats (`12% ctx · 42 entries
+  · 3d`), display-only. Reads `$HOME` (or
   `$CORRAL_REGISTRY_DIR`) for the registry dir; uses `swaymsg` and `kitty` for
   focus and spawn.
 - CLI `corral-gui` — the same attention board as a desktop (iced) window,
