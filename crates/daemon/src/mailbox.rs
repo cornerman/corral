@@ -13,6 +13,7 @@
 use std::io::Write;
 use std::path::Path;
 
+use corral_core::curation;
 use corral_core::discovery::RegistryEntry;
 
 /// What a submission is authorized against: the directory pair is the
@@ -54,6 +55,14 @@ pub enum Kind {
 pub struct Submission {
     pub id: String,
     pub from_cwd: String,
+    /// The target's canonical working directory: the single key every
+    /// authorization, whitelist line, and operator label uses. Empty as parsed;
+    /// `control.rs` stamps it from [`authenticate`] at the boundary, beside the
+    /// authenticated `from_cwd`, and nothing downstream re-derives it. So a
+    /// queued submission carries a target the daemon already proved is a real
+    /// directory (parse, don't validate), and the router has no second
+    /// resolution path that could disagree with the ack's (SECURITY.md T20).
+    pub target_cwd: String,
     /// The sender's session id, so the receiver can reply to this exact agent.
     pub from_session: Option<String>,
     pub kind: Kind,
@@ -98,24 +107,26 @@ impl Submission {
         format!("{tag}\n{}", self.body())
     }
 
-    /// Full human label for the target, built from the target's **resolved**
-    /// working directory: authorization is keyed on the `(sender dir -> target
-    /// dir)` pair, so the operator must always see that directory. A session
+    /// Full human label for the target, built from the **authenticated**
+    /// `target_cwd`: authorization is keyed on the `(sender dir -> target dir)`
+    /// pair, so the operator must always see that directory, and always the
+    /// canonical one — a raw spawn `cwd` could name the same directory through
+    /// `..` or a symlink whose basename says something else entirely. A session
     /// target names the dir *and* its session id — the id alone would hide
     /// where that agent works, which is the thing being approved. Used in the
     /// detail popup, the audit trail, and the router's status lines.
-    pub fn target_label(&self, target_cwd: &str) -> String {
+    pub fn target_label(&self) -> String {
         match &self.target() {
-            Target::Dir(_) => target_cwd.to_string(),
-            Target::Session(s) => format!("{target_cwd} (session {s})"),
+            Target::Dir(_) => self.target_cwd.clone(),
+            Target::Session(s) => format!("{} (session {s})", self.target_cwd),
         }
     }
 
     /// Compact target label for the tray menu and the notification: the target
     /// directory's basename, so the `from → to` line stays short and symmetric
     /// with the basenamed sender; a session target keeps its full id after it.
-    pub fn target_label_short(&self, target_cwd: &str) -> String {
-        let dir = basename(target_cwd);
+    pub fn target_label_short(&self) -> String {
+        let dir = basename(&self.target_cwd);
         match &self.target() {
             Target::Dir(_) => dir.to_string(),
             Target::Session(s) => format!("{dir} (session {s})"),
@@ -194,24 +205,120 @@ pub fn session_claims_other_dir(entries: &[RegistryEntry], sid: &str, from_cwd: 
         .any(|e| e.session_id == sid && e.cwd.as_deref().is_some_and(|c| c != from_cwd))
 }
 
-/// Classify a parsed message from resolved facts (pure, trivially tested).
-/// `target_cwd` is `Some` when the recipient is found (a known session's cwd,
-/// or an existing target directory), else `None`. `whitelisted` is consulted
-/// only when the recipient is found.
+/// The resolved facts the verdict table judges, so [`classify`] stays pure and
+/// exhaustively testable while all IO (registry scan, whitelist read, directory
+/// canonicalization) happens in [`authorize`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Facts<'a> {
+    /// The target's canonical working directory, or `None` when the recipient
+    /// does not resolve (unknown session, non-existent directory).
+    pub target_cwd: Option<&'a str>,
+    /// The `(sender -> target)` pair is in the whitelist: authorized.
+    pub whitelisted: bool,
+    /// The caller may learn precise facts about this target (its own directory,
+    /// or a whitelisted pair). Weaker than `whitelisted`: it gates disclosure,
+    /// not delivery.
+    pub reachable: bool,
+    /// The target session resolves but nothing is running (socket cleared).
+    /// Only a `Stop` cares.
+    pub dormant: bool,
+}
+
+/// Judge one submission from resolved facts: the single verdict table, shared by
+/// the synchronous ack and every verb (there is no second classification site).
 ///
 /// The whitelist is the single authorization axis: a whitelisted pair goes
 /// through, anything else asks the operator. Message, stop, hidden spawn and
 /// visible spawn all authorize identically — the operator grants trust per
 /// directory pair, and that grant covers every action the pair can take.
-pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) -> Ack {
-    match target_cwd {
-        None => match target {
-            Target::Session(_) => Ack::RecipientNotFound,
-            Target::Dir(_) => Ack::DirectoryNotKnown,
-        },
-        Some(_) if whitelisted => Ack::Accepted,
-        Some(_) => Ack::ApprovalNeeded,
+///
+/// Disclosure is a second, weaker axis. Whether an arbitrary host path is a
+/// directory is a fact about the filesystem *outside* the caller's sandbox, so
+/// `DirectoryNotKnown` is told only to a caller that may reach that directory;
+/// an unreachable pair always hears `ApprovalNeeded`, existing or not, and so
+/// cannot use the ack as an existence oracle (SECURITY.md T19). Session facts
+/// (existence, liveness) need no such gate: `list_corral_agents` publishes every
+/// session id and its liveness to every caller by design, so reporting
+/// `RecipientNotFound` / `AlreadyStopped` precisely leaks nothing new and keeps
+/// a stale reply handle diagnosable.
+pub fn classify(kind: &Kind, f: &Facts) -> Ack {
+    match (kind, f.target_cwd) {
+        (Kind::Spawn { .. }, None) if !f.reachable => Ack::ApprovalNeeded,
+        (Kind::Spawn { .. }, None) => Ack::DirectoryNotKnown,
+        (Kind::Message { .. } | Kind::Stop { .. }, None) => Ack::RecipientNotFound,
+        // Dormant: nothing to kill, so the stop already succeeded. A message to a
+        // dormant session still routes (it resumes the session).
+        (Kind::Stop { .. }, Some(_)) if f.dormant => Ack::AlreadyStopped,
+        (_, Some(_)) if f.whitelisted => Ack::Accepted,
+        (_, Some(_)) => Ack::ApprovalNeeded,
     }
+}
+
+/// Authenticate a target into the canonical directory authorization keys on. A
+/// spawn's `cwd` is canonicalized race-safely from a directory fd
+/// ([`curation::canonical_dir`], the same authentication the sender's own cwd
+/// gets), which both proves it is a directory and collapses `..`, trailing
+/// slashes, and symlinks — so a whitelist line is a relation over real
+/// directories and the operator's approval popup cannot be shown a path whose
+/// basename lies about where the agent starts. A session target resolves
+/// through the vetted registry, whose `cwd` is already canonical (stamped from
+/// the record's physical location).
+pub fn authenticate(target: &Target, entries: &[RegistryEntry]) -> Option<String> {
+    match target {
+        Target::Dir(d) => curation::canonical_dir(d),
+        Target::Session(sid) => entries
+            .iter()
+            .find(|e| &e.session_id == sid)
+            .and_then(|e| e.cwd.clone()),
+    }
+}
+
+/// Whether the caller may learn precise facts about `target_cwd`: its own
+/// directory, or a whitelisted pair. The roster's redaction predicate and the
+/// ack's disclosure gate are this one function, so the two cannot drift.
+pub fn reachable(whitelist: &Path, from_cwd: &str, target_cwd: &str) -> bool {
+    target_cwd == from_cwd || is_whitelisted(whitelist, from_cwd, target_cwd)
+}
+
+/// The one authorization step, run at the boundary: authenticate the target,
+/// read the whitelist, judge. Returns the canonical target directory (to stamp
+/// onto the submission) and the verdict to ack. Every verb goes through this
+/// same call, so there is no second classification site.
+///
+/// Downstream, the router gates on `is_whitelisted(from_cwd, target_cwd)` over
+/// the stamped fields alone — it re-reads the whitelist (so an out-of-band edit
+/// or an "allow always" takes effect) but never re-derives either directory.
+pub fn authorize(
+    whitelist: &Path,
+    sub: &Submission,
+    entries: &[RegistryEntry],
+) -> (Option<String>, Ack) {
+    let target = sub.target();
+    let target_cwd = authenticate(&target, entries);
+    // Reachability falls back to the raw target string when the directory does
+    // not resolve, so a pair the operator once approved still gets the precise
+    // `DirectoryNotKnown` after that directory is deleted.
+    let raw = match &target {
+        Target::Dir(d) => Some(d.clone()),
+        Target::Session(_) => None,
+    };
+    let probe = target_cwd.clone().or(raw);
+    let facts = Facts {
+        target_cwd: target_cwd.as_deref(),
+        whitelisted: target_cwd
+            .as_deref()
+            .is_some_and(|t| is_whitelisted(whitelist, &sub.from_cwd, t)),
+        reachable: probe.is_some_and(|t| reachable(whitelist, &sub.from_cwd, &t)),
+        dormant: match &target {
+            Target::Session(sid) => entries
+                .iter()
+                .find(|e| &e.session_id == sid)
+                .is_some_and(|e| e.socket.is_none()),
+            Target::Dir(_) => false,
+        },
+    };
+    let ack = classify(&sub.kind, &facts);
+    (target_cwd, ack)
 }
 
 /// Parse one submission JSON document. The `op` field names the verb
@@ -249,6 +356,9 @@ pub fn parse(text: &str) -> Option<Submission> {
     Some(Submission {
         id: s("id")?,
         from_cwd: s("fromCwd").unwrap_or_default(),
+        // Both directories of the authorized pair are stamped by corrald from
+        // authenticated facts, never parsed from agent-supplied content.
+        target_cwd: String::new(),
         from_session: s("fromSession"),
         kind,
     })
@@ -354,10 +464,25 @@ pub fn is_list(text: &str) -> bool {
 /// The `(from -> target)` separator in the whitelist file.
 const SEP: &str = " -> ";
 
+/// Whether a path may appear in the whitelist. A directory name may legally
+/// contain the separator, which would make the line ambiguous: `split_once`
+/// takes the *first* occurrence, so `"/a -> /evil" -> "/b"` would parse as the
+/// pair `(/a, /evil -> /b)` and record a grant for a directory the operator
+/// never saw. The grammar has no escaping, so such a path is refused outright —
+/// it can never be whitelisted (fail-closed: the operator can still allow a
+/// single submission).
+fn representable(path: &str) -> bool {
+    !path.contains(SEP)
+}
+
 /// Whether this `(sender, target)` directory pair is pre-authorized. The
 /// whitelist file has one `<from> -> <target>` pair per line; a missing file
-/// authorizes nothing.
+/// authorizes nothing. Both paths must be representable in the grammar, so a
+/// path that could straddle the separator never matches (see [`representable`]).
 pub fn is_whitelisted(file: &Path, from: &str, target: &str) -> bool {
+    if !representable(from) || !representable(target) {
+        return false;
+    }
     let Ok(text) = std::fs::read_to_string(file) else {
         return false;
     };
@@ -368,8 +493,16 @@ pub fn is_whitelisted(file: &Path, from: &str, target: &str) -> bool {
 }
 
 /// Append a `(from -> target)` pair to the whitelist, creating the file. Used
-/// by the operator's "allow always" choice.
+/// by the operator's "allow always" choice. Refuses a pair the grammar cannot
+/// represent unambiguously, rather than writing a line that would parse back as
+/// a different pair.
 pub fn whitelist_add(file: &Path, from: &str, target: &str) -> std::io::Result<()> {
+    if !representable(from) || !representable(target) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("path contains the whitelist separator {SEP:?}: {from} -> {target}"),
+        ));
+    }
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -388,6 +521,7 @@ mod tests {
         Submission {
             id: "1".into(),
             from_cwd: "/a".into(),
+            target_cwd: String::new(),
             from_session: None,
             kind: Kind::Spawn {
                 dir: "/b".into(),
@@ -416,8 +550,12 @@ mod tests {
         assert_eq!(m.target(), Target::Session("sid-7".into()));
         // The resolved target dir stays visible beside the session id, in both
         // the full and the compact form (it is the authorization axis).
-        assert_eq!(m.target_label("/work/proj"), "/work/proj (session sid-7)");
-        assert_eq!(m.target_label_short("/work/proj"), "proj (session sid-7)");
+        let m = Submission {
+            target_cwd: "/work/proj".into(),
+            ..m
+        };
+        assert_eq!(m.target_label(), "/work/proj (session sid-7)");
+        assert_eq!(m.target_label_short(), "proj (session sid-7)");
         // The reply handle (sender's session) rides in the provenance tag; the
         // dir shows as its basename, the session id stays full.
         assert_eq!(m.tagged(), "[from a (session sid-9)]\nhi");
@@ -503,23 +641,112 @@ mod tests {
         assert!(!session_claims_other_dir(&entries, "unknown", "/a"));
     }
 
+    /// Facts for a resolved target.
+    fn found(whitelisted: bool) -> Facts<'static> {
+        Facts {
+            target_cwd: Some("/b"),
+            whitelisted,
+            reachable: whitelisted,
+            dormant: false,
+        }
+    }
+
     #[test]
     fn classify_covers_every_ack() {
-        let sess = Target::Session("sid".into());
-        let dir = Target::Dir("/b".into());
-        // Recipient found -> the whitelist alone decides accepted vs approval.
-        assert_eq!(classify(&sess, Some("/b"), true), Ack::Accepted);
-        assert_eq!(classify(&sess, Some("/b"), false), Ack::ApprovalNeeded);
-        assert_eq!(classify(&dir, Some("/b"), true), Ack::Accepted);
-        assert_eq!(classify(&dir, Some("/b"), false), Ack::ApprovalNeeded);
-        // Recipient not found -> reason depends on the target kind.
-        assert_eq!(classify(&sess, None, false), Ack::RecipientNotFound);
-        assert_eq!(classify(&dir, None, false), Ack::DirectoryNotKnown);
+        let msg = Kind::Message {
+            session: "sid".into(),
+            text: "hi".into(),
+        };
+        let stop = Kind::Stop {
+            session: "sid".into(),
+        };
+        let spawn = Kind::Spawn {
+            dir: "/b".into(),
+            task: "hi".into(),
+            label: None,
+            hidden: true,
+        };
+        // Recipient found -> the whitelist alone decides accepted vs approval,
+        // identically for every verb (one authorization axis).
+        for kind in [&msg, &stop, &spawn] {
+            assert_eq!(classify(kind, &found(true)), Ack::Accepted);
+            assert_eq!(classify(kind, &found(false)), Ack::ApprovalNeeded);
+        }
+        // An unknown session is reported precisely to anyone: the roster already
+        // publishes every session id and its liveness.
+        assert_eq!(classify(&msg, &Facts::default()), Ack::RecipientNotFound);
+        assert_eq!(classify(&stop, &Facts::default()), Ack::RecipientNotFound);
+        // A dormant session: stopping it already succeeded; a message still
+        // routes (it resumes the session).
+        let dorm = Facts {
+            dormant: true,
+            ..found(true)
+        };
+        assert_eq!(classify(&stop, &dorm), Ack::AlreadyStopped);
+        assert_eq!(classify(&msg, &dorm), Ack::Accepted);
+        // Directory existence is disclosed only to a reachable caller...
+        let gone_reachable = Facts {
+            reachable: true,
+            ..Facts::default()
+        };
+        assert_eq!(classify(&spawn, &gone_reachable), Ack::DirectoryNotKnown);
+        // ...an unreachable one hears the same thing whether or not it exists,
+        // so the ack is no existence oracle for host paths (T19).
+        assert_eq!(classify(&spawn, &Facts::default()), Ack::ApprovalNeeded);
+        assert_eq!(classify(&spawn, &found(false)), Ack::ApprovalNeeded);
         // Only resolvable targets are routed onward.
         assert!(Ack::Accepted.routable());
         assert!(Ack::ApprovalNeeded.routable());
         assert!(!Ack::RecipientNotFound.routable());
         assert!(!Ack::DirectoryNotKnown.routable());
+        assert!(!Ack::AlreadyStopped.routable());
+    }
+
+    #[test]
+    fn whitelist_refuses_a_path_straddling_the_separator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("whitelist");
+        // A dir named with the separator inside cannot be granted: the line
+        // would parse back as a different pair.
+        assert!(whitelist_add(&file, "/a -> /evil", "/b").is_err());
+        assert!(whitelist_add(&file, "/a", "/b -> /evil").is_err());
+        assert!(!file.exists(), "nothing written");
+        // Nor does a hand-written ambiguous line authorize either pair it could
+        // be read as.
+        std::fs::write(&file, "/a -> /evil -> /b\n").unwrap();
+        assert!(!is_whitelisted(&file, "/a -> /evil", "/b"));
+        assert!(!is_whitelisted(&file, "/a", "/evil -> /b"));
+    }
+
+    #[test]
+    fn authenticate_canonicalizes_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let canon = std::fs::canonicalize(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // A trailing slash, a `..` hop, and a symlink all resolve to one key, so
+        // the whitelist is a relation over real directories.
+        for spelling in [
+            format!("{}/", real.display()),
+            format!("{}/../real", real.display()),
+            link.display().to_string(),
+        ] {
+            assert_eq!(
+                authenticate(&Target::Dir(spelling.clone()), &[]).as_deref(),
+                Some(canon.to_string_lossy().as_ref()),
+                "{spelling}"
+            );
+        }
+        // A path that is not a directory does not resolve.
+        assert_eq!(
+            authenticate(
+                &Target::Dir(tmp.path().join("nope").display().to_string()),
+                &[]
+            ),
+            None
+        );
     }
 
     /// A registry entry with just the fields the roster reads.

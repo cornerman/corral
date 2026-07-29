@@ -18,10 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use corral_core::discovery::RegistryEntry;
 use corral_core::{curation, discovery};
 
-use crate::mailbox::{self, Ack, Kind, Submission, Target};
+use crate::mailbox::{self, Ack, Submission, Target};
 
 /// Whether another daemon is already serving this socket. A successful connect
 /// proves a live listener; a connect failure means the socket is absent or
@@ -116,8 +115,7 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<S
     // view by claiming another directory.
     if mailbox::is_list(&content) {
         let entries = discovery::scan_registry(registry_dir);
-        let visible =
-            |cwd: &str| cwd == from_cwd || mailbox::is_whitelisted(whitelist, &from_cwd, cwd);
+        let visible = |cwd: &str| mailbox::reachable(whitelist, &from_cwd, cwd);
         let roster = mailbox::build_roster(&entries, visible);
         let _ = writeln!(conn, "{}", mailbox::roster_json(&roster));
         return;
@@ -127,82 +125,59 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<S
         return;
     };
     sub.from_cwd = from_cwd; // authenticated, overrides any content fromCwd
-                             // A stop resolves differently: an already-dormant target is a no-op success
-                             // rather than a delivery, so it gets its own verdict path.
-    if matches!(sub.kind, Kind::Stop { .. }) {
-        handle_stop(&mut conn, sub, registry_dir, whitelist, tx);
-        return;
-    }
     let entries = discovery::scan_registry(registry_dir);
     // T2: the reply handle is checkable even though it is self-reported, because
     // the directory it must belong to is authenticated. A handle the registry
-    // pins to another directory is a forgery, so refuse the whole message rather
-    // than deliver a tag that misdirects the recipient's reply. A stop needs no
-    // such check: it carries no tag and delivers no text.
+    // pins to another directory is a forgery, so refuse the whole submission
+    // rather than deliver a tag that misdirects the recipient's reply. Checked
+    // for every verb, including a stop that delivers no text: a forged handle is
+    // evidence about the sender, not about the payload.
     if let Some(sid) = sub.from_session.as_deref() {
         if mailbox::session_claims_other_dir(&entries, sid, &sub.from_cwd) {
             let _ = ack(&mut conn, "malformed");
             return;
         }
     }
-    let target = sub.target();
-    let target_cwd = resolve(&target, &entries);
-    let whitelisted = target_cwd
-        .as_deref()
-        .is_some_and(|t| mailbox::is_whitelisted(whitelist, &sub.from_cwd, t));
-    let verdict = mailbox::classify(&target, target_cwd.as_deref(), whitelisted);
-    let _ = ack(&mut conn, verdict.wire());
-    if verdict.routable() {
-        let _ = tx.send(sub);
-    }
+    // One authorization step for every verb (message, spawn, stop), including a
+    // stop's `already_stopped` no-op: `authorize` resolves the target, reads the
+    // whitelist, and returns the verdict plus the canonical target dir to stamp.
+    let (target_cwd, verdict) = mailbox::authorize(whitelist, &sub, &entries);
+    ack_and_route(&mut conn, sub, target_cwd, verdict, tx);
 }
 
-/// Handle a stop submission. The target is always a session: no record ->
-/// `recipient_not_found`; a dormant record (socket cleared) -> `already_stopped`
-/// (idempotent no-op, never routed, since nothing is running to kill); a live
-/// record -> classify against the whitelist and route the kill on approval.
-fn handle_stop(
+/// Ack the verdict, then enqueue the submission only if its target resolved,
+/// stamping the authenticated `target_cwd` beside the authenticated `from_cwd`
+/// — from here on the authorized pair is fixed and nothing re-derives it.
+///
+/// An unresolved target can still be acked `approval_needed`: that is the
+/// disclosure gate (T19) hiding from an unreachable caller whether the directory
+/// exists. Such a submission has nowhere to go, so it is dropped here rather
+/// than parked under an empty label, and the drop goes to corrald's journal so
+/// the operator can see a typo that produced no popup.
+fn ack_and_route(
     conn: &mut UnixStream,
-    sub: Submission,
-    registry_dir: &Path,
-    whitelist: &Path,
+    mut sub: Submission,
+    target_cwd: Option<String>,
+    verdict: Ack,
     tx: &Sender<Submission>,
 ) {
-    let Kind::Stop { session: sid } = &sub.kind else {
-        let _ = ack(conn, "malformed");
-        return;
-    };
-    let entry = discovery::scan_registry(registry_dir)
-        .into_iter()
-        .find(|e| &e.session_id == sid);
-    let verdict = match &entry {
-        None => Ack::RecipientNotFound,
-        // Dormant: nothing to kill, so the stop already succeeded.
-        Some(e) if e.socket.is_none() => Ack::AlreadyStopped,
-        Some(e) => {
-            let whitelisted = e
-                .cwd
-                .as_deref()
-                .is_some_and(|t| mailbox::is_whitelisted(whitelist, &sub.from_cwd, t));
-            mailbox::classify(&sub.target(), e.cwd.as_deref(), whitelisted)
-        }
-    };
     let _ = ack(conn, verdict.wire());
-    if verdict.routable() {
-        let _ = tx.send(sub);
+    if !verdict.routable() {
+        return;
     }
-}
-
-/// Resolve the recipient's directory: a session's cwd from the registry, or an
-/// existing target directory. `None` means "no recipient found" (the ack then
-/// reports why, per target kind).
-fn resolve(target: &Target, entries: &[RegistryEntry]) -> Option<String> {
-    match target {
-        Target::Dir(d) => Path::new(d).is_dir().then(|| d.clone()),
-        Target::Session(sid) => entries
-            .iter()
-            .find(|e| &e.session_id == sid)
-            .and_then(|e| e.cwd.clone()),
+    match target_cwd {
+        Some(cwd) => {
+            sub.target_cwd = cwd;
+            let _ = tx.send(sub);
+        }
+        None => eprintln!(
+            "corrald: dropped submission to {} from {} (target does not resolve)",
+            match sub.target() {
+                Target::Dir(d) => format!("dir {d}"),
+                Target::Session(s) => format!("session {s}"),
+            },
+            sub.from_cwd
+        ),
     }
 }
 
@@ -446,8 +421,33 @@ mod tests {
     }
 
     #[test]
-    fn missing_directory_is_directory_not_known() {
+    fn missing_directory_is_not_disclosed_to_an_unreachable_caller() {
+        // Whether an arbitrary host path exists is a fact outside the caller's
+        // sandbox, so an unwhitelisted pair hears the same `approval_needed`
+        // either way and cannot use the ack as an existence oracle (T19).
         let (_tmp, socket, registry, whitelist, from) = setup();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            &from,
+            r#"{"op":"spawn","id":"1","cwd":"/no/such/dir","task":"hi"}"#,
+        );
+        assert_eq!(ack, r#"{"status":"approval_needed"}"#);
+        // Nowhere to spawn, so it is dropped rather than parked under an empty
+        // target label: the ack hides the reason, the daemon does not invent one.
+        assert!(rx.try_recv().is_err(), "unresolved target must not enqueue");
+    }
+
+    #[test]
+    fn missing_directory_is_directory_not_known_for_a_reachable_caller() {
+        // A pair the operator already approved gets the precise diagnosis, so a
+        // typo or a deleted project dir stays debuggable where trust exists.
+        let (tmp, socket, registry, whitelist, from) = setup();
+        let gone = tmp.path().join("gone").display().to_string();
+        mailbox::whitelist_add(&whitelist, &from_str(&from), &gone).unwrap();
         let (tx, _rx) = mpsc::channel();
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
@@ -455,9 +455,34 @@ mod tests {
         let ack = submit(
             &socket,
             &from,
-            r#"{"op":"spawn","id":"1","fromCwd":"/a","cwd":"/no/such/dir","task":"hi"}"#,
+            &format!(r#"{{"op":"spawn","id":"1","cwd":"{gone}","task":"hi"}}"#),
         );
         assert_eq!(ack, r#"{"status":"directory_not_known"}"#);
+    }
+
+    #[test]
+    fn a_spawn_cwd_is_stamped_canonical_before_routing() {
+        // The queued submission carries the canonicalized target, so the
+        // whitelist key, the operator's label, and the spawn cwd are all the real
+        // dir -- not the `..`/symlink spelling the sender chose.
+        let (tmp, socket, registry, whitelist, from) = setup();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let canon = std::fs::canonicalize(&real).unwrap().display().to_string();
+        let sneaky = format!("{}/../real/", real.display());
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let ack = submit(
+            &socket,
+            &from,
+            &format!(r#"{{"op":"spawn","id":"1","cwd":"{sneaky}","task":"hi"}}"#),
+        );
+        assert_eq!(ack, r#"{"status":"approval_needed"}"#);
+        let sub = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(sub.target_cwd, canon);
+        assert_eq!(sub.target_label(), canon);
     }
 
     #[test]

@@ -171,7 +171,7 @@ pub fn run() {
                 notifier.notify(
                     sub.id.clone(),
                     mailbox::basename(&sub.from_cwd),
-                    &sub.target_label_short(&p.target_cwd),
+                    &sub.target_label_short(),
                     &sub.kind,
                     napp_tx.clone(),
                 );
@@ -191,7 +191,7 @@ pub fn run() {
             };
             (
                 sub.id.clone(),
-                format!("{from} → {verb}{}", sub.target_label_short(&p.target_cwd)),
+                format!("{from} → {verb}{}", sub.target_label_short()),
             )
         });
         if head.as_ref().map(|(id, _)| id) != tray_shown.as_ref() {
@@ -230,7 +230,7 @@ pub fn run() {
                     if let Some(p) = router.pending_by_id(&id) {
                         notify::show_detail(
                             p.sub.from_cwd.clone(),
-                            p.sub.target_label(&p.target_cwd),
+                            p.sub.target_label(),
                             p.sub.body().to_string(),
                         );
                     }
@@ -264,7 +264,7 @@ fn apply_decision(
         format!(
             "message {action:?}: {} -> {}",
             p.sub.from_cwd,
-            p.sub.target_label(&p.target_cwd)
+            p.sub.target_label()
         )
     }) else {
         return;

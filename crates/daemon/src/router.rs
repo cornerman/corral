@@ -29,7 +29,7 @@ use corral_core::launch::{LaunchMode, Launcher};
 use corral_core::placement;
 use corral_core::prompt;
 
-use crate::mailbox::{is_whitelisted, whitelist_add, Kind, Submission, Target};
+use crate::mailbox::{is_whitelisted, whitelist_add, Kind, Submission};
 
 /// Terminate a process by pid. The real path is `placement::kill_pid`; tests
 /// inject a recording stub so a unit test never kills a real process.
@@ -82,12 +82,12 @@ pub enum ApprovalAction {
     Deny,
 }
 
-/// A submission awaiting an operator decision, with its resolved target
-/// directory (for the whitelist, which is keyed on dir pairs, and for every
-/// operator-facing label: the dir is what the approval actually grants).
+/// A submission awaiting an operator decision. The target directory the approval
+/// actually grants (the whitelist is keyed on dir pairs, and every operator-
+/// facing label shows it) rides on the submission itself, authenticated at the
+/// control-socket boundary.
 pub struct Pending {
     pub sub: Submission,
-    pub target_cwd: String,
 }
 
 pub struct Router {
@@ -161,7 +161,7 @@ impl Router {
             if is_whitelisted(
                 &self.whitelist,
                 &self.pending[i].sub.from_cwd,
-                &self.pending[i].target_cwd,
+                &self.pending[i].sub.target_cwd,
             ) {
                 let p = self.pending.remove(i);
                 self.approved.insert(p.sub.id.clone());
@@ -172,18 +172,17 @@ impl Router {
         }
         let mut statuses = Vec::new();
         while let Some(sub) = self.queue.pop_front() {
-            let Some(target_cwd) = target_cwd(&sub, entries) else {
-                // Resolvable at accept time but gone now (rare race). Drop it.
-                statuses.push("route: unknown target".to_string());
-                continue;
-            };
+            // The gate, over the two authenticated fields the boundary stamped.
+            // The whitelist is re-read every pass (an "allow always" or an
+            // out-of-band file edit takes effect), but neither directory is
+            // re-derived here — there is exactly one place that resolves them.
             let ok = self.approved.contains(&sub.id)
-                || is_whitelisted(&self.whitelist, &sub.from_cwd, &target_cwd);
+                || is_whitelisted(&self.whitelist, &sub.from_cwd, &sub.target_cwd);
             if !ok {
                 // Park for approval, then keep draining: an authorized item
                 // behind this one must not wait on it.
                 if !self.pending.iter().any(|p| p.sub.id == sub.id) {
-                    self.pending.push(Pending { sub, target_cwd });
+                    self.pending.push(Pending { sub });
                 }
                 continue;
             }
@@ -206,10 +205,14 @@ impl Router {
                 self.queue.push_back(p.sub);
             }
             ApprovalAction::AllowAlways => {
+                // Queue first, persist second: a whitelist write that fails
+                // (unrepresentable path, IO error) must still deliver the
+                // submission the operator just allowed, not swallow it.
                 let p = self.pending.remove(pos);
-                whitelist_add(&self.whitelist, &p.sub.from_cwd, &p.target_cwd)?;
                 self.approved.insert(p.sub.id.clone());
+                let (from, target) = (p.sub.from_cwd.clone(), p.sub.target_cwd.clone());
                 self.queue.push_back(p.sub);
+                whitelist_add(&self.whitelist, &from, &target)?;
             }
             ApprovalAction::Deny => {
                 self.pending.remove(pos);
@@ -229,9 +232,17 @@ fn deliver(
     match &sub.kind {
         Kind::Stop { session } => deliver_stop(sub, session, entries, kill),
         Kind::Message { session, .. } => deliver_session(sub, session, entries, launcher),
-        Kind::Spawn {
-            dir, label, hidden, ..
-        } => spawn(sub, dir, label.as_deref(), *hidden, entries, launcher),
+        // The canonical `target_cwd` is the dir started in, never the raw `cwd`
+        // the sender wrote: the operator approved that path and the whitelist is
+        // keyed on it, so spawning anywhere else would act outside the grant.
+        Kind::Spawn { label, hidden, .. } => spawn(
+            sub,
+            &sub.target_cwd,
+            label.as_deref(),
+            *hidden,
+            entries,
+            launcher,
+        ),
     }
 }
 
@@ -249,9 +260,6 @@ fn deliver_stop(
     let Some(entry) = entries.iter().find(|e| e.session_id == sid) else {
         return format!("stop: session {sid} gone");
     };
-    // The label names the dir the record physically lives in; unknown only if a
-    // vetted record somehow lacks it.
-    let target_dir = entry.cwd.clone().unwrap_or_else(|| "?".into());
     match discovery::live_socket(entry) {
         // Translate the agent-observed pid to a host pid (the NSpid bridge)
         // before killing; corrald runs on the host, so RealProc sees the whole
@@ -262,15 +270,12 @@ fn deliver_stop(
             sock.pid_namespace,
         ) {
             Some(host) => match kill(host) {
-                Ok(()) => format!("stopped {}", sub.target_label(&target_dir)),
+                Ok(()) => format!("stopped {}", sub.target_label()),
                 Err(e) => format!("stop kill: {e}"),
             },
-            None => format!(
-                "stop: {} has no correlatable host pid",
-                sub.target_label(&target_dir)
-            ),
+            None => format!("stop: {} has no correlatable host pid", sub.target_label()),
         },
-        None => format!("stop: {} already dormant", sub.target_label(&target_dir)),
+        None => format!("stop: {} already dormant", sub.target_label()),
     }
 }
 
@@ -315,7 +320,7 @@ fn spawn(
     // spawn has no `{sessionId}`).
     let launch_command = approved_commands::denormalize(command, "", Some(dir));
     match launcher.launch(Path::new(dir), &launch_command, Some(&first_prompt), &mode) {
-        Ok(()) => format!("routed to {} (spawned)", sub.target_label(dir)),
+        Ok(()) => format!("routed to {} (spawned)", sub.target_label()),
         Err(e) => format!("route spawn: {e}"),
     }
 }
@@ -357,10 +362,9 @@ fn deliver_session(
     let Some(entry) = entries.iter().find(|e| e.session_id == session_id) else {
         return format!("route: session {session_id} not found");
     };
-    let target_dir = entry.cwd.clone().unwrap_or_else(|| "?".into());
     if let Some(sock) = &entry.socket {
         if prompt::send_prompt(sock, &sub.tagged()).is_ok() {
-            return format!("routed to {}", sub.target_label(&target_dir));
+            return format!("routed to {}", sub.target_label());
         }
         // Socket present but dead: fall through and resume from the record.
     }
@@ -372,24 +376,11 @@ fn deliver_session(
             // change it.
             let mode = entry.launch_mode();
             match launcher.launch(Path::new(&cwd), &command, Some(&sub.tagged()), &mode) {
-                Ok(()) => format!("routed to {} (resumed)", sub.target_label(&target_dir)),
+                Ok(()) => format!("routed to {} (resumed)", sub.target_label()),
                 Err(e) => format!("route resume: {e}"),
             }
         }
         _ => format!("route: session {session_id} not resumable"),
-    }
-}
-
-/// The target's working directory, for the dir-keyed whitelist. A spawn's dir is
-/// its own cwd; a session target resolves through the registry. `None` means a
-/// session the daemon does not know about.
-fn target_cwd(sub: &Submission, entries: &[RegistryEntry]) -> Option<String> {
-    match &sub.target() {
-        Target::Dir(d) => Some(d.clone()),
-        Target::Session(sid) => entries
-            .iter()
-            .find(|e| &e.session_id == sid)
-            .and_then(|e| e.cwd.clone()),
     }
 }
 
@@ -462,25 +453,53 @@ mod tests {
         }
     }
 
-    fn stop_msg(id: &str, from: &str, sid: &str) -> Submission {
-        mailbox::parse(&format!(
-            r#"{{"op":"stop","id":"{id}","fromCwd":"{from}","targetSession":"{sid}"}}"#
-        ))
-        .unwrap()
+    /// A submission as the control-socket boundary hands it over: parsed, then
+    /// stamped with the canonical `target_cwd` `mailbox::authorize` derived. The
+    /// router only ever sees stamped submissions, so every test builds them this
+    /// way.
+    fn stamped(mut sub: Submission, target_cwd: &str) -> Submission {
+        sub.target_cwd = target_cwd.into();
+        sub
+    }
+
+    fn stop_msg(id: &str, from: &str, sid: &str, target_cwd: &str) -> Submission {
+        stamped(
+            mailbox::parse(&format!(
+                r#"{{"op":"stop","id":"{id}","fromCwd":"{from}","targetSession":"{sid}"}}"#
+            ))
+            .unwrap(),
+            target_cwd,
+        )
+    }
+
+    fn msg_sub(id: &str, from: &str, sid: &str, target_cwd: &str) -> Submission {
+        stamped(
+            mailbox::parse(&format!(
+                r#"{{"op":"message","id":"{id}","fromCwd":"{from}","targetSession":"{sid}","message":"hi"}}"#
+            ))
+            .unwrap(),
+            target_cwd,
+        )
     }
 
     fn spawn_sub(id: &str, from: &str, target: &str) -> Submission {
-        mailbox::parse(&format!(
-            r#"{{"op":"spawn","id":"{id}","fromCwd":"{from}","cwd":"{target}","task":"hi"}}"#
-        ))
-        .unwrap()
+        stamped(
+            mailbox::parse(&format!(
+                r#"{{"op":"spawn","id":"{id}","fromCwd":"{from}","cwd":"{target}","task":"hi"}}"#
+            ))
+            .unwrap(),
+            target,
+        )
     }
 
     fn spawn_sub_label(id: &str, from: &str, target: &str, label: &str) -> Submission {
-        mailbox::parse(&format!(
-            r#"{{"op":"spawn","id":"{id}","fromCwd":"{from}","cwd":"{target}","task":"hi","label":"{label}"}}"#
-        ))
-        .unwrap()
+        stamped(
+            mailbox::parse(&format!(
+                r#"{{"op":"spawn","id":"{id}","fromCwd":"{from}","cwd":"{target}","task":"hi","label":"{label}"}}"#
+            ))
+            .unwrap(),
+            target,
+        )
     }
 
     /// A record whose `label` and single-word spawn command are `label`, in
@@ -574,10 +593,7 @@ mod tests {
         // it (the record's own hidden flag); the messager has no say.
         let mut rec = dormant("sid-7", "/b", "/s/sid-7.jsonl");
         rec.hidden = true;
-        let sub = mailbox::parse(
-            r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
-        )
-        .unwrap();
+        let sub = msg_sub("1", "/a", "sid-7", "/b");
         let launcher = StubLauncher::default();
         deliver(&sub, &[rec], &launcher, &no_kill);
         assert_eq!(launcher.resumes.get(), 1);
@@ -601,10 +617,13 @@ mod tests {
     fn visible_request_launches_unhidden() {
         // A spawn asking for a visible window (window:"visible" on the tool,
         // hidden:false on the wire) gets one; the whitelist alone authorized it.
-        let msg = mailbox::parse(
-            r#"{"op":"spawn","id":"1","fromCwd":"/a","cwd":"/b","task":"hi","hidden":false}"#,
-        )
-        .unwrap();
+        let msg = stamped(
+            mailbox::parse(
+                r#"{"op":"spawn","id":"1","fromCwd":"/a","cwd":"/b","task":"hi","hidden":false}"#,
+            )
+            .unwrap(),
+            "/b",
+        );
         let entries = [dir_record("/b")];
         let launcher = StubLauncher::default();
         deliver(&msg, &entries, &launcher, &no_kill);
@@ -749,12 +768,7 @@ mod tests {
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
-        r.enqueue(
-            mailbox::parse(
-                r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
-            )
-            .unwrap(),
-        );
+        r.enqueue(msg_sub("1", "/a", "sid-7", "/b"));
         let launcher = StubLauncher::default();
         let entries = [dormant("sid-7", "/b", "/s/sid-7.jsonl")];
 
@@ -765,21 +779,19 @@ mod tests {
     }
 
     #[test]
-    fn unknown_session_is_dropped() {
+    fn a_session_gone_by_routing_time_is_dropped() {
+        // The boundary rejects an unknown session outright (recipient_not_found),
+        // so the only way the router sees one is a session that disappeared
+        // between accept and routing. Authorized, but nothing to deliver to.
         let tmp = tempfile::tempdir().unwrap();
         let whitelist = tmp.path().join("whitelist");
-        // Whitelist an unrelated pair; the point is the session does not exist.
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
-        r.enqueue(
-            mailbox::parse(
-                r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
-            )
-            .unwrap(),
-        );
+        r.enqueue(msg_sub("1", "/a", "ghost", "/b"));
         let launcher = StubLauncher::default();
 
         let status = r.poll(&[], &launcher);
-        assert!(status.unwrap().contains("unknown target"));
+        assert!(status.unwrap().contains("session ghost not found"));
         assert!(r.pending().is_none());
         assert_eq!(launcher.spawns.get(), 0);
         assert_eq!(launcher.resumes.get(), 0);
@@ -825,12 +837,7 @@ mod tests {
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
-        r.enqueue(
-            mailbox::parse(
-                r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
-            )
-            .unwrap(),
-        );
+        r.enqueue(msg_sub("1", "/a", "sid-7", "/b"));
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
@@ -861,7 +868,7 @@ mod tests {
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let (mut r, killed) = recording_router(whitelist);
         let entries = [live_record("sid-7", "/b", 4242)];
-        r.enqueue(stop_msg("1", "/a", "sid-7"));
+        r.enqueue(stop_msg("1", "/a", "sid-7", "/b"));
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
@@ -879,7 +886,7 @@ mod tests {
         let (mut r, killed) = recording_router(whitelist);
         // Dormant record (no socket): nothing to kill.
         let entries = [dormant("sid-7", "/b", "/s/sid-7.jsonl")];
-        r.enqueue(stop_msg("1", "/a", "sid-7"));
+        r.enqueue(stop_msg("1", "/a", "sid-7", "/b"));
         let launcher = StubLauncher::default();
 
         let status = r.poll(&entries, &launcher);
@@ -894,7 +901,7 @@ mod tests {
         // Not whitelisted: the stop must go pending, killing nothing until allowed.
         let (mut r, killed) = recording_router(whitelist);
         let entries = [live_record("sid-7", "/b", 4242)];
-        r.enqueue(stop_msg("1", "/a", "sid-7"));
+        r.enqueue(stop_msg("1", "/a", "sid-7", "/b"));
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
