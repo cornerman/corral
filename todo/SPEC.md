@@ -22,74 +22,62 @@ holds the file CLI and the watcher loop. `todo/DISPATCHER.md` holds the
 dispatcher's policy, symlinked into the live todo directory as its `AGENTS.md` so
 every agent started there reads it, however it was started.
 
-## Why It Lives Outside Corral
+## Why It Lives in the Workspace but Integrates Seamlessly
 
 `VISION.md` states that corral is a bus, not a container, that it never drives an
 agent autonomously, and that it should not grow orchestration features. A watcher
 that dispatches tasks into agents is exactly the orchestration that rule
-excludes, so it cannot live in the board, in `corrald`, or in `corral-core`'s
-model.
+excludes, so it cannot live in `corrald` or be driven by corral's background core.
 
-It does live in this repository, in its own top-level folder, because corral and
-the system on top of it are iterated together and a single checkout is faster to
-move. Sharing the workspace is not sharing the design: `corral-todo` is a fifth
-crate that *consumes* `corral-core` (scan a registry directory, inject a prompt
-into a socket, launch or resume an agent) exactly as an outside program would, and
-none of `corral`, `corral-gui` or `corrald` learns that it exists.
+We integrate the *visualization* and *triggers* directly into corral's boards.
+The `corral-todo` parser and locking logic are built as a highly cohesive library
+in the workspace. `crates/core` uses this library to read the global `todo.txt`
+file and render it on your card board!
 
-Putting the policy in an agent rather than in a program is what keeps the design
-this small. An LLM agent already holds the four corral verbs plus file tools.
-Judging whether an item is ready, resolving the prose in an item to a real
-directory, answering a worker's clarification questions, and reading its report
-all happen inside that agent's reasoning. Corral needs no task model, no
-scheduler, no kanban surface, and no new column.
+This gives you a unified workspace without violating our principles:
+1. **Separation of Concerns:** The board has zero scheduling logic. It merely
+   renders static `todo.txt` open/blocked cards, and delegates scheduling to the
+   dispatcher agent.
+2. **Direct Operator Triggers:** When you drag/move a task card from TODO to
+   Progress on the board, the board performs a safe, locked edit on the file
+   to set `status:progress` and sends a wake-up prompt to the dispatcher. The
+   dispatcher remains the sole entity responsible for spawning and managing the
+   handshake.
+3. **No Duplication:** In-progress tasks are automatically hidden from the TODO
+   column, appearing only as they live in the registry columns.
 
-The one thing a program does own is the file, because two writers can reach it
-(the dispatcher and you, in an editor) and because a garbled `todo.txt` is the
-system's only state. So every write goes through `corral-todo`, which locks,
-rewrites atomically, and enforces the grammar.
+The file remains the absolute source of truth. Every edit—whether by you in an
+editor, the dispatcher, or the board—goes through `corral-todo` crate helpers
+which lock, write atomically, and enforce the todo.txt grammar.
 
 ## The Loop
 
 ```
-todo.txt  (edited by you, or by corral-todo on the dispatcher's behalf)
+todo.txt  (edited by you, the board, or the dispatcher under lock)
    |
-   |  corral-todo watch: every few seconds normalize (ids, dates), hash the file
+   +-- (corral-todo watch: normalize, hash, poll ~5s) --> change?
+                                                             |
+   +-- wake live socket / resume dormant / launch hidden <---+
    v
-change?  --> a live record in <dir>/.corral/registry ?
-              |                |                     |
-              | yes            | no, dormant record  | no record at all
-              v                v                     v
-        inject the wake    resume that session    launch the configured
-        into its socket    (same session id)      dispatcher argv, hidden
-              |                |                     |
-              +--------+-------+---------------------+
-                       v
-                 dispatcher agent (one, long-lived, hidden)
-                   corral-todo list --open
-                   pick ready items (cap, one per target dir, priority order)
-                   corral_spawn_agent(cwd=<target>, task=<item + its id + how
-                                      to report>, label?, window?)
-                   corral-todo set a7f progress --target <dir>
-                       |
-     worker agent  <---+   (fresh, charter-prefixed, hidden)
-           |
-           |  1. handshake: task in its own words + questions   ---> dispatcher
-           |  2. dispatcher answers with a go-ahead (or blocks the item)
-           |  3. result: "item a7f done: ..." / "blocked: ..."  ---> dispatcher
-           v
-     corrald delivers to the dispatcher's session: injected over its socket
-     when live, else its record resumed with the report as first prompt.
-     Dispatcher runs corral-todo set a7f done  /  set a7f blocked --reason "..."
+ dispatcher agent (one, long-lived, hidden)
+   corral-todo list --open
+   pick ready items (priority sorting, cap, no-two-workers-per-dir rule)
+   corral_spawn_agent(cwd=<target>, task=<item id + instructions>)
+   corral-todo set a7f progress --target <dir> --worker <session id>
+       |
+  worker agent <-- (fresh, charter-prefixed, hidden)
+       |
+       | 1. handshake: task in own words + questions ---> dispatcher (Provenance tag)
+       | 2. dispatcher answers with a go-ahead
+       | 3. result: "item a7f done/blocked: ..." ---> dispatcher
+       v
+  corrald delivers to dispatcher's session.
+  Dispatcher runs corral-todo set a7f done / blocked.
 ```
 
-Corral is not in the wake path at all. The watcher reads the todo directory's own
-registry record and writes to the socket beside it, or resumes it from that
-record, which it may do because it runs as the operator, on the operator's side of
-the trust boundary, and because the record's physical location proves the
-directory it belongs to. Corral is in the fan-out path (dispatcher to workers) and
-the report path (workers back to the dispatcher), both of which are ordinary gated
-agent messaging.
+The board is a peer actor: dragging a card on your board writes the state update
+directly to `todo.txt` under lock and wakes the dispatcher, which handles the
+spawn. The worker session's active progress is then dynamically reflected back.
 
 ## Addressing: Spawn Down, Report Up
 
@@ -340,6 +328,37 @@ to add a mechanical sender (a sweep, a re-dispatch) if one is ever wanted; the M
 leaves all sending to the dispatcher's own tools, since a second sender is a second
 interface with no use yet.
 
+## Board Integration and Column Mapping
+
+To keep your Screen clean and provide a beautiful, unified workspace, the todo system integrates directly into the horizontal column layout of `corral` and `corral-gui`.
+
+Instead of spreading agent states across five horizontal columns, we consolidate our attention board into an elegant, three-column pipeline:
+
+1. **`TODO` (Column 0 - Left):** Shows open (`id:`) or blocked tasks parsed directly from your global `todo.txt` file. Blocked tasks representing unresolved questions or failures are pinned here with a prominent visual treatment.
+2. **`PROGRESS` (Column 1 - Middle):** Shows active worker agent sessions (tasks currently marked with `status:progress`). Internally, these active cards are vertically grouped and sorted:
+   - *Requires Action* at the very top (agents blocked on an interactive prompt), ensuring questions appear right in your center of attention.
+   - *Idle* in the middle (ready/paused agents).
+   - *Running* at the bottom (agents actively executing commands).
+3. **`DONE / DORMANT` (Column 2 - Right):** Shows reaped, offline, or completed sessions for historical review and logs.
+
+This 3-column layout fits standard terminal widths seamlessly, avoids card duplication (in-progress items dissolve out of Column 0 and migrate dynamically into Column 1), and makes titles highly readable.
+
+### Drag and Drop Card-Move Transitions
+
+Moving cards across the three columns triggers actual work scheduling:
+
+* **Todo ➔ Progress:** Moving a task card to Column 1 commits an atomic write to `todo.txt` under lock to set `status:progress` on the item, then wakes the dispatcher. The dispatcher parses the target directory, spawns the worker session, and writes its id to `worker:`. Once live, the agent's card dynamically appears on the Progress column.
+* **Progress ➔ Todo:** Moving an active card back to Column 0 cancels the task. The board updates `todo.txt` under lock to remove `status:progress` and `worker:` tags, and sends a clean `corral_stop_agent` to halt the worker. The card instantly reverts back into a static thought in the TODO column.
+* **Progress ➔ Done/Dormant:** Halts the worker session cleanly (moving its representation to Column 2).
+* **Todo ➔ Done/Dormant:** Invalid (ideas cannot be put directly to offline history).
+
+### In-Place Quick-Add and Completion
+
+The board supports rapid, keyboard-centric inbox capture:
+
+* **Add Thought (`a` key):** Hitting `a` in the TUI (or clicking an add block in the GUI) opens an inline text box at the bottom of the TODO column. Type your thought, hit Enter, and the board performs an atomic lock-and-append to `todo.txt`, drawing the new card instantly.
+* **Mark Complete (`d` key):** Hitting the dismiss key `d` on any card in the TODO column performs a safe lock-and-edit to prefix the task with standard `x` completion markers in `todo.txt`, removing it from the board.
+
 ## Prerequisites and First Run
 
 The live todo directory (say `~/todos`) exists outside this repository, holds
@@ -473,9 +492,9 @@ tested program earns its place.
 prose. Rejected because two files fall out of sync, and because todo.txt
 `key:value` metadata is what the sidecar would have held.
 
-**Task state and a kanban surface in the board.** It would break the board's
-definition as a pure viewer of the registry, since task state is not registry
-state, and it would double the work under the TUI/GUI parity rule.
+**A wide five-column board grid.** Spreading tasks and agents across separate columns for TODO, Action, Idle, Running, and Dormant is rejected because it crowds laptop screen widths and splits focus. The consolidated 3-column stacked pipeline (Todo ➔ Progress ➔ Done) keeps active and inactive states gathered, fits terminal cells perfectly, and increases read space.
+
+**A board with zero todo integration.** Stamping corral as purely a passive viewer of running registry processes is rejected because it misses an incredible UX synergy. Letting the board parse todo.txt under lock elevates the board into a planning command-center, while keeping scheduling boundaries strictly in the dispatcher agent policies.
 
 **Suppressing wakes while the dispatcher is Running**, instead of relying on the
 no-write-when-nothing-changed condition. It needs the watcher to read board state,
