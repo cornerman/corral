@@ -989,9 +989,10 @@ irrelevant to it. Shown verbatim on the agent's card.
 ## Todo System (`todo/`, Design Only)
 
 `todo/SPEC.md` designs a multi-agent todo system that rides on corral: a watched
-`todos.md` whose items a long-lived dispatcher agent hands to worker agents
-through `corral_spawn_agent` / `corral_message_agent`, with task state carried as `#todo` / `#progress`
-/ `#done` / `#blocked` tags in the file. It lives in this repo for iteration
+`todo.txt` whose items a long-lived dispatcher agent hands to fresh worker agents
+through `corral_spawn_agent`, with task state carried in the todo.txt line itself
+(`x` completion plus `status:progress` / `status:blocked`, and `id:` / `target:` /
+`worker:` metadata a `corral-todo` CLI maintains). It lives in this repo for iteration
 speed but is a separate system: nothing in `corral`, `corral-gui` or `corrald`
 knows about it, and the planned `corral-todo` crate consumes `corral-core`
 (registry scan, prompt injection, launch) exactly as an outside program would.
