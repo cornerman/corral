@@ -273,6 +273,29 @@ except Exception as e:
     machine.log(f"e2e-pi: hidden spawn best-effort (cage headless UNVERIFIED): {e}")
 assert window_count() == before, "hidden spawn opened a visible window"
 
+# --- 8b. a non-canonical spawn cwd hits the same grant (SECURITY.md T20) ----
+# corrald canonicalizes the spawn `cwd` at the control-socket boundary, so a
+# `..` spelling of proj-c authorizes against the `proj-a -> proj-c` whitelist
+# line above and is audited under the real path. Before that fix the raw string
+# missed the whitelist (parked forever) and the operator's approval popup would
+# have shown a basename of whatever path the sender chose.
+stub_post_rule(json.dumps({
+    "match": "smoke:canon", "tool": "corral_spawn_agent",
+    "args": {"cwd": PROJ_C + "/../proj-c", "task": "hi-canon",
+             "window": "hidden"}}))
+acp(f"prompt {sock_a} {sid_a} 'smoke:canon'")
+deadline = _t.time() + 90
+audit = ""
+while _t.time() < deadline:
+    audit = try_user(f"cat {CORRAL}/state/audit.log")[1]
+    if "spawned" in audit and PROJ_C in audit:
+        break
+    _t.sleep(2)
+assert PROJ_C in audit, \
+    f"non-canonical spawn cwd never authorized under the canonical path: {audit}"
+assert "/../" not in audit, \
+    f"audit line kept the raw spelling instead of the canonical path: {audit}"
+
 # --- 3 (moved last, since a blocked question wedges A). requires_action via
 #     the question tool: the card must flip to requires_action. Done after all
 #     A-driven messaging because pi's question blocks the turn and abort does

@@ -460,13 +460,25 @@ whitelist:
 | `status`              | Meaning |
 |-----------------------|---------|
 | `accepted`            | Target resolved and the `(sender -> target)` pair is authorized; will route. |
-| `approval_needed`     | Target resolved but not yet authorized; held for the operator's approval (not awaited). |
+| `approval_needed`     | Target resolved but not yet authorized; held for the operator's approval (not awaited). Also the answer for **any** spawn `cwd` the caller may not reach, existing or not (see below). |
 | `recipient_not_found` | `targetSession` is not in the registry. |
-| `directory_not_known` | A `spawn`'s `cwd` is not an existing directory. |
+| `directory_not_known` | A `spawn`'s `cwd` is not an existing directory. Reported only when the caller may reach that directory (its own cwd, or a whitelisted pair). |
 | `malformed`           | Unparseable request, or a verb missing one of its fields. |
 
-The consumer authorizes the `(fromCwd -> target directory)` pair, resolves the
-target (injecting, spawning, or resuming as needed), and delivers the text with
+Whether an arbitrary path is a directory is a fact about the host filesystem
+outside the caller's sandbox, so the consumer MUST NOT let the ack disclose it to
+a caller that may not reach that directory: an unwhitelisted pair receives
+`approval_needed` whether the directory exists or not (SECURITY.md T19). Session
+verdicts stay precise for every caller, since the roster already publishes every
+`sessionId` and its liveness.
+
+A spawn `cwd` MUST be canonicalized before it is authorized, labeled, or acted
+on, so `..`, trailing slashes, and symlinks cannot make a whitelist grant or an
+operator's approval popup name a different directory than the one acted on
+(SECURITY.md T20).
+
+The consumer authorizes the `(fromCwd -> canonical target directory)` pair,
+resolves the target (injecting, spawning, or resuming as needed), and delivers the text with
 a provenance tag naming the sender directory and session. The receiver replies
 with `op: "message"`, `targetSession` = the sender's `fromSession`. The ack
 confirms receipt and resolution, not delivery; an `approval_needed` submission is

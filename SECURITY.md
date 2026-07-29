@@ -256,6 +256,16 @@ surface is the `~/.corral/input/` directory (write-only) and the socket
 `state/registry/`, and `audit.log`) is daemon-only and never on the sandbox
 allowlist, so it is unwritable by construction.
 
+The file's own grammar is also a tampering surface: a line is
+`<from> -> <target>`, and a directory name may legally contain `" -> "`, which
+would make the line ambiguous (`split_once` takes the first occurrence, so
+`"/a -> /evil" -> "/b"` parses back as the pair `(/a, /evil -> /b)` — a grant for
+a directory the operator never saw). Since the grammar has no escaping, corrald
+refuses such a path outright: `whitelist_add` errors rather than writing an
+ambiguous line, and `is_whitelisted` never matches a path containing the
+separator. A workdir named that way is therefore unwhitelistable (fail-closed;
+the operator can still allow it once per message).
+
 ### T6. Control-Socket Hijack
 
 With write access to `~/.corral/`, a compromised agent can unlink
@@ -438,6 +448,61 @@ acceptance (T3); any `{cwd}` substituted into argv is space/`-`/`@`-guarded; and
 launch runs an exec array (`setsid --fork <argv>`), never a shell, so no value
 can inject a shell command. `argv[0]` resolves via the operator's PATH, not the
 target cwd.
+
+### T19. Directory-Existence Oracle in the Synchronous Ack
+
+The ack answers a submission immediately, and one verdict used to depend on a
+filesystem fact outside the sender's sandbox: `directory_not_known` versus
+`approval_needed` told the sender whether an arbitrary host path is a directory.
+corrald evaluates that path unsandboxed, so a confined agent could walk
+`/home/*/clients/*` and read existence off the acks, learning nothing it was
+granted. Silent, too, since a non-routable verdict never reaches the operator.
+
+**Mitigation `[in place]`:** existence is disclosed only to a caller that may
+reach the directory — its own cwd, or a whitelisted pair (`mailbox::reachable`,
+the same predicate that redacts the `list` roster, so disclosure has one
+definition). An unreachable pair always hears `approval_needed`, whether or not
+the directory exists, so the ack carries no information about the host
+filesystem. Where trust already exists the precise verdict survives, so a typo or
+a deleted project dir stays debuggable.
+
+Session facts stay precise for everyone (`recipient_not_found`,
+`already_stopped`): `list_corral_agents` publishes every session id and its
+liveness to every caller by design, so withholding them would cost a diagnosable
+stale reply handle and buy nothing.
+
+**Accepted residue:** a submission whose target cannot be resolved is dropped at
+the boundary with a journal line naming sender and target, so the operator can
+see what went nowhere. The sender is not told — under the fire-and-forget
+contract it never learns whether delivery happened anyway.
+
+### T20. Non-Canonical Target Path (Approval-Label Spoofing)
+
+The sender's own directory is authenticated and canonical (T2), but the target
+came from agent-supplied JSON. An uncanonical spelling had three consequences.
+The operator's approval popup shows the target's **basename**, so
+`/tmp/x/../../home/me/prod` reads as `prod` while naming any directory the
+attacker likes: the operator approves what they read. "Allow always" then
+persisted that spelling, so the whitelist stopped being a relation over real
+directories. And `/x`, `/x/`, and a symlinked path counted as three distinct
+grants, so an approved pair kept re-prompting.
+
+**Mitigation `[in place]`:** the control socket authenticates the target exactly
+like the sender — `mailbox::authenticate` canonicalizes a spawn `cwd` race-safely
+from a directory fd (`curation::canonical_dir`), which both proves it is a
+directory and collapses `..`, trailing slashes, and symlinks. The result is
+stamped onto the queued submission as `target_cwd`, beside the authenticated
+`from_cwd`, and **nothing downstream re-derives it**: the whitelist key, the
+operator's label, the audit line, and the directory the agent starts in are all
+that one value. A
+session target inherits its cwd from the vetted registry, already canonical by
+location.
+
+This is also the structural fix for a duplicated-knowledge hazard: the ack path
+and the router used to resolve the target independently (one requiring an
+existing directory, the other not). There is now a single resolution, a single
+verdict table (`mailbox::classify`), and a router gate that reads only the two
+authenticated fields.
 
 ## Audit Trail
 

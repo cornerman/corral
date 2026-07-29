@@ -423,13 +423,25 @@ ratatui / iced, the daemon keeps ksni).
   Reads liveness from the registry (no socket watching — that is the board's
   job).
   - `src/mailbox.rs` — cross-session message types: parse a submitted message (a
-    `Target` is a directory or an exact session id), `classify` it into an `Ack`
-    (accepted / approval_needed / recipient_not_found / directory_not_known)
-    from resolved facts, add the `[from <dir> (session <id>)]`
+    `Target` is a directory or an exact session id), `authenticate` its target
+    into a canonical directory, `classify` the resolved `Facts` into an `Ack`
+    (accepted / approval_needed / recipient_not_found / directory_not_known /
+    already_stopped), add the `[from <dir> (session <id>)]`
     provenance/reply-handle tag, and read/append the `(sender -> target)`
-    whitelist. The whitelist is `classify`'s single authorization axis:
-    message, stop, hidden spawn and visible spawn all gate identically, since
-    the operator grants trust per directory pair. It also builds the read-only
+    whitelist. `authorize` is the one authorization step, run at the
+    control-socket boundary: it authenticates the target, reads the whitelist,
+    and returns the canonical `target_cwd` to stamp onto the `Submission` plus
+    the verdict to ack. Every later stage reads that stamped pair, so nothing
+    re-derives a directory and the ack cannot disagree with the router's gate
+    (SECURITY.md T20). `classify` is the single verdict table, shared by all
+    three verbs. The whitelist is its single **authorization** axis: message,
+    stop, hidden spawn and visible spawn all gate identically, since the operator
+    grants trust per directory pair. `reachable` is a second, weaker
+    **disclosure** axis (own dir or whitelisted pair) shared with the roster's
+    redaction: an unreachable caller hears `approval_needed` for any spawn `cwd`,
+    existing or not, so the ack is no host-filesystem existence oracle
+    (SECURITY.md T19). A path containing the whitelist separator `" -> "` is
+    refused rather than written as an ambiguous line (T5). It also builds the read-only
     capability roster (`build_roster` + `roster_json`): every session is a
     per-session entry addressable by `sessionId`; a reachable directory's entry
     adds `title` + `cwd` + `description`, an unreachable one hides all three,
@@ -438,15 +450,21 @@ ratatui / iced, the daemon keeps ksni).
     `$CORRAL_CONTROL_SOCKET`). Each connection carries a `{"submit":path}`
     envelope; corrald resolves the outbox file (`curation::resolve_submission`)
     to the authenticated `fromCwd` + content, then dispatches: a `{"op":"list"}`
-    roster query answered synchronously, else parse the message/stop, **force
-    `fromCwd` to the authenticated value**, find the recipient (vetted-registry
-    scan), ack the verdict, and (if routable) hand it to the router. Accepts are
+    roster query answered synchronously, else parse the submission, **force
+    `fromCwd` to the authenticated value**, run `mailbox::authorize` (one call
+    for every verb, `already_stopped` included), ack the verdict, and (if
+    routable) **stamp the canonical `target_cwd`** onto the submission before
+    handing it to the router. This is the sole place either directory of the
+    authorized pair is derived. Accepts are
     bounded and each read is timed out (slowloris/flood defense, T15). `serve`
     fails loud on bind error; `is_serving` is the singleton guard. Ack is
     synchronous; delivery + approval run later. Unit-tested.
   - `src/router.rs` — `Router`: routes agent-initiated messages (enqueued from
     the control socket) using a fresh registry scan as its whole view of who is
-    live and dormant. A directory target reuses a live agent over its socket or
+    live and dormant. Its gate is `is_whitelisted(from_cwd, target_cwd)` over the
+    two fields the boundary authenticated — it re-reads the whitelist every pass
+    (so an "allow always" or an out-of-band file edit takes effect) but never
+    re-resolves a directory. A directory target reuses a live agent over its socket or
     spawns one; a session target delivers to the live socket or resumes its
     record. A live socket that fails to connect (crashed session) falls back to
     spawn/resume — the daemon needs no dead-socket tracking. Delivery to a
@@ -702,7 +720,10 @@ tools, which submits over `~/.corral/corrald.sock`
 finds the recipient, and returns a synchronous ack: `recipient_not_found` (an
 unknown session) / `directory_not_known` (a spawn into a nonexistent dir) if
 there is nowhere to send, `approval_needed` if the
-`(sender-dir -> target-dir)` pair needs approval, else `accepted`. A connect
+`(sender-dir -> canonical-target-dir)` pair needs approval, else `accepted`. A
+nonexistent spawn dir is reported as such only to a caller that may reach it (own
+dir or whitelisted pair); anyone else hears `approval_needed` either way, so the
+ack never reveals whether a host path exists (SECURITY.md T19). A connect
 failure means corrald is down, so submission fails loud instead of queuing
 silently. Routable messages are then routed asynchronously: corrald authorizes
 the pair against the whitelist (or asks the operator on its tray menu — Allow
