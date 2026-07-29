@@ -71,10 +71,11 @@ Or, without NixOS, `cachix use corral`.
 
 ## Messaging
 
-Press `m` to message any agent. Agents can also message each other across
-sessions via the `corral_message_agent` tool; that path goes through `corrald`,
-which asks you to approve each new sender→recipient pair (Allow once / always /
-Deny) on a desktop notification mirrored to the tray.
+Press `m` to message any agent. Agents reach each other with one tool per verb —
+`corral_message_agent` (one exact session), `corral_spawn_agent` (a fresh agent
+in a directory), `corral_stop_agent`, `corral_list_agents` — all routed by
+`corrald`, which asks you to approve each new sender→recipient pair (Allow once /
+always / Deny) on a desktop notification mirrored to the tray.
 
 <p>
   <img src="docs/screenshot-message-approval.png" alt="message approval" width="300">

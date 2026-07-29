@@ -34,7 +34,7 @@ function buildRecord({ sessionId, title, socket, nowIso, hidden, model, pid, pid
     sessionId,
     title: title ?? null,
     label: "cursor",
-    // One-line kind description for the list_corral_agents roster peers read.
+    // One-line kind description for the corral_list_agents roster peers read.
     // Adapter-authored, not model output.
     description: "cursor: Cursor desktop IDE agent",
     socket,

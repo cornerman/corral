@@ -1,6 +1,15 @@
 # The Corral Announce Convention
 
-Convention v2 — 2026-07-16
+Convention v3 — 2026-07-26
+
+> v3 changes (Appendix A only, a hard break): every inter-agent submission now
+> carries an explicit `op` naming its verb — `message` (an exact session),
+> `spawn` (a fresh agent in a directory), `stop`, `list`. The old
+> `targetDir` + `forceNew` message form is gone: reaching "whoever works in a
+> directory" no longer exists, since a caller addresses a session it found via
+> `list` and spawns when it wants a new agent. `label` / `hidden` moved onto
+> `spawn`, where they are always meaningful. §2–§6 (records, sockets, ACP) are
+> unchanged from v2.
 
 > v2 changes (security hardening): records live **per-workdir** at
 > `<cwd>/.corral/registry/<sessionId>.json` with a per-session **pointer file**
@@ -404,40 +413,64 @@ directly. To submit, it **writes the request JSON to its own outbox**
   **where the file physically lives**, not from any field — so the sender's
   directory is proven (only that workdir's sandboxed agent could have written
   there), never self-reported. The consumer reads then deletes the file. The
-  same envelope carries a message, a `stop`, or a `list` request (below); the
-  request JSON is the outbox file's content.
+  same envelope carries any verb (below); the request JSON is the outbox file's
+  content.
 
-Request fields (the JSON written to the outbox file):
+Every request names its verb in an `op` field, and each verb requires only its
+own fields — so no field's meaning depends on another, and an adapter's tool for
+one verb has no parameter that applies only sometimes:
 
-| Field           | Type              | Meaning |
-|-----------------|-------------------|---------|
-| `id`            | string            | Unique message id (also the outbox filename stem). |
-| `fromSession`   | string            | Sender's `sessionId`, a reply handle so the receiver can answer this exact agent. |
-| `message`       | string            | The message text. |
-| `targetDir`     | string (one of)   | Deliver to whoever works in this directory (spawning one if none). |
-| `targetSession` | string (one of)   | Deliver to this exact session id (resuming it if dormant). Exactly one of `targetDir` / `targetSession` is set. |
-| `forceNew`      | boolean           | With `targetDir`: spawn a dedicated fresh agent instead of reusing one. An adapter's tool description SHOULD tell the caller to set it on the first contact of a new conversation, so a fresh conversation never intrudes on a session already in use; later turns address that agent by `targetSession`. |
-| `label`         | string (optional) | With `targetDir`: which agent kind to spawn (matched against a record's `label`). Omitted falls back to the directory's own kind; an unknown label fails loud. |
-| `hidden`        | boolean (optional)| Whether a spawn/resume this message triggers runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. Window placement only: it does not affect authorization, which keys on the `(sender -> target)` directory pair alone. Ignored when the target is already live. |
-| `createdAt`     | string (optional) | ISO-8601 creation time. Informational: no consumer reads it, so a producer without a date formatter MAY omit it. |
+| `op`      | Required fields              | Effect |
+|-----------|------------------------------|--------|
+| `message` | `targetSession`, `message`   | Deliver text to that exact session (resuming it if dormant). |
+| `spawn`   | `cwd`, `task`                | Start a **fresh** agent in that directory, with `task` as its first prompt. |
+| `stop`    | `targetSession`              | Kill that session's process (dormant, resumable). |
+| `list`    | —                            | Read-only roster query, answered synchronously. |
+
+Fields common to `message`, `spawn` and `stop`:
+
+| Field         | Type              | Meaning |
+|---------------|-------------------|---------|
+| `id`          | string            | Unique submission id (also the outbox filename stem). |
+| `fromSession` | string            | Sender's `sessionId`, a reply handle so the receiver can answer this exact agent. |
+| `createdAt`   | string (optional) | ISO-8601 creation time. Informational: no consumer reads it, so a producer without a date formatter MAY omit it. |
+
+Fields of `op: "message"`:
+
+| Field           | Type   | Meaning |
+|-----------------|--------|---------|
+| `targetSession` | string | The exact session id to reach. It is the only addressing form: a directory can hold zero, one, or several sessions, so "whoever works there" is ambiguous — a caller finds session ids with `list`. A dormant target is resumed with the text as its first prompt, keeping the window placement its own record declares (the sender does not choose it). |
+| `message`       | string | The message text. |
+
+Fields of `op: "spawn"`:
+
+| Field    | Type              | Meaning |
+|----------|-------------------|---------|
+| `cwd`    | string            | Directory the new agent works in (must exist). |
+| `task`   | string            | The first prompt, delivered at launch (the consumer prepends its own charter). |
+| `label`  | string (optional) | Which agent kind to start (matched against a record's `label`). Omitted falls back to the directory's own kind; an unknown label fails loud. |
+| `hidden` | boolean (optional)| Whether the new agent runs hidden (no window). Defaults `true`, so an uninvited agent never pops a window. Window placement only: it does not affect authorization, which keys on the `(sender -> target)` directory pair alone. |
+
+A `spawn` is always a new agent. Handing work to one that already runs is a
+`message` to its session id, so nothing needs a flag to choose between the two.
 
 Ack (one line, `{"status":"…"}`), computed synchronously from the registry and
 whitelist:
 
 | `status`              | Meaning |
 |-----------------------|---------|
-| `accepted`            | Recipient found and the `(sender -> target)` pair is authorized; will route. |
-| `approval_needed`     | Recipient found but not yet authorized; held for the operator's approval (not awaited). |
+| `accepted`            | Target resolved and the `(sender -> target)` pair is authorized; will route. |
+| `approval_needed`     | Target resolved but not yet authorized; held for the operator's approval (not awaited). |
 | `recipient_not_found` | `targetSession` is not in the registry. |
-| `directory_not_known` | `targetDir` is not an existing directory. |
-| `malformed`           | Unparseable request. |
+| `directory_not_known` | A `spawn`'s `cwd` is not an existing directory. |
+| `malformed`           | Unparseable request, or a verb missing one of its fields. |
 
 The consumer authorizes the `(fromCwd -> target directory)` pair, resolves the
-target (reusing, spawning, or resuming as needed), and injects the message with
+target (injecting, spawning, or resuming as needed), and delivers the text with
 a provenance tag naming the sender directory and session. The receiver replies
-by addressing `targetSession` = the sender's `fromSession`. The ack confirms
-receipt and resolution, not delivery; an `approval_needed` message is delivered
-after approval without a further ack.
+with `op: "message"`, `targetSession` = the sender's `fromSession`. The ack
+confirms receipt and resolution, not delivery; an `approval_needed` submission is
+routed after approval without a further ack.
 
 ### Roster query (`list`)
 
@@ -463,9 +496,9 @@ A roster entry never carries a session's activity: messaging is not reading
 the transcript. The `title` (which session, what task) is exactly what a caller
 needs to pick among several sessions in a trusted directory, so it rides the
 same reachability gate as `cwd` rather than staying hidden. A charter
-prepended to a freshly spawned agent's first prompt teaches it these two verbs
-(message + list) and the swarm discipline (confirm the task, escalate
-uncertainty up, stay event-driven).
+prepended to a freshly spawned agent's first prompt teaches it the four verbs
+and the swarm discipline (confirm the task, escalate uncertainty up, stay
+event-driven).
 
 ### Stop request (`stop`)
 
@@ -476,8 +509,8 @@ Over the same control socket, an agent MAY stop (kill) a peer session
 Stopping kills
 the target's process, so its record goes dormant and stays resumable — the same
 effect as the consumer's own close action, reached through the router. A stop
-targets an exact session only (`targetSession`); killing whoever-works-in-a-dir
-would be ambiguous, so there is no `targetDir` form.
+targets an exact session only; killing whoever-works-in-a-dir would be
+ambiguous, so there is no directory form.
 
 Authorization is identical to a message: the consumer gates the
 `(fromCwd -> target directory)` pair against its whitelist and asks the operator

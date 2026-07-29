@@ -97,7 +97,7 @@ Cursor versions. If messaging does not open a chat, set
 
 - **Agent-initiated messaging (send side) is not implemented.** This adapter only
   receives (corral -> Cursor). Unlike `corral-pi` / `corral-opencode` /
-  `corral-claude`, it does not yet register a `corral_message_agent` tool
+  `corral-pi` / `corral-opencode`, it does not yet register the send-side tools
   (Appendix A) letting the Cursor agent message other agents. Two candidate
   routes when picked up: an MCP stdio server auto-registered in
   `~/.cursor/mcp.json` (the robust, Cursor-documented path), or a small

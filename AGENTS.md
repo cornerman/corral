@@ -114,13 +114,13 @@ your terminal (pi, interactive TUI)              another terminal
     |  clears socket + unlinks on session_shutdown   |  m -> send prompt DIRECT (ungated,
     |                                                |       operator is trusted)
     |
-  corral_message_agent tool -> ~/.corral/corrald.sock ----+  corrald (daemon, ONE singleton)
-    (asks to message a target dir or session)            per submission (control.rs):
-    <- ack: accepted / approval_needed /                 parse, find recipient, ack, then
-       recipient_not_found / directory_not_known         enqueue to the router: authorize
-                                                         (whitelist + tray/notify popup),
-                                                         resolve dir/session (spawn/resume
-                                                         if needed), inject w/ provenance tag
+  corral_{message,spawn,stop}_agent tool -> ~/.corral/corrald.sock -+  corrald (ONE singleton)
+    (one verb each: message a session,                   per submission (control.rs):
+     spawn in a dir, stop a session)                     parse the op, find recipient, ack,
+    <- ack: accepted / approval_needed /                 then enqueue to the router:
+       recipient_not_found / directory_not_known          authorize (whitelist + tray/notify
+       / already_stopped                                  popup), resolve, then inject /
+                                                          spawn / resume / kill
 ```
 
 The operator's `m` and the agent-initiated path split on trust: the operator is
@@ -530,20 +530,23 @@ ratatui / iced, the daemon keeps ksni).
   on connect like state and model. Shown next to the model on every card's third
   row (`core::model::Agent::context_line`), pi only for now — other
   adapters have no equivalent introspection API surfaced today.
-  Serves multiple concurrent clients. Also registers a `corral_message_agent` tool
-  (`target_dir` or `target_session`, `message`, `force_new`, optional `label`,
-  optional `hidden` default true; the tool description instructs a first contact
-  by `target_dir` to pass `force_new`)
-  that submits a
-  cross-session message over `~/.corral/corrald.sock` (stamped with the
-  sender's `fromSession` as a reply handle) and reports corral's ack (accepted
-  / approval_needed / recipient_not_found / directory_not_known); a connect failure is
-  surfaced as "corrald not running" (fail loud, no silent queue). It also
-  registers `corral_stop_agent` (`target_session` only), which submits an
+  Serves multiple concurrent clients. Also registers the four agent-facing tools,
+  one verb each, so no parameter is conditionally meaningful:
+  `corral_message_agent` (`target_session`, `message`) submits an
+  `{"op":"message",…}` to one exact session over `~/.corral/corrald.sock`
+  (stamped with the sender's `fromSession` as a reply handle), reporting the ack
+  (accepted / approval_needed / recipient_not_found); a connect failure is
+  surfaced as "corrald not running" (fail loud, no silent queue).
+  `corral_spawn_agent` (`cwd`, `task`, optional `label`, optional
+  `window: "hidden"|"visible"` defaulting to hidden — a `StringEnum`, since a
+  `Type.Union` of literals breaks Google's tool API) submits an
+  `{"op":"spawn",…}` that always starts a fresh agent with `task` as its first
+  prompt (ack accepted / approval_needed / directory_not_known).
+  `corral_stop_agent` (`target_session` only) submits an
   `{"op":"stop",…}` line over the same socket to kill a peer's process (→
   dormant, resumable), gated exactly like a message and reporting the ack
-  (accepted / approval_needed / already_stopped / recipient_not_found). It also
-  registers `list_corral_agents` (no args), a read-only roster query
+  (accepted / approval_needed / already_stopped / recipient_not_found). And
+  `corral_list_agents` (no args), a read-only roster query
   (`{"op":"list"}` over the same socket) returning the capability picture:
   every session as a per-session entry (kind, sessionId, live) addressable by
   `target_session`, a reachable directory's entry adding title + cwd +
@@ -574,8 +577,8 @@ ratatui / iced, the daemon keeps ksni).
   (multi-session multiplexing is deferred) and, lacking a plugin-unload hook,
   clears the record's socket and unlinks on process exit/SIGINT/SIGTERM;
   best-effort, since corral's dead-socket sweep makes a missed teardown dormant
-  anyway. It registers the same `corral_message_agent` (with the `hidden` param),
-  `corral_stop_agent`, and `list_corral_agents` tools via opencode's
+  anyway. It registers the same four tools (`corral_message_agent`,
+  `corral_spawn_agent`, `corral_stop_agent`, `corral_list_agents`) via opencode's
   `tool` hook, and writes the same `description` record field. Untypechecked in this repo (no opencode toolchain here), so the
   plugin API shapes are probed defensively at runtime and flagged UNVERIFIED
   in-file. Install: symlink into `~/.config/opencode/plugin/` (global) or
@@ -671,12 +674,21 @@ agent without unhiding it. The one physics cost: reveal/hide loses any
 un-persisted mid-turn state (the transcript survives). `cage` ships via the
 flake; a hidden spawn with cage absent fails loud.
 
-The original driver: `corral_message_agent` `force_new` and dir-spawns route
-through corrald, which spawns the new agent **hidden by default**, so an
+The original driver: `corral_spawn_agent` routes through corrald, which starts
+the new agent **hidden by default** (`window: "visible"` asks otherwise), so an
 uninvited agent never pops a window — it shows as a hidden card the operator
 reveals on demand.
 
 ## Inter-Agent Messaging
+
+The agent-facing surface is four tools, one verb each — `corral_message_agent`
+(message one exact session), `corral_spawn_agent` (start a fresh agent in a
+directory), `corral_stop_agent`, `corral_list_agents` — mirrored 1:1 by the wire
+`op` (CONVENTION.md v3) and by `mailbox::Kind`. The split is why no parameter is
+conditionally meaningful: `label` and `window` exist only where a launch happens,
+and the old `force_new` flag is gone, since spawning *is* the fresh-agent verb.
+Reaching "whoever works in a directory" no longer exists as a concept: a caller
+finds session ids with `corral_list_agents` and addresses them exactly.
 
 The threat model, trust boundaries, and every risk/mitigation/accepted-risk are
 specified in [SECURITY.md](SECURITY.md); the hardening design behind them is
@@ -684,11 +696,12 @@ specified in [SECURITY.md](SECURITY.md); the hardening design behind them is
 This section describes the messaging mechanics.
 
 Sandboxed agents cannot reach each other's sockets (each is workdir-local), so
-the `corrald` daemon is the sole trusted cross-workdir router. An agent calls
-`corral_message_agent`, which submits the message over `~/.corral/corrald.sock`
+the `corrald` daemon is the sole trusted cross-workdir router. An agent calls one of the
+tools, which submits over `~/.corral/corrald.sock`
 (reachable because `~/.corral` is on the sandbox allowlist). corrald parses it,
-finds the recipient, and returns a synchronous ack: `recipient_not_found` /
-`directory_not_known` if there is nowhere to send, `approval_needed` if the
+finds the recipient, and returns a synchronous ack: `recipient_not_found` (an
+unknown session) / `directory_not_known` (a spawn into a nonexistent dir) if
+there is nowhere to send, `approval_needed` if the
 `(sender-dir -> target-dir)` pair needs approval, else `accepted`. A connect
 failure means corrald is down, so submission fails loud instead of queuing
 silently. Routable messages are then routed asynchronously: corrald authorizes
@@ -710,41 +723,37 @@ the operator to approve the operator. The board delivers `m` directly (live over
 the socket, dormant by resume-with-message). This is why the approval gate and
 the daemon boundary coincide.
 
-A message is addressed either by **directory** (`target_dir`: reach whoever
-works there, spawning one if none, or a dedicated one for `force_new`) or by
-**session id** (`target_session`: reach that exact agent, resuming it from its
-dormant record if not live). The convention the tool descriptions teach: the
-first contact of a new conversation targets a directory **with `force_new`**, so
-it gets its own dedicated agent rather than intruding on a session the operator
-or another conversation is already using; every later turn addresses that agent
-by `target_session`. Prose only — the wire default of `forceNew` stays false, so
-reaching whoever already works in a directory remains one flag away.
-When a `target_dir` message has to spawn a fresh
-agent, the optional `label` picks its kind (matched against a record's `label`,
-resolved from any directory so a kind seen anywhere can start here); omitted, it
-falls back to that directory's own record kind, and an unknown label fails loud
-instead of spawning an arbitrary kind. Session addressing is what makes a reply precise:
-the provenance tag carries the sender's session id as a reply handle, so the
-receiver answers with `corral_message_agent(target_session = ..)` and it lands on the
-agent that actually asked, never a sibling that happens to share the directory.
-Authorization is always keyed on the `(sender-dir -> target-dir)` pair (a
+A message is addressed by **session id** only (`target_session`: that exact
+agent, resumed from its dormant record if not live), which is what makes a reply
+precise: the provenance tag carries the sender's session id as a reply handle, so
+the receiver answers with `corral_message_agent(target_session = ..)` and it
+lands on the agent that actually asked, never a sibling that happens to share the
+directory. A conversation therefore starts with `corral_spawn_agent(cwd, task)` —
+a dedicated new agent, never one someone else is using — and continues by session
+id from the handle in the child's first message. Its optional `label` picks the
+kind (matched against a record's `label`, resolved from any directory so a kind
+seen anywhere can start here); omitted, it falls back to that directory's own
+record kind, and an unknown label fails loud instead of spawning an arbitrary
+kind. Authorization is always keyed on the `(sender-dir -> target-dir)` pair (a
 session target resolves to its cwd), since directories are the stable, human-
 meaningful unit. Fire-and-forget: no reply is auto-routed; the receiver sends a
 new message back using the reply handle.
 
-A spawn defaults **hidden**: the `hidden` param on `corral_message_agent`
-(default true) governs a spawn/resume the message triggers, so an uninvited
-agent never pops a window. It is purely a window-placement flag and plays no
-part in authorization: a whitelisted pair may spawn visibly without asking, and
-an unwhitelisted pair needs approval even for a hidden one. Approval keys on the
-directory pair alone, so a granted pair covers every action it can take.
+A spawn defaults **hidden**: `corral_spawn_agent`'s `window` param
+(`"hidden"` by default, `"visible"` on request) governs the new agent's window,
+so an uninvited agent never pops one up. It is purely window placement and plays
+no part in authorization: a whitelisted pair may spawn visibly without asking,
+and an unwhitelisted pair needs approval even for a hidden one. Approval keys on
+the directory pair alone, so a granted pair covers every action it can take. A
+resume triggered by a message inherits the placement its own record declares —
+the messager does not get to move another agent's window.
 A freshly spawned agent's first prompt is prefixed with a
-**charter** (ported from the subagents extension, adapted to corral's two
-verbs): confirm the task before working, communicate only through
-`corral_message_agent`, escalate uncertainty up, stay event-driven. A resume
-gets no charter (its transcript already carries context).
+**charter** (ported from the subagents extension, adapted to corral's verbs):
+confirm the task before working, communicate only through corral's tools,
+escalate uncertainty up, stay event-driven. A resume gets no charter (its
+transcript already carries context).
 
-Before messaging, an agent can survey the board with **`list_corral_agents`**, a
+Before messaging, an agent can survey the board with **`corral_list_agents`**, a
 read-only, ungated roster query (`{"op":"list","fromCwd":..}` over the control
 socket, served synchronously by `corrald` from `whitelist ∩ registry`). It
 returns the capability picture without leaking: every session is a per-session
@@ -771,7 +780,7 @@ target-dir)` whitelist authorizes it (a whitelisted pair kills straight through,
 an unwhitelisted pair prompts the operator, whose tray/notification reads "stop
 agent" so a kill is never mistaken for a message). Stopping a target that is
 already dormant or gone is a no-op success (`already_stopped`). There is no
-`target_dir` form — killing whoever-works-in-a-dir would be ambiguous. corrald
+directory form — killing whoever-works-in-a-dir would be ambiguous. corrald
 tracks no parentage, so any peer a caller can message it can stop; the operator
 remains the governor and kills any agent from the board (`d`).
 
@@ -855,7 +864,7 @@ irrelevant to it. Shown verbatim on the agent's card.
   pointers in `$HOME/.corral/input/registry/` (all created 0700; override with
   `$CORRAL_INPUT_REGISTRY` / `$CORRAL_SOCKET_DIR`). No TCP ports, no network
   exposure. Peer authentication relies on the directory permissions.
-- Inter-agent messaging: `corral_message_agent` submits over
+- Inter-agent messaging: the four `corral_*` tools submit over
   `$HOME/.corral/corrald.sock` (override `$CORRAL_CONTROL_SOCKET`), the daemon's
   control socket; no TCP, peer auth by directory permissions. corrald authorizes
   `(sender -> target)` dir pairs against `$HOME/.corral/whitelist` (override
@@ -917,13 +926,13 @@ irrelevant to it. Shown verbatim on the agent's card.
   `~/.corral/whitelist` and the next poll releases the pending message and
   delivers it (the file is re-read every tick). No auto-deny; the tray count
   shows what is waiting, and the tray stays the reliable interactive path.
-- Delivery policy when the target dir's agent is Running: v1 reuses it and lets
-  the extension queue the message as a follow-up (it can intrude on a
-  human-driven session; the provenance tag makes that visible). Alternatives
-  (never-inject-Running, always-new) are deferred until real use decides.
-- `force_new` targets the agent that appears after corral's spawn (a socket not
-  present before it); if several agents start in one dir at once the newcomer
-  is picked arbitrarily. Adequate for v1.
+- A message to a Running session is queued by that adapter as a follow-up, so it
+  can intrude on a human-driven turn (the provenance tag makes that visible). A
+  never-inject-while-Running policy is deferred until real use decides.
+- A spawn is fire-and-forget: corrald returns no session id, so the caller learns
+  its child's handle only from the child's own first message (the charter tells
+  it to send one). Waiting for a newcomer to announce would be an unbounded wait
+  with no way to tell two simultaneous starts apart.
 - Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
   socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
   to a global gitignore if the stray dir bothers you.
@@ -981,7 +990,7 @@ irrelevant to it. Shown verbatim on the agent's card.
 
 `todo/SPEC.md` designs a multi-agent todo system that rides on corral: a watched
 `todos.md` whose items a long-lived dispatcher agent hands to worker agents
-through `corral_message_agent`, with task state carried as `#todo` / `#progress`
+through `corral_spawn_agent` / `corral_message_agent`, with task state carried as `#todo` / `#progress`
 / `#done` / `#blocked` tags in the file. It lives in this repo for iteration
 speed but is a separate system: nothing in `corral`, `corral-gui` or `corrald`
 knows about it, and the planned `corral-todo` crate consumes `corral-core`
