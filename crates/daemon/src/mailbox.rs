@@ -1,62 +1,86 @@
-//! Agent-initiated cross-session messages. The `corral_message_agent` tool
-//! submits a message over the control socket (`corrald.sock`); corral is the
-//! trusted router that authorizes, resolves the target, and injects the
-//! message. Parsing, classification, and authorization are pure and
-//! unit-tested; the IO wrappers are thin.
+//! Agent-initiated cross-session submissions. Three tools submit over the
+//! control socket (`corrald.sock`) — `corral_message_agent`,
+//! `corral_spawn_agent`, `corral_stop_agent` — and corrald is the trusted router
+//! that authorizes, resolves the target, and performs the action. Parsing,
+//! classification, and authorization are pure and unit-tested; the IO wrappers
+//! are thin.
+//!
+//! One verb per tool, one `Kind` variant per verb: a submission can only carry
+//! the fields its verb uses, so no field's meaning depends on another (make
+//! illegal states unrepresentable). That is why no tool parameter is
+//! conditionally meaningful.
 
 use std::io::Write;
 use std::path::Path;
 
 use corral_core::discovery::RegistryEntry;
 
-/// Who a message is addressed to. A directory reaches whoever works there
-/// (spawning one if none); a session reaches exactly that agent (resuming it if
-/// dormant) and is what a precise reply uses, since a directory can hold zero,
-/// one, or several sessions over time.
+/// What a submission is authorized against: the directory pair is the
+/// authorization unit, so every verb resolves to one of these. A spawn targets
+/// a directory (nothing runs there yet); a message or a stop targets an exact
+/// session, which resolves through the registry to its directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Dir(String),
     Session(String),
 }
 
-/// What a routed item does to its target. A message is delivered (injected /
-/// spawned / resumed); a stop kills the target's live process, leaving a
-/// dormant, resumable record. Both share the queue, whitelist, and approval
-/// gate — the machinery is action-agnostic, so only `deliver` branches on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Action {
-    /// Deliver the message text to the target (the default routed item).
-    #[default]
-    Deliver,
-    /// Kill the target session's process (the `corral_stop_agent` tool).
-    Stop,
+/// The verb of a submission, one variant per agent-facing tool, each carrying
+/// exactly the fields that verb uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// `corral_message_agent`: deliver text to that exact session — injected
+    /// over its socket when live, else resumed with the text as its first
+    /// prompt (window placement inherited from the record, not chosen here).
+    Message { session: String, text: String },
+    /// `corral_spawn_agent`: start a **fresh** agent in `dir` carrying `task` as
+    /// its first prompt. `label` picks the harness kind (`None` = the kind that
+    /// dir already used). `hidden` is window placement only and plays no part in
+    /// authorization, which keys on the `(sender dir -> target dir)` whitelist
+    /// alone (see `classify`).
+    Spawn {
+        dir: String,
+        task: String,
+        label: Option<String>,
+        hidden: bool,
+    },
+    /// `corral_stop_agent`: kill that session's process, leaving a dormant,
+    /// resumable record. No body, no launch.
+    Stop { session: String },
 }
 
-/// One queued cross-session message.
+/// One queued cross-session submission: who sent it, and which verb.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Message {
+pub struct Submission {
     pub id: String,
     pub from_cwd: String,
     /// The sender's session id, so the receiver can reply to this exact agent.
     pub from_session: Option<String>,
-    pub target: Target,
-    pub message: String,
-    pub force_new: bool,
-    /// Agent kind to start if a `target_dir` message spawns a fresh agent
-    /// (matched against a registry record's `label`). `None` = caller did not
-    /// choose; the router falls back to the dir's own record.
-    pub label: Option<String>,
-    /// Whether a spawn/resume this message triggers runs hidden (no window).
-    /// Defaults true, so an uninvited agent never pops a window. Purely a
-    /// window-placement flag: it has no bearing on authorization, which keys on
-    /// the `(sender dir -> target dir)` whitelist alone (see `classify`).
-    pub hidden: bool,
-    /// Deliver the message, or stop (kill) the target. A `Stop` carries a
-    /// `Session` target, an empty body, and never a charter or spawn.
-    pub action: Action,
+    pub kind: Kind,
 }
 
-impl Message {
+impl Submission {
+    /// The directory-or-session this submission is addressed to; the single
+    /// authorization axis reads it (a session resolves to its cwd).
+    pub fn target(&self) -> Target {
+        match &self.kind {
+            Kind::Message { session, .. } | Kind::Stop { session } => {
+                Target::Session(session.clone())
+            }
+            Kind::Spawn { dir, .. } => Target::Dir(dir.clone()),
+        }
+    }
+
+    /// The text delivered to the target: a message's body or a spawn's task; a
+    /// stop delivers nothing.
+    pub fn body(&self) -> &str {
+        match &self.kind {
+            Kind::Message { text, .. } => text,
+            Kind::Spawn { task, .. } => task,
+            Kind::Stop { .. } => "",
+        }
+    }
+
     /// The delivered text: a provenance tag on its **own first line**, then the
     /// body verbatim to the end (security design T7). corrald builds the string,
     /// so nothing attacker-controlled can precede the first-line tag; the
@@ -71,7 +95,7 @@ impl Message {
             Some(sid) => format!("[from {from} (session {sid})]"),
             None => format!("[from {from}]"),
         };
-        format!("{tag}\n{}", self.message)
+        format!("{tag}\n{}", self.body())
     }
 
     /// Full human label for the target, built from the target's **resolved**
@@ -81,7 +105,7 @@ impl Message {
     /// where that agent works, which is the thing being approved. Used in the
     /// detail popup, the audit trail, and the router's status lines.
     pub fn target_label(&self, target_cwd: &str) -> String {
-        match &self.target {
+        match &self.target() {
             Target::Dir(_) => target_cwd.to_string(),
             Target::Session(s) => format!("{target_cwd} (session {s})"),
         }
@@ -92,7 +116,7 @@ impl Message {
     /// with the basenamed sender; a session target keeps its full id after it.
     pub fn target_label_short(&self, target_cwd: &str) -> String {
         let dir = basename(target_cwd);
-        match &self.target {
+        match &self.target() {
             Target::Dir(_) => dir.to_string(),
             Target::Session(s) => format!("{dir} (session {s})"),
         }
@@ -190,55 +214,43 @@ pub fn classify(target: &Target, target_cwd: Option<&str>, whitelisted: bool) ->
     }
 }
 
-/// Parse one mailbox JSON document. Requires `id`, `fromCwd`, `message`, and a
-/// target (`targetSession` wins over `targetDir`); `forceNew` defaults to
-/// false. Returns `None` on malformed JSON or a missing field.
-pub fn parse_message(text: &str) -> Option<Message> {
+/// Parse one submission JSON document. The `op` field names the verb
+/// (`message` / `spawn` / `stop`, CONVENTION.md v3) and each verb requires its
+/// own fields, so an unparseable combination cannot reach the router:
+///
+/// - `message`: `targetSession` + `message`
+/// - `spawn`: `cwd` + `task`, optional `label`, `hidden` defaulting to true
+///   (an uninvited agent never pops a window)
+/// - `stop`: `targetSession`
+///
+/// `id` is always required. `fromCwd` is authenticated by corrald from the
+/// outbox file's location and overwritten there, so the content field (if any)
+/// is not trusted. Returns `None` on malformed JSON, an unknown `op`, or a
+/// missing field.
+pub fn parse(text: &str) -> Option<Submission> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
-    let target = match s("targetSession") {
-        Some(sid) => Target::Session(sid),
-        None => Target::Dir(s("targetDir")?),
+    let kind = match v.get("op").and_then(|o| o.as_str())? {
+        "message" => Kind::Message {
+            session: s("targetSession")?,
+            text: s("message")?,
+        },
+        "spawn" => Kind::Spawn {
+            dir: s("cwd")?,
+            task: s("task")?,
+            label: s("label"),
+            hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(true),
+        },
+        "stop" => Kind::Stop {
+            session: s("targetSession")?,
+        },
+        _ => return None,
     };
-    Some(Message {
+    Some(Submission {
         id: s("id")?,
-        // `fromCwd` is authenticated by corrald from the outbox file location
-        // and overwritten there; the content field (if any) is not trusted.
         from_cwd: s("fromCwd").unwrap_or_default(),
         from_session: s("fromSession"),
-        target,
-        message: s("message")?,
-        force_new: v.get("forceNew").and_then(|x| x.as_bool()).unwrap_or(false),
-        label: s("label"),
-        hidden: v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(true),
-        action: Action::Deliver,
-    })
-}
-
-/// Parse a stop submission (`{"op":"stop","id":..,"fromCwd":..,"targetSession":..}`).
-/// A stop always targets an exact session (killing whoever-works-in-a-dir would
-/// be ambiguous), so it requires `targetSession` and ignores `targetDir`. The
-/// body is empty; a stop never spawns, and it authorizes exactly like a
-/// message (the whitelist decides). Returns `None` unless `op` is `"stop"` (so
-/// the caller falls through to a message).
-pub fn parse_stop(text: &str) -> Option<Message> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    if v.get("op").and_then(|o| o.as_str()) != Some("stop") {
-        return None;
-    }
-    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
-    Some(Message {
-        id: s("id")?,
-        // Authenticated + overwritten by corrald (outbox location); not trusted.
-        from_cwd: s("fromCwd").unwrap_or_default(),
-        from_session: s("fromSession"),
-        target: Target::Session(s("targetSession")?),
-        message: String::new(),
-        force_new: false,
-        label: None,
-        // A stop never spawns, so visibility is irrelevant.
-        hidden: false,
-        action: Action::Stop,
+        kind,
     })
 }
 
@@ -372,35 +384,36 @@ pub fn whitelist_add(file: &Path, from: &str, target: &str) -> std::io::Result<(
 mod tests {
     use super::*;
 
-    fn msg() -> Message {
-        Message {
+    fn spawn_sub() -> Submission {
+        Submission {
             id: "1".into(),
             from_cwd: "/a".into(),
             from_session: None,
-            target: Target::Dir("/b".into()),
-            message: "hi".into(),
-            force_new: false,
-            label: None,
-            hidden: true,
-            action: Action::Deliver,
+            kind: Kind::Spawn {
+                dir: "/b".into(),
+                task: "hi".into(),
+                label: None,
+                hidden: true,
+            },
         }
     }
 
     #[test]
-    fn parses_and_tags() {
-        let json = r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi"}"#;
-        let m = parse_message(json).unwrap();
-        assert_eq!(m, msg());
+    fn parses_a_spawn_and_tags_its_task() {
+        let json = r#"{"op":"spawn","id":"1","fromCwd":"/a","cwd":"/b","task":"hi"}"#;
+        let m = parse(json).unwrap();
+        assert_eq!(m, spawn_sub());
         assert_eq!(m.tagged(), "[from a]\nhi");
-        assert!(!m.force_new);
+        // A spawn targets the directory: nothing runs there to address yet.
+        assert_eq!(m.target(), Target::Dir("/b".into()));
     }
 
     #[test]
     fn targets_a_session_with_reply_handle() {
-        let json = r#"{"id":"1","fromCwd":"/a","fromSession":"sid-9",
+        let json = r#"{"op":"message","id":"1","fromCwd":"/a","fromSession":"sid-9",
             "targetSession":"sid-7","message":"hi"}"#;
-        let m = parse_message(json).unwrap();
-        assert_eq!(m.target, Target::Session("sid-7".into()));
+        let m = parse(json).unwrap();
+        assert_eq!(m.target(), Target::Session("sid-7".into()));
         // The resolved target dir stays visible beside the session id, in both
         // the full and the compact form (it is the authorization axis).
         assert_eq!(m.target_label("/work/proj"), "/work/proj (session sid-7)");
@@ -411,52 +424,63 @@ mod tests {
     }
 
     #[test]
-    fn parses_label_when_present_else_none() {
-        let with = parse_message(
-            r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","label":"opencode"}"#,
+    fn spawn_carries_label_and_window_placement() {
+        let with = parse(
+            r#"{"op":"spawn","id":"1","cwd":"/b","task":"hi","label":"opencode","hidden":false}"#,
         )
         .unwrap();
-        assert_eq!(with.label.as_deref(), Some("opencode"));
-        // Absent -> None (the msg() fixture has no label key).
-        let without =
-            parse_message(r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi"}"#).unwrap();
-        assert_eq!(without.label, None);
+        assert_eq!(
+            with.kind,
+            Kind::Spawn {
+                dir: "/b".into(),
+                task: "hi".into(),
+                label: Some("opencode".into()),
+                hidden: false,
+            }
+        );
+        // Omitted -> no kind chosen, and hidden (an uninvited window never pops).
+        let without = parse(r#"{"op":"spawn","id":"1","cwd":"/b","task":"hi"}"#).unwrap();
+        assert_eq!(without.kind, spawn_sub().kind);
     }
 
     #[test]
-    fn force_new_and_missing_fields() {
-        let m = parse_message(
-            r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","forceNew":true}"#,
-        )
-        .unwrap();
-        assert!(m.force_new);
-        // Missing both target forms -> no target -> reject.
+    fn each_verb_requires_its_own_fields() {
+        // A message needs a session and a body; a spawn needs a dir and a task;
+        // a stop needs a session. Nothing else parses, so no half-formed
+        // submission reaches the router.
+        assert_eq!(parse(r#"{"op":"message","id":"1","message":"hi"}"#), None);
         assert_eq!(
-            parse_message(r#"{"id":"1","fromCwd":"/a","message":"hi"}"#),
+            parse(r#"{"op":"message","id":"1","targetSession":"s"}"#),
             None
         );
-        assert_eq!(parse_message(r#"{"id":"1"}"#), None);
-        assert_eq!(parse_message("nope"), None);
+        assert_eq!(parse(r#"{"op":"spawn","id":"1","cwd":"/b"}"#), None);
+        assert_eq!(parse(r#"{"op":"spawn","id":"1","task":"hi"}"#), None);
+        assert_eq!(parse(r#"{"op":"stop","id":"1"}"#), None);
+        // A missing id, an unknown verb, or no verb at all: rejected.
+        assert_eq!(parse(r#"{"op":"stop","targetSession":"s"}"#), None);
+        assert_eq!(parse(r#"{"op":"nuke","id":"1"}"#), None);
+        assert_eq!(
+            parse(r#"{"id":"1","targetSession":"s","message":"hi"}"#),
+            None
+        );
+        assert_eq!(parse("nope"), None);
     }
 
     #[test]
-    fn parse_stop_requires_op_and_session() {
-        let m = parse_stop(
+    fn stop_targets_a_session_and_carries_no_body() {
+        let m = parse(
             r#"{"op":"stop","id":"1","fromCwd":"/a","fromSession":"s9","targetSession":"sid-7"}"#,
         )
         .unwrap();
-        assert_eq!(m.action, Action::Stop);
-        assert_eq!(m.target, Target::Session("sid-7".into()));
-        assert_eq!(m.from_session.as_deref(), Some("s9"));
-        assert!(m.message.is_empty(), "a stop carries no body");
-        // Not a stop line -> None, so the caller falls through to a message.
         assert_eq!(
-            parse_stop(r#"{"id":"1","fromCwd":"/a","targetSession":"x","message":"hi"}"#),
-            None
+            m.kind,
+            Kind::Stop {
+                session: "sid-7".into()
+            }
         );
-        // op:stop but no targetSession (a dir is not a valid stop target) -> None.
-        assert_eq!(parse_stop(r#"{"op":"stop","id":"1","fromCwd":"/a"}"#), None);
-        assert_eq!(parse_stop("nope"), None);
+        assert_eq!(m.target(), Target::Session("sid-7".into()));
+        assert_eq!(m.from_session.as_deref(), Some("s9"));
+        assert!(m.body().is_empty(), "a stop carries no body");
     }
 
     #[test]

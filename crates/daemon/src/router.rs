@@ -1,15 +1,16 @@
-//! Routing agent-initiated messages. Messages arrive over the control socket
+//! Routing agent-initiated submissions. They arrive over the control socket
 //! (`control.rs`) and are enqueued here; the `Router` owns the authorization
-//! decisions and the messages awaiting an operator decision. Pending approvals
-//! are held in a list, each resolved independently by id, so an un-approved
-//! message never blocks an authorized (or separately approved) one behind it.
-//! corrald is the trusted cross-workdir bridge, so the authorization gate lives
-//! here.
+//! decisions and the submissions awaiting an operator decision. Pending
+//! approvals are held in a list, each resolved independently by id, so an
+//! un-approved item never blocks an authorized (or separately approved) one
+//! behind it. corrald is the trusted cross-workdir bridge, so the authorization
+//! gate lives here.
 //!
-//! A message targets either a directory (reach whoever works there, spawning
-//! one if none) or an exact session id (reach precisely that agent, resuming it
-//! if dormant). Session targeting is what makes a reply land on the agent that
-//! actually asked, since a directory can hold zero, one, or several sessions.
+//! Three verbs (`mailbox::Kind`): message an exact session (resuming it if
+//! dormant), spawn a fresh agent in a directory, or stop a session. Session
+//! addressing is what makes a reply land on the agent that actually asked,
+//! since a directory can hold zero, one, or several sessions; a spawn names a
+//! directory because nothing runs there yet to address.
 //!
 //! Liveness comes straight from the registry: a record with a `socket` is
 //! live, one without is dormant. The daemon does not watch sockets (that is the
@@ -28,14 +29,14 @@ use corral_core::launch::{LaunchMode, Launcher};
 use corral_core::placement;
 use corral_core::prompt;
 
-use crate::mailbox::{is_whitelisted, whitelist_add, Action, Message, Target};
+use crate::mailbox::{is_whitelisted, whitelist_add, Kind, Submission, Target};
 
 /// Terminate a process by pid. The real path is `placement::kill_pid`; tests
 /// inject a recording stub so a unit test never kills a real process.
 type Kill = Box<dyn Fn(u32) -> Result<(), String> + Send>;
 
 /// The swarm charter, prepended to the first prompt of a freshly spawned
-/// agent (ported from the subagents extension, adapted to corral's two verbs
+/// agent (ported from the subagents extension, adapted to corral's verbs
 /// and its cross-box, sandboxed reality). It teaches a new agent that it is
 /// part of a swarm reachable only through corral, to confirm the task before
 /// working, to escalate uncertainty up, and to stay event-driven. The task
@@ -46,11 +47,13 @@ const CHARTER: &str = concat!(
     "do a task. You are sandboxed to your own directory and cannot see any other agent's\n",
     "screen, thinking, or transcript.\n",
     "\n",
-    "Your only channel to other agents is the corral_message_agent tool:\n",
-    "- corral_message_agent({target_session|target_dir, message, hidden?, force_new?, label?}):\n",
-    "  reach an exact agent by its session id (the reply handle in a message's\n",
-    "  [from <dir> (session <id>)] tag) or reach a directory. hidden defaults true.\n",
-    "- list_corral_agents(): see which agent kinds exist and which you may message.\n",
+    "Your only channel to other agents is corral's tools:\n",
+    "- corral_message_agent({target_session, message}): message one exact agent, named by\n",
+    "  the session id in a message's [from <dir> (session <id>)] reply handle.\n",
+    "- corral_spawn_agent({cwd, task, label?, window?}): start a fresh agent in a directory\n",
+    "  with that task as its first prompt.\n",
+    "- corral_list_agents(): see which sessions exist and which you may reach.\n",
+    "- corral_stop_agent({target_session}): stop an agent you no longer need.\n",
     "A message you receive is tagged with its sender's directory and session id; reply by\n",
     "calling corral_message_agent(target_session = that id). Delivery is fire-and-forget: a\n",
     "turn that ends without a corral_message_agent call tells the sender nothing.\n",
@@ -79,11 +82,11 @@ pub enum ApprovalAction {
     Deny,
 }
 
-/// A message awaiting an operator decision, with its resolved target directory
-/// (for the whitelist, which is keyed on dir pairs, and for every operator-
-/// facing label: the dir is what the approval actually grants).
+/// A submission awaiting an operator decision, with its resolved target
+/// directory (for the whitelist, which is keyed on dir pairs, and for every
+/// operator-facing label: the dir is what the approval actually grants).
 pub struct Pending {
-    pub msg: Message,
+    pub sub: Submission,
     pub target_cwd: String,
 }
 
@@ -91,14 +94,14 @@ pub struct Router {
     whitelist: PathBuf,
     /// Allow-once decisions for this daemon run (by message id).
     approved: HashSet<String>,
-    /// Messages accepted over the control socket, awaiting routing.
-    queue: VecDeque<Message>,
+    /// Submissions accepted over the control socket, awaiting routing.
+    queue: VecDeque<Submission>,
     /// Messages parked awaiting an operator decision. A list, not one slot, so
     /// an unapproved message never blocks the queue behind it: each pending
     /// item is resolved independently by id, and an authorized message still
     /// delivers while others wait for approval (the head-of-line-blocking fix).
     pending: Vec<Pending>,
-    /// How a `Stop` action kills its target's process (real: `kill_pid`).
+    /// How a `Stop` kills its target's process (real: `kill_pid`).
     kill: Kill,
 }
 
@@ -118,9 +121,9 @@ impl Router {
         }
     }
 
-    /// Accept a message from the control socket for routing on the next poll.
-    pub fn enqueue(&mut self, msg: Message) {
-        self.queue.push_back(msg);
+    /// Accept a submission from the control socket for routing on the next poll.
+    pub fn enqueue(&mut self, sub: Submission) {
+        self.queue.push_back(sub);
     }
 
     /// The first message awaiting an operator decision, if any (the tray shows
@@ -139,7 +142,7 @@ impl Router {
     /// A specific pending message by id, for surfacing details / auditing a
     /// decision that may target any pending item, not just the first.
     pub fn pending_by_id(&self, id: &str) -> Option<&Pending> {
-        self.pending.iter().find(|p| p.msg.id == id)
+        self.pending.iter().find(|p| p.sub.id == id)
     }
 
     /// Route the queue: deliver every whitelisted or already-approved message,
@@ -157,34 +160,34 @@ impl Router {
         while i < self.pending.len() {
             if is_whitelisted(
                 &self.whitelist,
-                &self.pending[i].msg.from_cwd,
+                &self.pending[i].sub.from_cwd,
                 &self.pending[i].target_cwd,
             ) {
                 let p = self.pending.remove(i);
-                self.approved.insert(p.msg.id.clone());
-                self.queue.push_back(p.msg);
+                self.approved.insert(p.sub.id.clone());
+                self.queue.push_back(p.sub);
             } else {
                 i += 1;
             }
         }
         let mut statuses = Vec::new();
-        while let Some(msg) = self.queue.pop_front() {
-            let Some(target_cwd) = target_cwd(&msg, entries) else {
+        while let Some(sub) = self.queue.pop_front() {
+            let Some(target_cwd) = target_cwd(&sub, entries) else {
                 // Resolvable at accept time but gone now (rare race). Drop it.
                 statuses.push("route: unknown target".to_string());
                 continue;
             };
-            let ok = self.approved.contains(&msg.id)
-                || is_whitelisted(&self.whitelist, &msg.from_cwd, &target_cwd);
+            let ok = self.approved.contains(&sub.id)
+                || is_whitelisted(&self.whitelist, &sub.from_cwd, &target_cwd);
             if !ok {
-                // Park for approval, then keep draining: an authorized message
+                // Park for approval, then keep draining: an authorized item
                 // behind this one must not wait on it.
-                if !self.pending.iter().any(|p| p.msg.id == msg.id) {
-                    self.pending.push(Pending { msg, target_cwd });
+                if !self.pending.iter().any(|p| p.sub.id == sub.id) {
+                    self.pending.push(Pending { sub, target_cwd });
                 }
                 continue;
             }
-            statuses.push(deliver(&msg, entries, launcher, self.kill.as_ref()));
+            statuses.push(deliver(&sub, entries, launcher, self.kill.as_ref()));
         }
         (!statuses.is_empty()).then(|| statuses.join("; "))
     }
@@ -193,20 +196,20 @@ impl Router {
     /// id (already resolved, or superseded) is a harmless no-op, so a late click
     /// on an old notification never disturbs another message.
     pub fn apply(&mut self, id: &str, action: ApprovalAction) -> std::io::Result<()> {
-        let Some(pos) = self.pending.iter().position(|p| p.msg.id == id) else {
+        let Some(pos) = self.pending.iter().position(|p| p.sub.id == id) else {
             return Ok(());
         };
         match action {
             ApprovalAction::AllowOnce => {
                 let p = self.pending.remove(pos);
-                self.approved.insert(p.msg.id.clone());
-                self.queue.push_back(p.msg);
+                self.approved.insert(p.sub.id.clone());
+                self.queue.push_back(p.sub);
             }
             ApprovalAction::AllowAlways => {
                 let p = self.pending.remove(pos);
-                whitelist_add(&self.whitelist, &p.msg.from_cwd, &p.target_cwd)?;
-                self.approved.insert(p.msg.id.clone());
-                self.queue.push_back(p.msg);
+                whitelist_add(&self.whitelist, &p.sub.from_cwd, &p.target_cwd)?;
+                self.approved.insert(p.sub.id.clone());
+                self.queue.push_back(p.sub);
             }
             ApprovalAction::Deny => {
                 self.pending.remove(pos);
@@ -216,20 +219,19 @@ impl Router {
     }
 }
 
-/// Perform one authorized routed item, returning a status line. A `Deliver`
-/// injects/spawns/resumes; a `Stop` kills the target's live process.
+/// Perform one authorized submission, one arm per verb, returning a status line.
 fn deliver(
-    msg: &Message,
+    sub: &Submission,
     entries: &[RegistryEntry],
     launcher: &dyn Launcher,
     kill: &dyn Fn(u32) -> Result<(), String>,
 ) -> String {
-    match msg.action {
-        Action::Stop => deliver_stop(msg, entries, kill),
-        Action::Deliver => match &msg.target {
-            Target::Dir(dir) => deliver_dir(msg, dir, entries, launcher),
-            Target::Session(sid) => deliver_session(msg, sid, entries, launcher),
-        },
+    match &sub.kind {
+        Kind::Stop { session } => deliver_stop(sub, session, entries, kill),
+        Kind::Message { session, .. } => deliver_session(sub, session, entries, launcher),
+        Kind::Spawn {
+            dir, label, hidden, ..
+        } => spawn(sub, dir, label.as_deref(), *hidden, entries, launcher),
     }
 }
 
@@ -239,14 +241,12 @@ fn deliver(
 /// target gone by routing time is a no-op, since the sender was already acked
 /// `accepted`/`already_stopped`.
 fn deliver_stop(
-    msg: &Message,
+    sub: &Submission,
+    sid: &str,
     entries: &[RegistryEntry],
     kill: &dyn Fn(u32) -> Result<(), String>,
 ) -> String {
-    let Target::Session(sid) = &msg.target else {
-        return "stop: target is not a session".into();
-    };
-    let Some(entry) = entries.iter().find(|e| &e.session_id == sid) else {
+    let Some(entry) = entries.iter().find(|e| e.session_id == sid) else {
         return format!("stop: session {sid} gone");
     };
     // The label names the dir the record physically lives in; unknown only if a
@@ -262,43 +262,37 @@ fn deliver_stop(
             sock.pid_namespace,
         ) {
             Some(host) => match kill(host) {
-                Ok(()) => format!("stopped {}", msg.target_label(&target_dir)),
+                Ok(()) => format!("stopped {}", sub.target_label(&target_dir)),
                 Err(e) => format!("stop kill: {e}"),
             },
             None => format!(
                 "stop: {} has no correlatable host pid",
-                msg.target_label(&target_dir)
+                sub.target_label(&target_dir)
             ),
         },
-        None => format!("stop: {} already dormant", msg.target_label(&target_dir)),
+        None => format!("stop: {} already dormant", sub.target_label(&target_dir)),
     }
 }
 
-/// Directory target: reuse a live agent in `dir` (over its socket), or spawn
-/// one carrying the message as its first prompt. `force_new` always spawns a
-/// dedicated agent. A live socket that fails to connect (crashed session) falls
-/// through to a spawn.
-fn deliver_dir(
-    msg: &Message,
+/// `corral_spawn_agent`: start a fresh agent in `dir` carrying the task as its
+/// first prompt. Always a new agent — talking to one that already runs there is
+/// `corral_message_agent`'s job (addressed by session id), so no flag chooses
+/// between the two.
+fn spawn(
+    sub: &Submission,
     dir: &str,
+    label: Option<&str>,
+    hidden: bool,
     entries: &[RegistryEntry],
     launcher: &dyn Launcher,
 ) -> String {
-    if !msg.force_new {
-        if let Some(sock) = live_socket_in_dir(entries, dir) {
-            if prompt::send_prompt(&sock, &msg.tagged()).is_ok() {
-                return format!("routed to {}", msg.target_label(dir));
-            }
-            // Socket present but dead: fall through and spawn a fresh agent.
-        }
-    }
     // The spawn command rides in a record; corral names no agent kind. A
     // caller-chosen `label` wins (resolved from any record of that kind, so it
     // works even where the kind never ran), else reuse any record for this dir.
     // A dir corral has never seen an agent in, with no label given, has no
     // known kind and cannot be spawned into. The record's launch mode (gui +
     // message flag) rides along so a GUI kind launches directly.
-    let (command, mut mode) = match msg.label.as_deref() {
+    let (command, mut mode) = match label {
         Some(label) => match spawn_command_for_label(entries, label) {
             Some(c) => c,
             None => return format!("route spawn: unknown label {label}"),
@@ -309,19 +303,19 @@ fn deliver_dir(
         },
     };
     // Spawns default hidden so an uninvited window never pops up; a caller that
-    // set hidden:false asked for a visible window. Window placement only: the
-    // whitelist alone authorized this message (control.rs classify).
-    mode.hidden = msg.hidden;
+    // asked for `window: "visible"` gets one. Window placement only: the
+    // whitelist alone authorized this submission (control.rs classify).
+    mode.hidden = hidden;
     // A fresh spawn is a brand-new agent that does not yet know it is part of a
     // swarm: prepend the charter so it confirms the task and communicates only
     // through corral. A resume (deliver_session) already has its transcript, so
     // it gets no charter.
-    let first_prompt = format!("{CHARTER}\n\n{}", msg.tagged());
+    let first_prompt = format!("{CHARTER}\n\n{}", sub.tagged());
     // Substitute `{cwd}` in the spawn template with the target dir (a fresh
     // spawn has no `{sessionId}`).
     let launch_command = approved_commands::denormalize(command, "", Some(dir));
     match launcher.launch(Path::new(dir), &launch_command, Some(&first_prompt), &mode) {
-        Ok(()) => format!("routed to {} (spawned)", msg.target_label(dir)),
+        Ok(()) => format!("routed to {} (spawned)", sub.target_label(dir)),
         Err(e) => format!("route spawn: {e}"),
     }
 }
@@ -355,7 +349,7 @@ fn spawn_command_for_label<'a>(
 /// resume it from its record with the message as its first prompt. A live
 /// socket that fails to connect (crashed) falls back to resume.
 fn deliver_session(
-    msg: &Message,
+    sub: &Submission,
     session_id: &str,
     entries: &[RegistryEntry],
     launcher: &dyn Launcher,
@@ -365,18 +359,20 @@ fn deliver_session(
     };
     let target_dir = entry.cwd.clone().unwrap_or_else(|| "?".into());
     if let Some(sock) = &entry.socket {
-        if prompt::send_prompt(sock, &msg.tagged()).is_ok() {
-            return format!("routed to {}", msg.target_label(&target_dir));
+        if prompt::send_prompt(sock, &sub.tagged()).is_ok() {
+            return format!("routed to {}", sub.target_label(&target_dir));
         }
         // Socket present but dead: fall through and resume from the record.
     }
     match (entry.cwd.clone(), entry.resume_argv()) {
         (Some(cwd), Some(command)) => {
-            let mut mode = entry.launch_mode();
-            // Resume honors the requested visibility, same rationale as dir spawn.
-            mode.hidden = msg.hidden;
-            match launcher.launch(Path::new(&cwd), &command, Some(&msg.tagged()), &mode) {
-                Ok(()) => format!("routed to {} (resumed)", msg.target_label(&target_dir)),
+            // A resume inherits the record's own window placement (its
+            // `hidden` flag rides in `launch_mode`): the session already has a
+            // placement the operator chose, and a messager does not get to
+            // change it.
+            let mode = entry.launch_mode();
+            match launcher.launch(Path::new(&cwd), &command, Some(&sub.tagged()), &mode) {
+                Ok(()) => format!("routed to {} (resumed)", sub.target_label(&target_dir)),
                 Err(e) => format!("route resume: {e}"),
             }
         }
@@ -384,19 +380,11 @@ fn deliver_session(
     }
 }
 
-/// The connectable socket of a live agent whose cwd is `dir`, if any.
-fn live_socket_in_dir(entries: &[RegistryEntry], dir: &str) -> Option<PathBuf> {
-    entries
-        .iter()
-        .find(|e| e.cwd.as_deref() == Some(dir) && e.socket.is_some())
-        .and_then(|e| e.socket.clone())
-}
-
-/// The target's working directory, for the dir-keyed whitelist. A dir target is
+/// The target's working directory, for the dir-keyed whitelist. A spawn's dir is
 /// its own cwd; a session target resolves through the registry. `None` means a
 /// session the daemon does not know about.
-fn target_cwd(msg: &Message, entries: &[RegistryEntry]) -> Option<String> {
-    match &msg.target {
+fn target_cwd(sub: &Submission, entries: &[RegistryEntry]) -> Option<String> {
+    match &sub.target() {
         Target::Dir(d) => Some(d.clone()),
         Target::Session(sid) => entries
             .iter()
@@ -474,23 +462,23 @@ mod tests {
         }
     }
 
-    fn stop_msg(id: &str, from: &str, sid: &str) -> Message {
-        mailbox::parse_stop(&format!(
+    fn stop_msg(id: &str, from: &str, sid: &str) -> Submission {
+        mailbox::parse(&format!(
             r#"{{"op":"stop","id":"{id}","fromCwd":"{from}","targetSession":"{sid}"}}"#
         ))
         .unwrap()
     }
 
-    fn dir_msg(id: &str, from: &str, target: &str) -> Message {
-        mailbox::parse_message(&format!(
-            r#"{{"id":"{id}","fromCwd":"{from}","targetDir":"{target}","message":"hi"}}"#
+    fn spawn_sub(id: &str, from: &str, target: &str) -> Submission {
+        mailbox::parse(&format!(
+            r#"{{"op":"spawn","id":"{id}","fromCwd":"{from}","cwd":"{target}","task":"hi"}}"#
         ))
         .unwrap()
     }
 
-    fn dir_msg_label(id: &str, from: &str, target: &str, label: &str) -> Message {
-        mailbox::parse_message(&format!(
-            r#"{{"id":"{id}","fromCwd":"{from}","targetDir":"{target}","message":"hi","label":"{label}"}}"#
+    fn spawn_sub_label(id: &str, from: &str, target: &str, label: &str) -> Submission {
+        mailbox::parse(&format!(
+            r#"{{"op":"spawn","id":"{id}","fromCwd":"{from}","cwd":"{target}","task":"hi","label":"{label}"}}"#
         ))
         .unwrap()
     }
@@ -569,12 +557,39 @@ mod tests {
     }
 
     #[test]
+    fn spawn_never_reuses_a_live_agent_in_that_dir() {
+        // A spawn is unconditionally a fresh agent: talking to one that already
+        // works there is corral_message_agent's job (by session id), so no live
+        // record in the dir can absorb a spawn.
+        let mut live = dir_record("/b");
+        live.socket = Some(PathBuf::from("/b/.corral/pi-1.sock"));
+        let launcher = StubLauncher::default();
+        deliver(&spawn_sub("1", "/a", "/b"), &[live], &launcher, &no_kill);
+        assert_eq!(launcher.spawns.get(), 1, "spawn is always a new agent");
+    }
+
+    #[test]
+    fn resume_inherits_the_record_window_placement() {
+        // A message to a dormant session resumes it as the operator last placed
+        // it (the record's own hidden flag); the messager has no say.
+        let mut rec = dormant("sid-7", "/b", "/s/sid-7.jsonl");
+        rec.hidden = true;
+        let sub = mailbox::parse(
+            r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
+        )
+        .unwrap();
+        let launcher = StubLauncher::default();
+        deliver(&sub, &[rec], &launcher, &no_kill);
+        assert_eq!(launcher.resumes.get(), 1);
+        assert!(launcher.last_hidden.get(), "a hidden session stays hidden");
+    }
+
+    #[test]
     fn dir_spawn_is_hidden_by_default() {
-        // A dir target with no live socket spawns a fresh agent; that spawn
-        // must be hidden so an uninvited window never pops up.
+        // A spawn defaults to no window, so an uninvited agent never pops one up.
         let entries = [dir_record("/b")];
         let launcher = StubLauncher::default();
-        deliver(&dir_msg("1", "/a", "/b"), &entries, &launcher, &no_kill);
+        deliver(&spawn_sub("1", "/a", "/b"), &entries, &launcher, &no_kill);
         assert_eq!(launcher.spawns.get(), 1);
         assert!(
             launcher.last_hidden.get(),
@@ -584,10 +599,10 @@ mod tests {
 
     #[test]
     fn visible_request_launches_unhidden() {
-        // A hidden:false message (authorized by the whitelist) spawns a
-        // visible window: the router honors the requested visibility.
-        let msg = mailbox::parse_message(
-            r#"{"id":"1","fromCwd":"/a","targetDir":"/b","message":"hi","hidden":false}"#,
+        // A spawn asking for a visible window (window:"visible" on the tool,
+        // hidden:false on the wire) gets one; the whitelist alone authorized it.
+        let msg = mailbox::parse(
+            r#"{"op":"spawn","id":"1","fromCwd":"/a","cwd":"/b","task":"hi","hidden":false}"#,
         )
         .unwrap();
         let entries = [dir_record("/b")];
@@ -604,11 +619,11 @@ mod tests {
     fn unauthorized_message_becomes_pending_without_spawning() {
         let tmp = tempfile::tempdir().unwrap();
         let mut r = Router::new(tmp.path().join("whitelist"));
-        r.enqueue(dir_msg("1", "/a", "/b"));
+        r.enqueue(spawn_sub("1", "/a", "/b"));
         let launcher = StubLauncher::default();
 
         assert!(r.poll(&[], &launcher).is_none());
-        assert_eq!(r.pending().map(|p| p.msg.id.as_str()), Some("1"));
+        assert_eq!(r.pending().map(|p| p.sub.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0, "no delivery before approval");
     }
 
@@ -621,7 +636,7 @@ mod tests {
         // /b has only pi; opencode was seen in another dir. The caller's label
         // must win over the dir's own kind.
         let entries = [dir_record("/b"), labeled_record("/c", "opencode")];
-        r.enqueue(dir_msg_label("1", "/a", "/b", "opencode"));
+        r.enqueue(spawn_sub_label("1", "/a", "/b", "opencode"));
         let launcher = StubLauncher::default();
         r.poll(&entries, &launcher);
         assert_eq!(launcher.spawns.get(), 1);
@@ -636,7 +651,7 @@ mod tests {
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
         let entries = [dir_record("/b")];
-        r.enqueue(dir_msg_label("1", "/a", "/b", "ghost"));
+        r.enqueue(spawn_sub_label("1", "/a", "/b", "ghost"));
         let launcher = StubLauncher::default();
         let status = r.poll(&entries, &launcher);
         assert_eq!(launcher.spawns.get(), 0);
@@ -649,7 +664,7 @@ mod tests {
         let whitelist = tmp.path().join("whitelist");
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
-        r.enqueue(dir_msg("1", "/a", "/b"));
+        r.enqueue(spawn_sub("1", "/a", "/b"));
         let launcher = StubLauncher::default();
         let entries = [dir_record("/b")];
 
@@ -676,12 +691,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let whitelist = tmp.path().join("whitelist");
         let mut r = Router::new(whitelist.clone());
-        r.enqueue(dir_msg("1", "/a", "/b"));
+        r.enqueue(spawn_sub("1", "/a", "/b"));
         let launcher = StubLauncher::default();
         let entries = [dir_record("/b")];
 
         r.poll(&entries, &launcher); // -> pending (not yet whitelisted)
-        assert_eq!(r.pending().map(|p| p.msg.id.as_str()), Some("1"));
+        assert_eq!(r.pending().map(|p| p.sub.id.as_str()), Some("1"));
         assert_eq!(launcher.spawns.get(), 0);
 
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
@@ -701,7 +716,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let whitelist = tmp.path().join("whitelist");
         let mut r = Router::new(whitelist.clone());
-        r.enqueue(dir_msg("1", "/a", "/b"));
+        r.enqueue(spawn_sub("1", "/a", "/b"));
         let launcher = StubLauncher::default();
         let entries = [dir_record("/b")];
 
@@ -718,7 +733,7 @@ mod tests {
     fn deny_drops_the_message() {
         let tmp = tempfile::tempdir().unwrap();
         let mut r = Router::new(tmp.path().join("whitelist"));
-        r.enqueue(dir_msg("1", "/a", "/b"));
+        r.enqueue(spawn_sub("1", "/a", "/b"));
         let launcher = StubLauncher::default();
 
         r.poll(&[], &launcher); // -> pending
@@ -735,8 +750,8 @@ mod tests {
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
         r.enqueue(
-            mailbox::parse_message(
-                r#"{"id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
+            mailbox::parse(
+                r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
             )
             .unwrap(),
         );
@@ -756,8 +771,8 @@ mod tests {
         // Whitelist an unrelated pair; the point is the session does not exist.
         let mut r = Router::new(whitelist);
         r.enqueue(
-            mailbox::parse_message(
-                r#"{"id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
+            mailbox::parse(
+                r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
             )
             .unwrap(),
         );
@@ -811,8 +826,8 @@ mod tests {
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
         let mut r = Router::new(whitelist);
         r.enqueue(
-            mailbox::parse_message(
-                r#"{"id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
+            mailbox::parse(
+                r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
             )
             .unwrap(),
         );
@@ -883,7 +898,7 @@ mod tests {
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
-        assert_eq!(r.pending().map(|p| p.msg.id.as_str()), Some("1"));
+        assert_eq!(r.pending().map(|p| p.sub.id.as_str()), Some("1"));
         assert!(killed.lock().unwrap().is_empty(), "no kill before approval");
         r.apply("1", ApprovalAction::AllowOnce).unwrap();
         r.poll(&entries, &launcher);
@@ -899,14 +914,14 @@ mod tests {
         mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap(); // B's pair only
         let mut r = Router::new(whitelist);
         let entries = [dir_record("/unlisted"), dir_record("/b")];
-        r.enqueue(dir_msg("A", "/a", "/unlisted")); // needs approval
-        r.enqueue(dir_msg("B", "/a", "/b")); // whitelisted
+        r.enqueue(spawn_sub("A", "/a", "/unlisted")); // needs approval
+        r.enqueue(spawn_sub("B", "/a", "/b")); // whitelisted
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
         assert_eq!(launcher.spawns.get(), 1, "B delivered despite A pending");
         assert_eq!(
-            r.pending().map(|p| p.msg.id.as_str()),
+            r.pending().map(|p| p.sub.id.as_str()),
             Some("A"),
             "A still parked for approval"
         );
@@ -919,12 +934,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut r = Router::new(tmp.path().join("whitelist"));
         let entries = [dir_record("/b"), dir_record("/c")];
-        r.enqueue(dir_msg("A", "/a", "/b"));
-        r.enqueue(dir_msg("B", "/a", "/c"));
+        r.enqueue(spawn_sub("A", "/a", "/b"));
+        r.enqueue(spawn_sub("B", "/a", "/c"));
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher);
-        let ids: Vec<&str> = r.pending_messages().map(|p| p.msg.id.as_str()).collect();
+        let ids: Vec<&str> = r.pending_messages().map(|p| p.sub.id.as_str()).collect();
         assert_eq!(ids, vec!["A", "B"], "both parked for approval");
         assert_eq!(launcher.spawns.get(), 0);
     }
@@ -936,8 +951,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut r = Router::new(tmp.path().join("whitelist"));
         let entries = [dir_record("/b"), dir_record("/c")];
-        r.enqueue(dir_msg("A", "/a", "/b"));
-        r.enqueue(dir_msg("B", "/a", "/c"));
+        r.enqueue(spawn_sub("A", "/a", "/b"));
+        r.enqueue(spawn_sub("B", "/a", "/c"));
         let launcher = StubLauncher::default();
 
         r.poll(&entries, &launcher); // A, B both pending
@@ -945,7 +960,7 @@ mod tests {
         r.poll(&entries, &launcher); // B delivers
         assert_eq!(launcher.spawns.get(), 1);
         assert_eq!(
-            r.pending().map(|p| p.msg.id.as_str()),
+            r.pending().map(|p| p.sub.id.as_str()),
             Some("A"),
             "A remains parked"
         );
@@ -958,12 +973,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut r = Router::new(tmp.path().join("whitelist"));
         let entries = [dir_record("/b")];
-        r.enqueue(dir_msg("A", "/a", "/b"));
+        r.enqueue(spawn_sub("A", "/a", "/b"));
         let launcher = StubLauncher::default();
         r.poll(&entries, &launcher);
         r.apply("ghost", ApprovalAction::AllowOnce).unwrap();
         assert_eq!(
-            r.pending().map(|p| p.msg.id.as_str()),
+            r.pending().map(|p| p.sub.id.as_str()),
             Some("A"),
             "A untouched"
         );

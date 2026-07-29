@@ -1,10 +1,11 @@
-//! The control socket: how a sandboxed agent submits a cross-session message.
+//! The control socket: how a sandboxed agent submits a cross-session action.
 //! corral binds `~/.corral/corrald.sock` (its `~/.corral` is on the agent
-//! sandbox allowlist, so the `corral_message_agent` tool can reach it). The
-//! flow per connection is a straight line: read one request line, parse it,
-//! find the recipient, ack the verdict, and (if routable) hand the message to
-//! the router. Submission thus fails loud when corral is down (the connect
-//! fails) instead of piling up a silent file queue.
+//! sandbox allowlist, so the `corral_*` tools can reach it). The flow per
+//! connection is a straight line: read one request line, parse the verb
+//! (`message` / `spawn` / `stop`, plus the synchronous `list`), find the
+//! recipient, ack the verdict, and (if routable) hand the submission to the
+//! router. Submission thus fails loud when corral is down (the connect fails)
+//! instead of piling up a silent file queue.
 //!
 //! The ack is synchronous and says only what is knowable at once (found /
 //! approval_needed / not-found); the actual delivery and the operator approval gate
@@ -20,7 +21,7 @@ use std::time::Duration;
 use corral_core::discovery::RegistryEntry;
 use corral_core::{curation, discovery};
 
-use crate::mailbox::{self, Ack, Message, Target};
+use crate::mailbox::{self, Ack, Kind, Submission, Target};
 
 /// Whether another daemon is already serving this socket. A successful connect
 /// proves a live listener; a connect failure means the socket is absent or
@@ -42,7 +43,7 @@ pub fn serve(
     socket: PathBuf,
     registry_dir: PathBuf,
     whitelist: PathBuf,
-    tx: Sender<Message>,
+    tx: Sender<Submission>,
 ) -> std::io::Result<()> {
     // Reclaim a stale socket from a crashed prior run, then bind. 0700 dir:
     // directory permissions are the only peer authentication.
@@ -89,7 +90,7 @@ const MAX_CONCURRENT: usize = 64;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One connection: read a request line, ack the verdict, enqueue if routable.
-fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<Message>) {
+fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<Submission>) {
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
     if reader.read_line(&mut line).is_err() {
@@ -121,39 +122,38 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
         let _ = writeln!(conn, "{}", mailbox::roster_json(&roster));
         return;
     }
-    // A stop submission (`op:"stop"`) kills a live session; gated like a
-    // message. Tried before parse_message, whose required `message` field a
-    // stop line lacks. `from_cwd` is forced to the authenticated value.
-    if let Some(mut msg) = mailbox::parse_stop(&content) {
-        msg.from_cwd = from_cwd;
-        handle_stop(&mut conn, msg, registry_dir, whitelist, tx);
-        return;
-    }
-    let Some(mut msg) = mailbox::parse_message(&content) else {
+    let Some(mut sub) = mailbox::parse(&content) else {
         let _ = ack(&mut conn, "malformed");
         return;
     };
-    msg.from_cwd = from_cwd; // authenticated, overrides any content fromCwd
+    sub.from_cwd = from_cwd; // authenticated, overrides any content fromCwd
+                             // A stop resolves differently: an already-dormant target is a no-op success
+                             // rather than a delivery, so it gets its own verdict path.
+    if matches!(sub.kind, Kind::Stop { .. }) {
+        handle_stop(&mut conn, sub, registry_dir, whitelist, tx);
+        return;
+    }
     let entries = discovery::scan_registry(registry_dir);
     // T2: the reply handle is checkable even though it is self-reported, because
     // the directory it must belong to is authenticated. A handle the registry
     // pins to another directory is a forgery, so refuse the whole message rather
     // than deliver a tag that misdirects the recipient's reply. A stop needs no
     // such check: it carries no tag and delivers no text.
-    if let Some(sid) = msg.from_session.as_deref() {
-        if mailbox::session_claims_other_dir(&entries, sid, &msg.from_cwd) {
+    if let Some(sid) = sub.from_session.as_deref() {
+        if mailbox::session_claims_other_dir(&entries, sid, &sub.from_cwd) {
             let _ = ack(&mut conn, "malformed");
             return;
         }
     }
-    let target_cwd = resolve(&msg.target, &entries);
+    let target = sub.target();
+    let target_cwd = resolve(&target, &entries);
     let whitelisted = target_cwd
         .as_deref()
-        .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
-    let verdict = mailbox::classify(&msg.target, target_cwd.as_deref(), whitelisted);
+        .is_some_and(|t| mailbox::is_whitelisted(whitelist, &sub.from_cwd, t));
+    let verdict = mailbox::classify(&target, target_cwd.as_deref(), whitelisted);
     let _ = ack(&mut conn, verdict.wire());
     if verdict.routable() {
-        let _ = tx.send(msg);
+        let _ = tx.send(sub);
     }
 }
 
@@ -163,12 +163,12 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<M
 /// record -> classify against the whitelist and route the kill on approval.
 fn handle_stop(
     conn: &mut UnixStream,
-    msg: Message,
+    sub: Submission,
     registry_dir: &Path,
     whitelist: &Path,
-    tx: &Sender<Message>,
+    tx: &Sender<Submission>,
 ) {
-    let Target::Session(sid) = &msg.target else {
+    let Kind::Stop { session: sid } = &sub.kind else {
         let _ = ack(conn, "malformed");
         return;
     };
@@ -183,13 +183,13 @@ fn handle_stop(
             let whitelisted = e
                 .cwd
                 .as_deref()
-                .is_some_and(|t| mailbox::is_whitelisted(whitelist, &msg.from_cwd, t));
-            mailbox::classify(&msg.target, e.cwd.as_deref(), whitelisted)
+                .is_some_and(|t| mailbox::is_whitelisted(whitelist, &sub.from_cwd, t));
+            mailbox::classify(&sub.target(), e.cwd.as_deref(), whitelisted)
         }
     };
     let _ = ack(conn, verdict.wire());
     if verdict.routable() {
-        let _ = tx.send(msg);
+        let _ = tx.send(sub);
     }
 }
 
@@ -298,7 +298,10 @@ mod tests {
         assert_eq!(ack, r#"{"status":"accepted"}"#);
         let routed = rx.recv().unwrap();
         assert_eq!(routed.id, "1");
-        assert_eq!(routed.action, mailbox::Action::Stop, "routed as a kill");
+        assert!(
+            matches!(routed.kind, mailbox::Kind::Stop { .. }),
+            "routed as a kill"
+        );
     }
 
     #[test]
@@ -360,7 +363,7 @@ mod tests {
             &socket,
             &from,
             &format!(
-                r#"{{"id":"1","fromCwd":"/a","fromSession":"sid-victim","targetDir":"{}","message":"hi"}}"#,
+                r#"{{"op":"spawn","id":"1","fromCwd":"/a","fromSession":"sid-victim","cwd":"{}","task":"hi"}}"#,
                 target.to_str().unwrap()
             ),
         );
@@ -384,7 +387,7 @@ mod tests {
             &socket,
             &from,
             &format!(
-                r#"{{"id":"1","fromCwd":"/a","fromSession":"not-curated-yet","targetDir":"{}","message":"hi"}}"#,
+                r#"{{"op":"spawn","id":"1","fromCwd":"/a","fromSession":"not-curated-yet","cwd":"{}","task":"hi"}}"#,
                 target.to_str().unwrap()
             ),
         );
@@ -420,7 +423,7 @@ mod tests {
         let ack = submit(
             &socket,
             &from,
-            r#"{"id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
+            r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"sid-7","message":"hi"}"#,
         );
         assert_eq!(ack, r#"{"status":"accepted"}"#);
         assert_eq!(rx.recv().unwrap().id, "1", "routable -> enqueued");
@@ -436,7 +439,7 @@ mod tests {
         let ack = submit(
             &socket,
             &from,
-            r#"{"id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
+            r#"{"op":"message","id":"1","fromCwd":"/a","targetSession":"ghost","message":"hi"}"#,
         );
         assert_eq!(ack, r#"{"status":"recipient_not_found"}"#);
         assert!(rx.try_recv().is_err(), "rejected -> not enqueued");
@@ -452,7 +455,7 @@ mod tests {
         let ack = submit(
             &socket,
             &from,
-            r#"{"id":"1","fromCwd":"/a","targetDir":"/no/such/dir","message":"hi"}"#,
+            r#"{"op":"spawn","id":"1","fromCwd":"/a","cwd":"/no/such/dir","task":"hi"}"#,
         );
         assert_eq!(ack, r#"{"status":"directory_not_known"}"#);
     }
@@ -468,7 +471,7 @@ mod tests {
         let ack = submit(
             &socket,
             &from,
-            &format!(r#"{{"id":"1","fromCwd":"/a","targetDir":"{dir}","message":"hi"}}"#),
+            &format!(r#"{{"op":"spawn","id":"1","fromCwd":"/a","cwd":"{dir}","task":"hi"}}"#),
         );
         assert_eq!(ack, r#"{"status":"approval_needed"}"#);
         assert_eq!(

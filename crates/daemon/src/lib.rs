@@ -166,14 +166,13 @@ pub fn run() {
         // at a time). Because each notification carries its own id and the
         // router resolves by id, approvals never block on ordering.
         for p in router.pending_messages() {
-            let msg = &p.msg;
-            if announced.insert(msg.id.clone()) {
+            let sub = &p.sub;
+            if announced.insert(sub.id.clone()) {
                 notifier.notify(
-                    msg.id.clone(),
-                    mailbox::basename(&msg.from_cwd),
-                    &msg.target_label_short(&p.target_cwd),
-                    &msg.message,
-                    msg.action,
+                    sub.id.clone(),
+                    mailbox::basename(&sub.from_cwd),
+                    &sub.target_label_short(&p.target_cwd),
+                    &sub.kind,
                     napp_tx.clone(),
                 );
             }
@@ -181,17 +180,18 @@ pub fn run() {
         // The tray reflects the first pending message (or clears when none),
         // updating only when that head changes.
         let head = router.pending().map(|p| {
-            let msg = &p.msg;
-            let from = mailbox::basename(&msg.from_cwd);
-            // A stop is destructive, so the operator must see it is a kill, not
-            // a message: the verb prefixes the tray label.
-            let verb = match msg.action {
-                mailbox::Action::Stop => "stop ",
-                mailbox::Action::Deliver => "",
+            let sub = &p.sub;
+            let from = mailbox::basename(&sub.from_cwd);
+            // The verb prefixes the tray label, so a kill or a new agent is
+            // never mistaken for a plain message.
+            let verb = match sub.kind {
+                mailbox::Kind::Stop { .. } => "stop ",
+                mailbox::Kind::Spawn { .. } => "spawn in ",
+                mailbox::Kind::Message { .. } => "",
             };
             (
-                msg.id.clone(),
-                format!("{from} → {verb}{}", msg.target_label_short(&p.target_cwd)),
+                sub.id.clone(),
+                format!("{from} → {verb}{}", sub.target_label_short(&p.target_cwd)),
             )
         });
         if head.as_ref().map(|(id, _)| id) != tray_shown.as_ref() {
@@ -201,7 +201,7 @@ pub fn run() {
         // Forget ids no longer pending, so a later re-submission re-notifies.
         let live: std::collections::HashSet<String> = router
             .pending_messages()
-            .map(|p| p.msg.id.clone())
+            .map(|p| p.sub.id.clone())
             .collect();
         announced.retain(|id| live.contains(id));
 
@@ -229,9 +229,9 @@ pub fn run() {
                 TrayCommand::ShowDetails(id) => {
                     if let Some(p) = router.pending_by_id(&id) {
                         notify::show_detail(
-                            p.msg.from_cwd.clone(),
-                            p.msg.target_label(&p.target_cwd),
-                            p.msg.message.clone(),
+                            p.sub.from_cwd.clone(),
+                            p.sub.target_label(&p.target_cwd),
+                            p.sub.body().to_string(),
                         );
                     }
                 }
@@ -263,8 +263,8 @@ fn apply_decision(
     let Some(line) = router.pending_by_id(id).map(|p| {
         format!(
             "message {action:?}: {} -> {}",
-            p.msg.from_cwd,
-            p.msg.target_label(&p.target_cwd)
+            p.sub.from_cwd,
+            p.sub.target_label(&p.target_cwd)
         )
     }) else {
         return;

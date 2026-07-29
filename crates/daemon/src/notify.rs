@@ -8,13 +8,13 @@ use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::thread;
 
-use crate::mailbox::Action;
+use crate::mailbox::Kind;
 use crate::router::ApprovalAction;
 
 /// Fire a notification for a pending approval; the chosen action comes back on
-/// a channel, tagged with the message id so a stale reply can be ignored.
-/// `action` distinguishes a message delivery from a destructive stop so the
-/// operator sees which they are approving. `from` and `target` arrive as
+/// a channel, tagged with the submission id so a stale reply can be ignored.
+/// The `kind` names the verb, so the operator sees whether they are approving a
+/// message, a new agent, or a destructive stop. `from` and `target` arrive as
 /// ready display labels (the caller owns how a target reads, since only it
 /// knows the resolved target directory behind a session id).
 pub trait ApprovalNotifier {
@@ -23,8 +23,7 @@ pub trait ApprovalNotifier {
         id: String,
         from: &str,
         target: &str,
-        message: &str,
-        action: Action,
+        kind: &Kind,
         tx: Sender<(String, ApprovalAction)>,
     );
 }
@@ -77,19 +76,23 @@ impl ApprovalNotifier for NotifySendNotifier {
         id: String,
         from: &str,
         target: &str,
-        message: &str,
-        action: Action,
+        kind: &Kind,
         tx: Sender<(String, ApprovalAction)>,
     ) {
-        // A stop has no body; say what it does so the operator sees the kill.
-        let (title, body) = match action {
-            Action::Stop => (
+        // One title per verb, and a body that says what the operator grants: a
+        // stop carries no text, so it spells out the kill instead.
+        let (title, body) = match kind {
+            Kind::Stop { .. } => (
                 "corral: stop agent",
                 format!("{from} → stop {target}\n(kill the agent, leaving it resumable)"),
             ),
-            Action::Deliver => (
+            Kind::Spawn { task, .. } => (
+                "corral: spawn agent",
+                format!("{from} → spawn in {target}\n{}", clip(task, 140)),
+            ),
+            Kind::Message { text, .. } => (
                 "corral: agent message",
-                format!("{from} → {target}\n{}", clip(message, 140)),
+                format!("{from} → {target}\n{}", clip(text, 140)),
             ),
         };
         thread::spawn(move || {
