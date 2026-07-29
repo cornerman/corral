@@ -35,16 +35,20 @@
  *                         prompt is open (permission.updated), cleared back to
  *                         running on permission.replied
  *
- * Registers one tool, corral_message_agent, that submits a cross-session
- * message over corral's control socket $HOME/.corral/corrald.sock (override
- * with $CORRAL_CONTROL_SOCKET) for corral to route; the agent never reaches
- * another session directly. Mirrors pi's tool exactly.
+ * Registers four tools, one verb each, that submit over corral's control socket
+ * $HOME/.corral/corrald.sock (override with $CORRAL_CONTROL_SOCKET) for corral
+ * to route; the agent never reaches another session directly:
+ *   corral_message_agent   message one exact session (target_session)
+ *   corral_spawn_agent     start a fresh agent in a directory with a task
+ *   corral_stop_agent      kill a session's process (dormant, resumable)
+ *   corral_list_agents     read-only roster of who exists and who is reachable
+ * Mirrors pi's tools exactly.
  *
  * VERIFICATION: the plugin API surface is typechecked against
  * @opencode-ai/plugin@1.16.2 (matching the installed opencode) — the `Plugin`
  * signature, the `client.session.list/prompt/abort` calls, and every
- * `event.type` string against the SDK `Event` union. The `corral_message_agent`
- * tool is defined with a plain JSON-schema `args` (not the zod-based `tool()`
+ * `event.type` string against the SDK `Event` union. The corral tools are
+ * defined with a plain JSON-schema `args` (not the zod-based `tool()`
  * helper) so the plugin needs no runtime import from @opencode-ai/plugin, which
  * is unresolvable from the nix store path this plugin loads from. That check found
  * tool activity arrives as the dedicated `tool.execute.before/after` plugin
@@ -525,7 +529,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 				title: activeTitle,
 				// Agent kind, so corral can label a dormant card (no socket to parse).
 				label: "opencode",
-				// One-line kind description for the list_corral_agents roster.
+				// One-line kind description for the corral_list_agents roster.
 				// Adapter-authored, not model output.
 				description: "opencode: terminal coding agent",
 				socket: socketPath ?? null,
@@ -688,116 +692,62 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		// an agent, and injects with a provenance tag. Sandboxed agents cannot reach
 		// each other directly, so this indirection is the only cross-session path.
 		//
-		// The tool is defined with a plain JSON-schema `args` (no zod / no `tool()`
+		// The tools are defined with plain JSON-schema `args` (no zod / no `tool()`
 		// wrapper) so the plugin needs no runtime import from @opencode-ai/plugin,
 		// which is unresolvable from the nix store path (see the import note above).
 		// opencode's plugin-tool loader accepts plain-object arg schemas directly.
-		// Caveat: that path advertises every arg as `required`; the descriptions
-		// tell the model to leave the unused addressing field empty, and execute()
-		// treats an empty string as absent, so exactly-one-of still holds.
+		// Caveat: that path advertises every arg as `required`, so an optional arg's
+		// description tells the model to leave it empty ("") and execute() treats an
+		// empty string as absent.
 		tool: {
 			corral_message_agent: {
 				description:
-					"Message another coding-agent session and hold a back-and-forth with it. Use it to " +
-					"ask a peer agent a question, hand off a subtask, or answer a message you received.\n\n" +
-					"Addressing — give EXACTLY ONE of:\n" +
-					"• target_session: reach one specific session by its id. This is how you REPLY: an " +
-					"incoming message is tagged '[from <dir> (session <id>)]', so pass that <id> " +
-					"as target_session and your answer lands on the exact agent that wrote to you (never a " +
-					"sibling in the same directory). A dormant session is resumed to receive it.\n" +
-					"• target_dir: reach whoever works in that directory (absolute path), starting a new " +
-					"agent there if none is running. On the FIRST contact of a new conversation, pass " +
-					"force_new: true so you get your own dedicated fresh agent instead of intruding on a " +
-					"session someone else is already using; afterwards keep talking to that same agent by " +
-					"target_session, using the reply handle in its message.\n\n" +
+					"Message one exact coding-agent session and hold a back-and-forth with it. Use it to " +
+					"ask a peer agent a question, hand off work to an agent that already runs, or answer a " +
+					"message you received.\n\n" +
+					"Addressing is always a session id: an incoming message is tagged " +
+					"'[from <dir> (session <id>)]', so pass that <id> as target_session and your answer " +
+					"lands on the exact agent that wrote to you (never a sibling in the same directory). " +
+					"corral_list_agents lists every session id you can address. A dormant session is " +
+					"resumed to receive the message. To start a NEW agent instead, use corral_spawn_agent.\n\n" +
 					"Replying is expected: delivery is one-way and fire-and-forget — corral does NOT route " +
 					"a response back automatically. If you asked something, wait for the other agent to " +
 					"message you back; if you received a message and a reply would help, send one to its " +
 					"session id. Every message is tagged with your identity so the recipient can reply to you.\n\n" +
 					"Gating: if the (your dir → target dir) pair is not whitelisted the operator must " +
 					"approve the message, so it is delivered only once they do. A whitelisted pair goes " +
-					"straight through. Approval keys on the directory pair alone — no parameter of this " +
-					"tool changes it.",
+					"straight through.",
 				args: {
 					target_session: {
 						type: "string",
 						description:
-							"Reach this exact session id (resuming it if dormant). Use it to REPLY: it is the " +
-							"<id> from the '[from <dir> (session <id>)]' tag on a message you received. " +
-							"Give EITHER this OR target_dir; leave the other one empty (\"\").",
-					},
-					target_dir: {
-						type: "string",
-						description:
-							"Absolute path: reach whoever works in this directory, starting a new agent there " +
-							"if none is live. Use it to start a conversation when you have no session id yet — then " +
-							"pass force_new: true, since a first contact should get its own fresh agent. " +
-							"Give EITHER this OR target_session; leave the other one empty (\"\").",
+							"The exact session id to reach (resumed if dormant). It is the <id> from the " +
+							"'[from <dir> (session <id>)]' tag on a message you received, or from corral_list_agents.",
 					},
 					message: {
 						type: "string",
 						description: "The message text to deliver to the other agent.",
 					},
-					force_new: {
-						type: "boolean",
-						description:
-							"With target_dir only: always start a dedicated fresh agent instead of reusing the " +
-							"one already working there. Pass true on a first contact, so you never intrude on a " +
-							"session another conversation (or the operator) is using. Pass false only when you " +
-							"deliberately want whoever is already working in that directory.",
-					},
-					label: {
-						type: "string",
-						description:
-							'With target_dir only: which agent kind to start if a fresh agent is spawned ' +
-							'(e.g. "pi", "opencode"). Defaults to the kind already used in that directory; ' +
-							'leave empty ("") to use the default.',
-					},
-					hidden: {
-						type: "boolean",
-						description:
-							"Whether a newly spawned agent runs hidden (alive and working, but no window). " +
-							"Defaults true, so an agent you summon never pops a window on the operator; they " +
-							"reveal it from the board. Set false to request a visible window. Window placement " +
-							"only: it does not affect whether the operator is asked to approve. Ignored when " +
-							"the target agent is already running.",
-					},
 				},
-				async execute(args: {
-					target_dir?: string;
-					target_session?: string;
-					message: string;
-					force_new?: boolean;
-					label?: string;
-					hidden?: boolean;
-				}) {
+				async execute(args: { target_session?: string; message: string }) {
 					const home = process.env.HOME;
 					const controlSocket =
 						process.env.CORRAL_CONTROL_SOCKET ??
 						(home ? path.join(home, ".corral", "corrald.sock") : undefined);
 					if (!controlSocket) return "corral: no HOME; cannot submit message";
-
-					const hasDir = typeof args.target_dir === "string" && args.target_dir.length > 0;
-					const hasSession = typeof args.target_session === "string" && args.target_session.length > 0;
-					if (hasDir === hasSession) {
-						return "corral_message_agent: give exactly one of target_dir or target_session";
+					if (typeof args.target_session !== "string" || args.target_session.length === 0) {
+						return "corral_message_agent: target_session is required";
 					}
 					const record: Record<string, unknown> = {
+						op: "message",
 						id: randomUUID(),
 						fromCwd: activeCwd,
 						// The sender's session id, so the recipient can reply to this exact agent.
 						fromSession: activeSessionId ?? "",
+						targetSession: args.target_session,
 						message: args.message,
-						forceNew: args.force_new ?? false,
 						createdAt: new Date().toISOString(),
 					};
-					if (hasDir) record.targetDir = args.target_dir;
-					else record.targetSession = args.target_session;
-					// Optional: which agent kind to spawn if target_dir has no live agent.
-					if (args.label) record.label = args.label;
-					// Spawn visibility (default hidden); a visible spawn is operator-gated.
-					if (typeof args.hidden === "boolean") record.hidden = args.hidden;
-					const dest = hasDir ? args.target_dir : `session ${args.target_session}`;
 					// A connect failure means corral is not running: fail loud rather
 					// than silently queue undelivered.
 					let status: string;
@@ -806,13 +756,85 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					} catch {
 						return `corral is not running (cannot reach ${controlSocket}); message not sent.`;
 					}
-					return describeAck(status, String(dest));
+					return describeAck(status, `session ${args.target_session}`);
 				},
 			},
-			// list_corral_agents: read-only capability roster. Ungated — any session
-			// is messageable (operator approval may be asked). Every session is a
-			// per-session entry by sessionId; corral hides an unreachable directory's
-			// title, cwd and description. Activity is never revealed.
+			// corral_spawn_agent: start a fresh agent in a directory with a task as
+			// its first prompt — the other verb, so neither tool needs a flag whose
+			// meaning depends on another parameter.
+			corral_spawn_agent: {
+				description:
+					"Start a NEW coding-agent session in a directory, with a task as its first prompt. Use " +
+					"it to hand work to a fresh agent (its own directory, its own transcript); to talk to an " +
+					"agent that already runs, use corral_message_agent with its session id.\n\n" +
+					"The new agent is always dedicated to you: corral never hands your task to a session " +
+					"someone else is already using. It starts with no window (see window), and its charter " +
+					"tells it to message you back first with its understanding of the task plus questions — " +
+					"that message carries its session id, which is how you keep talking to it.\n\n" +
+					"Fire-and-forget: END YOUR TURN after spawning. corral does not return the new session " +
+					"id here; you are re-woken when the agent messages you.\n\n" +
+					"Gating: if the (your dir → target dir) pair is not whitelisted the operator must " +
+					"approve the spawn, which then happens once they do.",
+				args: {
+					cwd: {
+						type: "string",
+						description: "Absolute path of the directory the new agent works in.",
+					},
+					task: {
+						type: "string",
+						description:
+							"The task, delivered as the new agent's first prompt. State it fully: the agent " +
+							"cannot see your screen, your transcript, or anything outside its own directory.",
+					},
+					label: {
+						type: "string",
+						description:
+							'Which agent kind to start (e.g. "pi", "opencode"), from corral_list_agents. ' +
+							'Leave empty ("") for the kind already used in that directory.',
+					},
+					window: {
+						type: "string",
+						description:
+							'Window placement: "hidden" (the default, and what an empty value means) keeps the ' +
+							"agent fully alive and working but with no window, so an agent you summon never pops " +
+							'one up on the operator; "visible" asks for a real window. Placement only: it does ' +
+							"not change whether approval is needed.",
+					},
+				},
+				async execute(args: { cwd?: string; task?: string; label?: string; window?: string }) {
+					const home = process.env.HOME;
+					const controlSocket =
+						process.env.CORRAL_CONTROL_SOCKET ??
+						(home ? path.join(home, ".corral", "corrald.sock") : undefined);
+					if (!controlSocket) return "corral: no HOME; cannot spawn agent";
+					if (typeof args.cwd !== "string" || args.cwd.length === 0) {
+						return "corral_spawn_agent: cwd is required";
+					}
+					if (typeof args.task !== "string" || args.task.length === 0) {
+						return "corral_spawn_agent: task is required";
+					}
+					const record: Record<string, unknown> = {
+						op: "spawn",
+						id: randomUUID(),
+						fromCwd: activeCwd,
+						fromSession: activeSessionId ?? "",
+						cwd: args.cwd,
+						task: args.task,
+						// The wire carries placement as a boolean; the tool exposes the two
+						// named states, so a caller never guesses which way the flag points.
+						hidden: args.window !== "visible",
+						createdAt: new Date().toISOString(),
+					};
+					if (args.label) record.label = args.label;
+					let status: string;
+					try {
+						status = await submitToCorral(controlSocket, activeCwd, record);
+					} catch {
+						return `corral is not running (cannot reach ${controlSocket}); agent not spawned.`;
+					}
+					return describeSpawnAck(status, args.cwd);
+				},
+			},
 			// corral_stop_agent: kill a peer session's process (it goes dormant and
 			// resumable). Gated exactly like corral_message_agent; an already-dormant
 			// target is a no-op success. target_session only (stopping is precise).
@@ -822,8 +844,8 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					"transcript survives and it can be resumed later). Use it to shut down an agent you " +
 					"spawned once its work is done, or to stop a runaway peer.\n\n" +
 					"Addressing: give target_session, the exact session id to stop (the <id> from a " +
-					"'[from <dir> (session <id>)]' provenance tag, or from list_corral_agents). There is no " +
-					"target_dir form — stopping is precise.\n\n" +
+					"'[from <dir> (session <id>)]' provenance tag, or from corral_list_agents). There is no " +
+					"directory form — stopping is precise.\n\n" +
 					"Gating: if the (your dir → target dir) pair is not whitelisted the operator must " +
 					"approve the stop. Stopping a session that is already dormant or gone succeeds as a " +
 					"no-op. Fire-and-forget: corral does not report back once the kill lands.",
@@ -832,7 +854,7 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 						type: "string",
 						description:
 							"The exact session id to stop (kill its process). Take it from a message's " +
-							"'[from <dir> (session <id>)]' tag or from list_corral_agents.",
+							"'[from <dir> (session <id>)]' tag or from corral_list_agents.",
 					},
 				},
 				async execute(args: { target_session?: string }) {
@@ -862,14 +884,19 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 					return describeStopAck(status, dest);
 				},
 			},
-			list_corral_agents: {
+			// corral_list_agents: read-only capability roster. Ungated — any session
+			// is messageable (operator approval may be asked). Every session is a
+			// per-session entry by sessionId; corral hides an unreachable directory's
+			// title, cwd and description. Activity is never revealed.
+			corral_list_agents: {
 				description:
 					"List the coding-agent sessions corral knows about, so you can choose whom to message " +
 					"or which kind to spawn. You can message any of them via target_session (the operator may " +
 					"be asked to approve if the directory pair is not whitelisted). Every session is an entry " +
 					"with kind, sessionId and live; a session in a directory you may reach also carries its " +
 					"title, cwd and description, an unreachable one hides all three. Use an entry's sessionId as " +
-					"target_session for corral_message_agent. Never reveals a session's activity.",
+					"target_session for corral_message_agent, and an entry's kind as the label for " +
+					"corral_spawn_agent. Never reveals a session's activity.",
 				args: {},
 				async execute() {
 					const home = process.env.HOME;
@@ -981,11 +1008,27 @@ function describeAck(status: string, dest: string): string {
 		case "approval_needed":
 			return `Submitted to ${dest}; approval needed, delivered once approved.`;
 		case "recipient_not_found":
-			return `Not sent: recipient not found (${dest}).`;
-		case "directory_not_known":
-			return `Not sent: directory not known (${dest}).`;
+			return `Not sent: no such session (${dest}). List sessions with corral_list_agents, or spawn a new agent with corral_spawn_agent.`;
 		case "malformed":
 			return "Not sent: corral rejected the message as malformed.";
+		default:
+			return `corral responded: ${status}.`;
+	}
+}
+
+// Turn corral's ack for a spawn into a message for the sending agent. Shares
+// the wire vocabulary with a message ack; `directory_not_known` is the spawn's
+// own failure (nowhere to start an agent).
+function describeSpawnAck(status: string, dir: string): string {
+	switch (status) {
+		case "accepted":
+			return `Spawn accepted by corral (in ${dir}); the new agent will message you with its session id.`;
+		case "approval_needed":
+			return `Spawn submitted (in ${dir}); operator approval needed, started once approved.`;
+		case "directory_not_known":
+			return `Not spawned: directory not known (${dir}).`;
+		case "malformed":
+			return "Not spawned: corral rejected the request as malformed.";
 		default:
 			return `corral responded: ${status}.`;
 	}
