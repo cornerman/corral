@@ -31,13 +31,12 @@ PORT = 6556
 
 # Built-in rules, checked after runtime rules. `match` is a substring of the
 # stringified last message. Tool rules drive pi's corral tools; the test
-# chooses agent behavior by the prompt it sends.
+# chooses agent behavior by the prompt it sends. A rule whose args need a
+# runtime value (a session id) is posted by the scenario instead.
 BUILTIN_RULES = [
     {"match": "smoke:ask", "tool": "question",
      "args": {"question": "Proceed?", "options": ["yes", "no"]}},
-    {"match": "smoke:msg-b", "tool": "corral_message_agent",
-     "args": {"target_dir": "/home/alice/proj-b", "message": "hello-from-a"}},
-    {"match": "smoke:list", "tool": "list_corral_agents", "args": {}},
+    {"match": "smoke:list", "tool": "corral_list_agents", "args": {}},
     {"match": "", "reply": "pong"},  # catch-all
 ]
 

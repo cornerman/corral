@@ -65,7 +65,8 @@ if announced:
     except Exception as e:
         machine.log(f"e2e-opencode: session/load best-effort skipped: {e}")
 
-    # Cross-kind: a pi session messages the opencode dir (whitelisted). corrald
+    # Cross-kind: a pi session messages the live opencode session by id
+    # (whitelisted, keyed on the resolved dir pair). corrald
     # routing is the hard part; the opencode turn that follows is best-effort.
     open_kitty(PROJ_A, "pi")
     pa = wait_records(lambda rs: any(r.get("socket") for r in records_with_label(rs, "pi")),
@@ -75,7 +76,7 @@ if announced:
     as_user(f"mkdir -p {CORRAL}/state; echo '{PROJ_A} -> {PROJ_O}' >> {CORRAL}/state/whitelist")
     stub_post_rule(json.dumps({
         "match": "smoke:msg-o", "tool": "corral_message_agent",
-        "args": {"target_dir": PROJ_O, "message": "cross-kind-hi"}}))
+        "args": {"target_session": sid_o, "message": "cross-kind-hi"}}))
     acp(f"prompt {sock_a} {sid_a} 'smoke:msg-o'")
     _t.sleep(20)
     machine.log("e2e-opencode: cross-kind delivery seen by stub: "

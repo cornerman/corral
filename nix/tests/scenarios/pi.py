@@ -30,7 +30,7 @@ def stub_saw(substr):
 
 
 def roster_agents():
-    # The capability roster corrald returns to a `list_corral_agents` tool
+    # The capability roster corrald returns to a `corral_list_agents` tool
     # call, parsed out of the stub's request log (the roster arrives as the
     # tool-result content of a role:"tool" message). `stub_saw` cannot be used
     # here: it runs json.dumps on the content, which backslash-escapes the
@@ -133,8 +133,11 @@ acp(f"state {sock_b} idle 30")
 assert stub_saw("operator-m-to-b"), "operator m to B not delivered"
 
 # --- 5. inter-agent message, gated then whitelisted ---------------------
-# A calls corral_message_agent(target_dir=proj-b). No whitelist -> held.
+# A messages B's session id (the only addressing form). No whitelist -> held.
 import time as _t
+stub_post_rule(json.dumps({
+    "match": "smoke:msg-b", "tool": "corral_message_agent",
+    "args": {"target_session": sid_b, "message": "hello-from-a"}}))
 acp(f"prompt {sock_a} {sid_a} 'smoke:msg-b'")
 _t.sleep(8)
 # Only a DELIVERED message carries the provenance tag; absence proves gating.
@@ -177,7 +180,7 @@ assert not stub_saw("[from proj-a"), \
 as_user("echo once > /tmp/notify-mode")
 stub_post_rule(json.dumps({
     "match": "smoke:again", "tool": "corral_message_agent",
-    "args": {"target_dir": PROJ_B, "message": "second-to-b"}}))
+    "args": {"target_session": sid_b, "message": "second-to-b"}}))
 acp(f"prompt {sock_a} {sid_a} 'smoke:again'")
 deadline = _t.time() + 90
 while _t.time() < deadline:
@@ -214,7 +217,7 @@ assert stub_saw("[from proj-a"), "provenance tag missing on delivery"
 
 # --- 6. roster + stop ---------------------------------------------------
 acp(f"prompt {sock_a} {sid_a} 'smoke:list'")
-acp(f"state {sock_a} idle 30")  # list_corral_agents executed without error
+acp(f"state {sock_a} idle 30")  # corral_list_agents executed without error
 # The roster reply (corrald's JSON, returned to the stub as the tool result)
 # now exposes the title for a reachable session. proj-a is its own dir, so its
 # own entry carries its title (the first-user-message fallback set in step 2).
@@ -240,7 +243,7 @@ wait_records(
 before = window_count()
 stub_post_rule(json.dumps({
     "match": "smoke:resume", "tool": "corral_message_agent",
-    "args": {"target_session": sid_b, "message": "wake-b", "hidden": True}}))
+    "args": {"target_session": sid_b, "message": "wake-b"}}))
 acp(f"prompt {sock_a} {sid_a} 'smoke:resume'")
 try:
     wait_records(
@@ -252,21 +255,20 @@ try:
 except Exception as e:
     machine.log(f"e2e-pi: hidden resume best-effort (cage headless UNVERIFIED): {e}")
 
-# --- 8. hidden force_new spawn in a fresh dir (best-effort, cage) --------
+# --- 8. hidden spawn in a fresh dir (best-effort, cage) ------------------
 PROJ_C = HOME + "/proj-c"
 as_user(f"mkdir -p {PROJ_C}")
 as_user(f"echo '{PROJ_A} -> {PROJ_C}' >> {WHITELIST}")
 stub_post_rule(json.dumps({
-    "match": "smoke:spawn", "tool": "corral_message_agent",
-    "args": {"target_dir": PROJ_C, "message": "hi-c",
-             "force_new": True, "hidden": True}}))
+    "match": "smoke:spawn", "tool": "corral_spawn_agent",
+    "args": {"cwd": PROJ_C, "task": "hi-c", "window": "hidden"}}))
 acp(f"prompt {sock_a} {sid_a} 'smoke:spawn'")
 try:
     wait_records(
         lambda rs: any("proj-c" in r.get("cwd", "") and r.get("hidden")
                        for r in rs),
         timeout=60, desc="hidden spawn in proj-c", diag=False)
-    machine.log("e2e-pi: hidden force_new spawn via corrald confirmed")
+    machine.log("e2e-pi: hidden spawn via corrald confirmed")
 except Exception as e:
     machine.log(f"e2e-pi: hidden spawn best-effort (cage headless UNVERIFIED): {e}")
 assert window_count() == before, "hidden spawn opened a visible window"

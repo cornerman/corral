@@ -48,7 +48,7 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
       pi/node/opencode closures granted). Once confined, flip the
       sandbox-negative checks in `scenarios/pi.py` from best-effort to hard
       asserts (cross-workdir read denied, sealed `state/registry` unwritable).
-- [ ] Hidden agents in the VM: hidden resume / hidden force_new spawn launch
+- [ ] Hidden agents in the VM: hidden resume / hidden spawn launch
       inside a headless `cage`, which did not come up under the VM's software
       GL. Get `cage` working headless in the test (or document the SW-GL
       limitation) and make sections 7-8 hard.

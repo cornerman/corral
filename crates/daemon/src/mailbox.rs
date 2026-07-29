@@ -150,7 +150,7 @@ pub enum Ack {
     ApprovalNeeded,
     /// A `target_session` that is not in the registry: nowhere to send.
     RecipientNotFound,
-    /// A `target_dir` that is not an existing directory: nowhere to spawn.
+    /// A spawn `cwd` that is not an existing directory: nowhere to spawn.
     DirectoryNotKnown,
     /// A `corral_stop_agent` target that is already dormant (or whose process
     /// is gone): stopping it is a no-op success, not an error. Synchronous and
