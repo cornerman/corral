@@ -1009,15 +1009,27 @@ irrelevant to it. Shown verbatim on the agent's card.
 
 ## Todo System (`todo/`, Design Only)
 
-`todo/SPEC.md` designs a multi-agent todo system that rides on corral: a watched
-`todo.txt` whose items a long-lived dispatcher agent hands to fresh worker agents
-through `corral_spawn_agent`, with task state carried in the todo.txt line itself
-(`x` completion plus `status:progress` / `status:blocked`, and `id:` / `target:` /
-`worker:` metadata a `corral-todo` CLI maintains). It lives in this repo for iteration
-speed but is a separate system: nothing in `corral`, `corral-gui` or `corrald`
-knows about it, and the planned `corral-todo` crate consumes `corral-core`
-(registry scan, prompt injection, launch) exactly as an outside program would.
-Orchestration stays out of corral per `VISION.md`. Not implemented yet.
+`todo/SPEC.md` (design) plus `todo/DISPATCHER.md` (the dispatcher agent's policy,
+symlinked as the live todo directory's `AGENTS.md`) design a multi-agent todo
+system that rides on corral: a watched `todo.txt` whose items a long-lived
+dispatcher agent hands to fresh worker agents through `corral_spawn_agent`, with
+task state carried in the todo.txt line itself (`x` completion plus
+`status:progress` / `status:blocked`, and `id:` / `target:` / `worker:` metadata a
+`corral-todo` CLI maintains). Nothing is implemented yet.
+
+It ships in two stages, and only the first is corral-neutral. **Stage 1** (the
+file, the `corral-todo` CLI, the `corral-todo watch` supervisor, the dispatcher
+policy) needs no corral change: the crate consumes `corral-core` (registry scan,
+prompt injection, launch) exactly as an outside program would, and orchestration
+stays out of corral per `VISION.md`. **Stage 2** is a board feature and does change
+corral: a **TODO column** fed by `todo.txt`, with the four state columns collapsed
+into a stacked `PROGRESS` plus `DONE/DORMANT`, a quick-add key, and card moves that
+write task state and wake the dispatcher. That is a deliberate operator amendment
+to the "board is a pure viewer of the registry" premise (still true for running
+agents), and it touches `core::model::Column::ALL` and therefore `core::nav`,
+`core::transition` and both shells' layout/hit-testing, for every agent. Two design
+questions are open there (the drop granularity inside `PROGRESS`, and whether the
+third column holds done tasks or only dormant records); see the spec.
 
 ## Development Setup
 
