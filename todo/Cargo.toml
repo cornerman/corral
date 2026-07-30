@@ -1,0 +1,18 @@
+# The todo system's one implementation of the todo.txt format: a pure core
+# (line parse/render, id coinage, state changes, wake decision) plus the
+# `corral-todo` CLI and its `watch` supervisor. Client of corral-core only;
+# nothing in corral, corral-gui or corrald depends on this crate.
+[package]
+name = "corral-todo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "todo.txt-backed task dispatch onto corral agents"
+
+[dependencies]
+corral-core = { path = "../crates/core" }
+# flock(2) for the exclusive file lock; already a workspace dependency.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

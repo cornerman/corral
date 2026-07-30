@@ -672,6 +672,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "corral-todo"
+version = "0.1.0"
+dependencies = [
+ "corral-core",
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "cosmic-text"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
