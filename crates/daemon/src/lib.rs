@@ -38,9 +38,46 @@ use crate::registrations::Registrar;
 use crate::router::{ApprovalAction, Router};
 use crate::tray::{Tray, TrayCommand};
 
-/// How often the loop routes queued messages and reflects pending state. A
-/// message accepted over the socket is delivered within this window.
-const TICK: Duration = Duration::from_millis(200);
+/// Safety net for changes that arrive without an event: an agent appearing or
+/// going dormant only writes its registry file, which nothing notifies us
+/// about. Everything else (socket message, tray click, notification button)
+/// wakes the loop immediately through the event channel, so this may be slow.
+///
+/// It used to be a flat 200ms poll, which cost 8.6% of a core at idle (0.15W,
+/// measured with powertop) because every tick re-scanned and re-parsed the
+/// whole registry twice whether or not anything had changed. Blocking on the
+/// event channel removes that and delivers messages sooner, not later.
+const IDLE_TICK: Duration = Duration::from_secs(1);
+
+/// Everything that can wake the loop. std has no channel select, so the three
+/// producer channels are funnelled into one by `relay`, and the loop blocks on
+/// that single receiver.
+enum Event {
+    /// A message submitted over the control socket. Boxed: it dwarfs the other
+    /// variants, which would otherwise pay for its size on every send.
+    Submitted(Box<mailbox::Submission>),
+    /// An approval decision from a desktop notification's buttons.
+    Decision(String, ApprovalAction),
+    /// A tray menu action.
+    Tray(TrayCommand),
+}
+
+/// Forward one producer channel into the single event channel. A relay thread
+/// parked in `recv` costs nothing (no timer, no wakeup), unlike the poll it
+/// replaces; it ends when its producer hangs up.
+fn relay<T: Send + 'static>(
+    rx: mpsc::Receiver<T>,
+    tx: mpsc::Sender<Event>,
+    wrap: impl Fn(T) -> Event + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        for item in rx {
+            if tx.send(wrap(item)).is_err() {
+                break; // loop gone; nothing left to wake
+            }
+        }
+    });
+}
 
 /// Run the daemon: bind the control socket (refusing if another instance owns
 /// it), then loop — curate the registry, route authorized messages, and
@@ -111,7 +148,16 @@ pub fn run() {
     // Decisions from the desktop notification's buttons, tagged with the
     // message id so a stale reply is ignored.
     let (napp_tx, napp_rx) = mpsc::channel::<(String, ApprovalAction)>();
-    let tray = Tray::start();
+    let (tray_tx, tray_rx) = mpsc::channel::<TrayCommand>();
+    let tray = Tray::start(tray_tx);
+
+    // The one channel the loop blocks on; every producer feeds it.
+    let (ev_tx, ev_rx) = mpsc::channel::<Event>();
+    relay(msg_rx, ev_tx.clone(), |m| Event::Submitted(Box::new(m)));
+    relay(napp_rx, ev_tx.clone(), |(id, action)| {
+        Event::Decision(id, action)
+    });
+    relay(tray_rx, ev_tx, Event::Tray);
     // Harness-registration approvals: the peer of the router's message
     // approvals (separate consent, separate store — H3).
     let mut registrar = Registrar::new(approved_commands_file.clone());
@@ -124,9 +170,52 @@ pub fn run() {
     let mut announced_reg: Option<String> = None;
 
     loop {
-        // Accept messages submitted over the control socket.
-        while let Ok(m) = msg_rx.try_recv() {
-            router.enqueue(m);
+        // Block until something actually happens, then drain the whole burst.
+        // On the timeout tick nothing arrives and only the periodic work below
+        // runs, which is what notices agents appearing or going dormant.
+        let woke = match ev_rx.recv_timeout(IDLE_TICK) {
+            Ok(ev) => Some(ev),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            // Every producer hung up: nothing can ever wake us again.
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        for ev in woke.into_iter().chain(ev_rx.try_iter()) {
+            match ev {
+                Event::Submitted(m) => router.enqueue(*m),
+                // Both surfaces are guarded on the pending id inside
+                // apply_decision, so a stale click cannot decide the wrong
+                // message.
+                Event::Decision(id, action) | Event::Tray(TrayCommand::Decide(id, action)) => {
+                    apply_decision(&mut router, &id, action, &audit_log)
+                }
+                Event::Tray(TrayCommand::DecideRegistration(label, approve)) => {
+                    if approve {
+                        match registrar.approve(&label) {
+                            Ok(true) => curator::audit(&audit_log, &format!("registered: {label}")),
+                            Ok(false) => {} // stale click; nothing pending
+                            Err(e) => eprintln!("corrald: register {label}: {e}"),
+                        }
+                    } else {
+                        registrar.deny(&label);
+                        curator::audit(&audit_log, &format!("registration denied: {label}"));
+                    }
+                    announced_reg = None; // re-evaluate what to surface below
+                }
+                Event::Tray(TrayCommand::ShowDetails(id)) => {
+                    if let Some(p) = router.pending_by_id(&id) {
+                        notify::show_detail(
+                            p.sub.from_cwd.clone(),
+                            p.sub.target_label(),
+                            p.sub.body().to_string(),
+                        );
+                    }
+                }
+                Event::Tray(TrayCommand::OpenBoard) => tray::open_board(),
+                Event::Tray(TrayCommand::Quit) => {
+                    eprintln!("corrald: quit");
+                    return;
+                }
+            }
         }
 
         // Curate the untrusted raw index into the vetted state/registry the
@@ -204,49 +293,6 @@ pub fn run() {
             .map(|p| p.sub.id.clone())
             .collect();
         announced.retain(|id| live.contains(id));
-
-        // Apply decisions from the tray and the notification. Both are guarded
-        // on the current pending id so a stale click cannot decide the wrong
-        // message.
-        while let Ok(cmd) = tray.commands.try_recv() {
-            match cmd {
-                TrayCommand::Decide(id, action) => {
-                    apply_decision(&mut router, &id, action, &audit_log)
-                }
-                TrayCommand::DecideRegistration(label, approve) => {
-                    if approve {
-                        match registrar.approve(&label) {
-                            Ok(true) => curator::audit(&audit_log, &format!("registered: {label}")),
-                            Ok(false) => {} // stale click; nothing pending
-                            Err(e) => eprintln!("corrald: register {label}: {e}"),
-                        }
-                    } else {
-                        registrar.deny(&label);
-                        curator::audit(&audit_log, &format!("registration denied: {label}"));
-                    }
-                    announced_reg = None; // re-evaluate what to surface next tick
-                }
-                TrayCommand::ShowDetails(id) => {
-                    if let Some(p) = router.pending_by_id(&id) {
-                        notify::show_detail(
-                            p.sub.from_cwd.clone(),
-                            p.sub.target_label(),
-                            p.sub.body().to_string(),
-                        );
-                    }
-                }
-                TrayCommand::OpenBoard => tray::open_board(),
-                TrayCommand::Quit => {
-                    eprintln!("corrald: quit");
-                    return;
-                }
-            }
-        }
-        while let Ok((id, action)) = napp_rx.try_recv() {
-            apply_decision(&mut router, &id, action, &audit_log);
-        }
-
-        std::thread::sleep(TICK);
     }
 }
 
