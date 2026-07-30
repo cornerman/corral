@@ -142,3 +142,16 @@ Lifecycle is deployment glue, not code here. Run `corral-todo watch` from a
 systemd user service with restart-on-failure, the same way `corrald` runs. The
 watcher is a separate process from `corrald` on purpose: a todo.txt parse failure
 or a stuck lock must not take down messaging for every agent on the host.
+
+**A service unit needs two env vars that your login shell has and it does not:**
+
+```ini
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=CORRAL_TERMINAL=kitty -e
+```
+
+A hidden dispatcher is `cage` hosting a terminal hosting the agent, so a terminal
+is still resolved (`xdg-terminal-exec`, else `$CORRAL_TERMINAL`, else `$TERMINAL`)
+and `cage` still needs to reach your compositor. Without them every wake fails
+with `no terminal found` and is retried on the next tick — loudly, in the journal,
+but nothing gets dispatched. This is how the VM e2e scenario first failed.

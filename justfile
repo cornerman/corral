@@ -34,6 +34,10 @@ e2e:
       nix build -L .#checks.x86_64-linux.$s || exit 1; \
     done
 
+# e2e-todo (the todo system's loop) is deliberately NOT in the list above: it has
+# never completed green, so it would mask the harness scenarios' signal. Run it on
+# its own with `just e2e-one e2e-todo` -- see TODO.md.
+
 # Run one VM e2e scenario, e.g. `just e2e-one e2e-pi`
 e2e-one SCENARIO:
     nix build .#checks.x86_64-linux.{{SCENARIO}} -L

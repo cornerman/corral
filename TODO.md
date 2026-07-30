@@ -265,3 +265,63 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
         decide over the control socket) plus a `corrald approve <id>` CLI. Not
         worth it on its own — the tray is good UX and fails gracefully to the
         whitelist file already.
+
+## Todo System (`todo/`, stage 1 shipped 2026-07-30)
+
+Stage 1 is implemented and unit-green (73 crate tests, clippy clean, in the flake
+package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
+`todo/README.md`. What remains, most load-bearing first.
+
+1. **No real model has ever run the dispatcher loop.** Every test uses either a
+   fake `Launcher` or the scripted stub LLM, so the one property the system's
+   convergence depends on is unverified: **the dispatcher must write nothing to
+   `todo.txt` when nothing needs changing.** If it writes anyway, the fingerprint
+   advances, the watcher wakes it again, and the loop burns tokens indefinitely.
+   Nothing in the code can prevent this — it is `DISPATCHER.md`'s job — so it
+   needs a live run: `corral-todo init ~/todos`, one deliberately undispatchable
+   line, `corral-todo watch --dir ~/todos --interval 5 -- pi`, then read the wake
+   log. Different fingerprints in a row = not converging. Silence = settled.
+   The wake log exists precisely to make this countable.
+2. **`e2e-todo` has never completed green** (`nix/tests/scenarios/todo.py`, wired
+   as `checks.e2e-todo`; deliberately NOT in the CI matrix yet). Sections 1-4
+   pass in a real VM: `init` writes `DISPATCHER.md` and no `AGENTS.md`, prints
+   rather than writes the whitelist lines, `list` sorts `(A)` before `(C)`, and
+   `watch` refuses a directory with no policy. Section 5 then failed with
+   `no terminal found`, because a hidden *terminal* agent is cage hosting a
+   terminal hosting pi and a systemd user unit has no `$TERMINAL`. Fixed by
+   passing `CORRAL_TERMINAL='kitty -e'` — **UNVERIFIED**, and sections 6-10
+   (inject reuses the session, fingerprint uniqueness, dispatch fan-out to a
+   worker, no windows mapped, settling) have never executed. Next run:
+   `just e2e-one e2e-todo` (~10 min). Add it to `.github/workflows/ci.yml`'s
+   matrix only once green.
+3. **The scenario cannot test policy, only plumbing.** The stub LLM is a rule
+   table, so `e2e-todo` drives `corral_spawn_agent` directly rather than letting
+   a dispatcher decide. It therefore proves the wake chain and the fan-out, and
+   can never prove item 1. Do not let a green `e2e-todo` be mistaken for a
+   validated dispatcher.
+4. **No systemd user service ships.** Lifecycle is glue in `~/nixos` per
+   AGENTS.md. Blocked on item 1 proving the command line, and it must carry the
+   two env vars in `todo/README.md` ("Running It As A Service") or every wake
+   fails.
+5. **Nothing supervises a worker that stops without reporting** (accepted MVP
+   limit, `todo/SPEC.md`). Its item sits at `status:progress` until a human looks.
+   `target:` and `worker:` are recorded so a liveness sweep is cheap when wanted:
+   compare `worker:` against the registry and return the item to open.
+6. **The dispatcher's own failure modes are unmapped.** Predicted, in order of
+   suspicion: it never records `worker:` because it does not recognise a charter
+   handshake as one; it answers the handshake but the worker never reports (silence
+   looks like success under fire-and-forget); it closes the item on the handshake
+   rather than on the report. Each is a `DISPATCHER.md` wording fix, findable only
+   by item 1.
+7. **Stage 2 (the board TODO column) is unstarted and has two open design
+   questions** — the drop granularity inside a stacked `PROGRESS`, and whether the
+   third column holds done tasks or only dormant records. Both in
+   `todo/SPEC.md`'s Open Questions. It changes `core::model::Column::ALL` and so
+   `core::nav`, `core::transition` and both shells, for every agent, and is a
+   deliberate amendment to the "board is a pure viewer" premise. Resolve the two
+   questions before writing a plan.
+8. **Smaller, deferred deliberately.** A mechanical sender in `corral-todo` (the
+   outbox-submit path is specified in `todo/SPEC.md` if ever wanted; the MVP
+   leaves all sending to the dispatcher's tools). Whitespace and blank lines are
+   lost on first write (`todo/SPEC.md` known limits). `list` has no `--json`, so
+   the dispatcher parses columns.

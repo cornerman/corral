@@ -1,5 +1,7 @@
-# VM e2e smoke tests. Four flake checks, one per harness, all on the shared
-# base VM (base.nix). See docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md.
+# VM e2e smoke tests. Five flake checks on the shared base VM (base.nix): one per
+# harness, plus `e2e-todo` for the todo system's wake + dispatch loop (which is
+# not a harness — it drives pi as its dispatcher and worker kind).
+# See docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md.
 #
 # claude-code and code-cursor are unfree, so those two checks are built on a
 # nixpkgs instance with allowUnfree; pi/opencode stay on the free default. Each
@@ -45,5 +47,12 @@ in
     name = "corral-e2e-cursor";
     modules = [ ./modules/cursor.nix ];
     scenario = ./scenarios/cursor.py;
+  };
+  # The todo system (todo/SPEC.md stage 1): `corral-todo watch` wakes a real pi
+  # dispatcher through cage, a later edit reaches the same session over its
+  # socket, and the dispatcher's spawn lands a worker in another directory.
+  e2e-todo = mkTest pkgs {
+    name = "corral-e2e-todo";
+    scenario = ./scenarios/todo.py;
   };
 }
