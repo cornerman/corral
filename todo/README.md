@@ -77,12 +77,17 @@ dispatcher's own policy avoids that name for the same reason, one level down.
 
 ```
 corral-todo init <dir> [--force]     # DISPATCHER.md + todo.txt + whitelist hints
-corral-todo list [--open|--status <open|progress|blocked|done>]
+corral-todo list [--open|--status <open|progress|blocked|done>]   # dispatch order
 corral-todo add "<text>"
 corral-todo set <id> <state> [--target <dir>] [--worker <session>] [--reason <text>]
 corral-todo archive                  # completed lines move to done.txt
 corral-todo watch [--dir <dir>] [--interval <secs>] -- <harness argv...>
 ```
+
+`list` prints `<id> <state> <priority> <created> [target:] [worker:]  <text>`,
+sorted into dispatch order: priority `(A)` before `(Z)`, then oldest first, with
+unprioritized items last. The tool owns that rule so the dispatcher does not have
+to reconstruct it on every wake.
 
 No subcommand picks a harness. `watch`'s argv after `--` names the dispatcher's
 kind and has no default; a **resume** instead uses the record's own

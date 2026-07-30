@@ -884,7 +884,9 @@ irrelevant to it. Shown verbatim on the agent's card.
   targets. Reads the same registry
   as the board.
 - CLI `corral-todo` — the todo system's only sanctioned writer of `todo.txt`
-  (`list` / `add` / `set` / `archive`), plus `watch`, the supervisor that polls a
+  (`list` / `add` / `set` / `archive`; `list` prints id, state, priority, creation
+  date, target, worker and text, already in dispatch order), plus `watch`, the
+  supervisor that polls a
   todo directory and wakes exactly one dispatcher agent per change. The file is
   `--file`, else `$CORRAL_TODO_FILE`, else `./todo.txt`; writes take an exclusive
   `flock` on `<file>.lock` and rewrite through temp-plus-rename. Reads the todo
@@ -1067,6 +1069,12 @@ records); see the spec.
     3 base36 chars, re-salted against ids already in the file, so no counter and
     no random source) and stamp a creation date. **Idempotent**, since the watcher
     hashes the normalized file.
+  - `src/order.rs` — `dispatch_order`: the single definition of the order work is
+    taken in (priority `(A)`-`(Z)`, then oldest creation date, unmarked last;
+    stable, so ties keep file order). `list` emits items already sorted, so the
+    policy says "take them in the order listed" instead of restating a rule the
+    model would re-derive every wake; stage 2's TODO column consumes the same
+    function so the board and the CLI cannot disagree.
   - `src/state.rs` — apply a `Change` to an item, validated fully before any field
     is written (a target with a space in it is refused loudly: todo.txt key values
     cannot contain one). A blocked reason joins the task text after ` -- `, since

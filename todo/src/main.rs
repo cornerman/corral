@@ -6,6 +6,7 @@
 
 use corral_core::launch::TerminalLauncher;
 use corral_todo::item::{Item, State};
+use corral_todo::order::dispatch_order;
 use corral_todo::state::{apply, Change};
 use corral_todo::store::Store;
 use corral_todo::wake::POLICY_FILE;
@@ -183,7 +184,13 @@ fn todo_path(explicit: Option<String>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("todo.txt"))
 }
 
-/// One line per item: id, state, target, worker, then the text.
+/// One line per item: id, state, priority, creation date, target, worker, text.
+///
+/// Priority and date are shown because the dispatcher orders work by them; the
+/// list is emitted already ordered (`order::dispatch_order`), so they are there
+/// to be understood rather than re-sorted. Omitting them, while the policy said
+/// to sort by them, made that instruction impossible to follow through this
+/// interface.
 fn format_item(item: &Item) -> String {
     let state = match item.state() {
         State::Open => "open",
@@ -191,7 +198,14 @@ fn format_item(item: &Item) -> String {
         State::Blocked => "blocked",
         State::Done => "done",
     };
-    let mut out = format!("{:<4} {:<9}", item.key("id").unwrap_or("?"), state);
+    let priority = item.priority.map(|p| format!("({p})"));
+    let mut out = format!(
+        "{:<4} {:<8} {:<3} {:<10}",
+        item.key("id").unwrap_or("?"),
+        state,
+        priority.as_deref().unwrap_or("-"),
+        item.creation_date.as_deref().unwrap_or("-"),
+    );
     if let Some(t) = item.key("target") {
         out.push_str(&format!(" target:{t}"));
     }
@@ -210,7 +224,11 @@ fn format_item(item: &Item) -> String {
 fn run(command: Command, store: &Store) -> Result<(), String> {
     match command {
         Command::List { filter } => {
-            for item in store.read_normalized()? {
+            let mut items = store.read_normalized()?;
+            // Emit in dispatch order, so the dispatcher takes them as listed
+            // instead of re-deriving the rule on every wake.
+            dispatch_order(&mut items);
+            for item in items {
                 if filter.is_none_or(|f| item.state() == f) {
                     println!("{}", format_item(&item));
                 }
@@ -472,6 +490,22 @@ mod tests {
     #[test]
     fn watch_refuses_to_default_the_harness() {
         assert!(parse(&["watch", "--dir", "/home/me/todos"]).is_err());
+    }
+
+    #[test]
+    fn format_item_shows_the_fields_the_dispatcher_orders_by() {
+        let item = Item::parse("(A) 2026-07-20 urgent thing id:jad").unwrap();
+        let line = format_item(&item);
+        assert!(line.contains("(A)"), "{line}");
+        assert!(line.contains("2026-07-20"), "{line}");
+        assert!(line.contains("urgent thing"), "{line}");
+        assert!(line.contains("jad"), "{line}");
+    }
+
+    #[test]
+    fn format_item_marks_an_absent_priority_rather_than_leaving_a_gap() {
+        let line = format_item(&Item::parse("2026-07-20 plain thing id:pl1").unwrap());
+        assert!(line.contains(" -  "), "{line}");
     }
 
     #[test]

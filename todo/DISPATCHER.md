@@ -27,7 +27,11 @@ infinite loop.
 
 Every time you are woken up (by an initial message or a worker report), execute these steps in order:
 
-1. **Scan the List:** Run `corral-todo list --open` to fetch the complete active list of tasks. Never parse `todo.txt` directly by reading the file; always use the output of the CLI tool.
+1. **Scan the List:** Run `corral-todo list --open` to fetch the open tasks. Never
+   parse `todo.txt` directly by reading the file; always use the output of the CLI
+   tool. **The list already arrives in dispatch order**, so take candidates from
+   the top rather than re-sorting it. Each line reads:
+   `<id> <state> <priority> <created> [target:..] [worker:..]  <text>`.
 2. **Review In-Flight Worker Status:**
    - Run `corral_list_agents` to see which worker sessions are live.
    - Cross-reference the live sessions against task lines showing `status:progress`.
@@ -49,7 +53,9 @@ An open task (no `status:progress` or `status:blocked` key) is ready to run only
 * **Sufficient Detail:** The task text must contain concrete instructions that an agent can act on without immediate clarification.
 * **Resolvable Target Directory:** You must be able to infer a valid absolute directories path on the host. If the task text includes `target:/some/path`, use that. If it contains project basenames (e.g., `project:api`), map it to your known directory registry.
 * **No Directory Conflicts:** To prevent file modification clobbering, never start two worker agents in the same directory. If a directory already holds a worker with `status:progress`, any other item targeting that folder must wait.
-* **Priority Ordering:** Select candidates sorted by priority `(A)` through `(Z)` first, then by creation date (oldest first).
+* **Ordering:** Take candidates in the order `corral-todo list` printed them
+  (priority `(A)` before `(Z)`, then oldest first, unprioritized last). The tool
+  owns this rule, so you never have to reconstruct it.
 
 If an open task is too vague or lacks a directory target, write `corral-todo set <id> blocked --reason "missing target directory / details"` and stop.
 

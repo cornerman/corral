@@ -166,8 +166,12 @@ Metadata keys the system owns: `id:` (a short id `corral-todo` coins for every
 item), `target:` (the absolute worker directory, recorded at dispatch), and
 `worker:` (the worker's session id, learned from the reply handle on its
 handshake, which the charter guarantees arrives). Everything else in the line is
-yours: prose, `+projects`, `@contexts`, and a `(A)`-`(Z)` priority the dispatcher
-reads as an ordering hint.
+yours: prose, `+projects`, `@contexts`, and a `(A)`-`(Z)` priority. The priority is
+an ordering hint, applied by the tool rather than by the dispatcher's judgment:
+`corral-todo list` emits items already sorted (priority, then oldest first,
+unprioritized last — `order::dispatch_order`) and shows both fields, so the policy
+says "take them in the order listed". An ordering rule stated only as prose would
+have to be re-derived, and could be got wrong, on every wake.
 
 The id is what makes a report unambiguous. The dispatcher puts it in the task text
 and asks for it back, so a dispatcher with no memory of the dispatch, resumed
@@ -372,8 +376,9 @@ in TODO. A `status:progress` line does **not** render there: its worker is a rea
 session, so it already has a card in PROGRESS. That is what keeps one item to one
 card. A completed (`x`) line renders nowhere until archived.
 
-TODO cards sort by priority `(A)`-`(Z)` first, then oldest creation date, and show
-the priority as a colored badge. Blocked cards are visually distinct and carry
+TODO cards sort by `order::dispatch_order`, the same function `corral-todo list`
+uses (priority `(A)`-`(Z)` first, then oldest creation date, unprioritized last),
+and show the priority as a colored badge. Blocked cards are visually distinct and carry
 their reason, since a blocked item is a request for the operator.
 
 ### What This Costs in `corral-core`
