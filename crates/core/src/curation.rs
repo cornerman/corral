@@ -237,6 +237,57 @@ pub fn forget_dormant(cwd: &str, session_id: &str) -> std::io::Result<()> {
     first_err
 }
 
+/// How long a pointer is left alone before it may be pruned. An agent writes
+/// its pointer first and its workdir record a moment later, so a young pointer
+/// without a record is a normal announce in progress, not an orphan.
+const POINTER_GRACE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Delete pointers whose session record is gone. The workdir record is the
+/// authority and `curate_dir` already prunes it once a dormant session passes
+/// `DORMANT_MAX_AGE`, but nothing used to remove the matching pointer, so the
+/// store grew without bound (642 files after nine days) and every scan re-read
+/// all of them — the dominant cost in corrald's idle CPU. Pruning here keeps
+/// the scan proportional to the sessions that actually exist.
+pub fn prune_orphan_pointers(pointer_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(pointer_dir) else {
+        return;
+    };
+    for e in entries.filter_map(Result::ok) {
+        if !e.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = e.path();
+        // Old enough to judge? Anything younger (or with an unreadable mtime)
+        // is left alone.
+        let ripe = matches!(
+            std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok()),
+            Some(age) if age >= POINTER_GRACE
+        );
+        if !ripe {
+            continue;
+        }
+        let Some(session_id) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let record = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .map(|cwd| record_dir(&cwd).join(format!("{session_id}.json")));
+        // No readable cwd (empty or garbage pointer) counts as orphaned too.
+        if record.is_none_or(|r| !r.exists()) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Remove a file, treating "already gone" as success (idempotent dismiss).
 fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
@@ -362,6 +413,47 @@ mod tests {
         assert_eq!(got, vec!["/a", "/b"]);
         // Missing dir is empty.
         assert!(read_pointers(&tmp.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn prune_orphan_pointers_keeps_live_and_young_ones() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let pointers = tmp.path().join("input");
+        std::fs::create_dir_all(&pointers).unwrap();
+        let cwd = tmp.path().join("proj");
+        std::fs::create_dir_all(record_dir(cwd.to_str().unwrap())).unwrap();
+        // A session whose record still exists: keep, however old the pointer.
+        std::fs::write(record_dir(cwd.to_str().unwrap()).join("live.json"), "{}\n").unwrap();
+        let keep = pointers.join("live");
+        std::fs::write(&keep, format!("{}\n", cwd.display())).unwrap();
+        // A session whose record is gone: prune.
+        let drop = pointers.join("gone");
+        std::fs::write(&drop, format!("{}\n", cwd.display())).unwrap();
+        // Same, but written just now: an announce may still be in flight.
+        let young = pointers.join("young");
+        std::fs::write(&young, format!("{}\n", cwd.display())).unwrap();
+
+        // Age the two older pointers past the grace period.
+        let old = SystemTime::now() - POINTER_GRACE - Duration::from_secs(60);
+        for p in [&keep, &drop] {
+            std::fs::File::open(p)
+                .unwrap()
+                .set_modified(old)
+                .expect("set mtime");
+        }
+
+        prune_orphan_pointers(&pointers);
+
+        assert!(keep.exists(), "pointer with a live record must survive");
+        assert!(
+            young.exists(),
+            "pointer inside the grace period must survive"
+        );
+        assert!(!drop.exists(), "orphaned pointer must be pruned");
+        // Idempotent: a second pass on the same dir changes nothing.
+        prune_orphan_pointers(&pointers);
+        assert!(keep.exists());
     }
 
     #[test]
