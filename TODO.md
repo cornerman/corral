@@ -325,3 +325,18 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
    leaves all sending to the dispatcher's tools). Whitespace and blank lines are
    lost on first write (`todo/SPEC.md` known limits). `list` has no `--json`, so
    the dispatcher parses columns.
+
+### Verification state at hand-off (2026-07-30)
+
+Green and re-run after every change: `just test` (290 workspace tests, 73 of them
+`corral-todo`), `just lint` (fmt + clippy `-D warnings`). `nix build` last
+completed green at `95c9d1f`; the final commit `16878a2` touches only `.md`,
+`.py`, `justfile` and `nix/tests/` — no Rust source — so the binaries are
+unchanged, but the package build was **not** re-run to confirm it. Do that first
+(`nix build`) before trusting the tree.
+
+Verified by hand against real processes, not just tests: the `init` output and its
+refusal to clobber; `list` ordering; a live ACP socket receiving exactly one
+`session/prompt` per edit with the right wake text; the wake log's one-line-per-
+change behaviour with distinct fingerprints; and sections 1-4 of `e2e-todo` inside
+a real VM.
