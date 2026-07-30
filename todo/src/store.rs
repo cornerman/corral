@@ -23,7 +23,7 @@ impl Lock {
     /// replaces `todo.txt` by rename, so a lock on that inode would guard a
     /// file no later reader opens.
     fn acquire(path: &Path) -> Result<Lock, String> {
-        let lock_path = path.with_extension("txt.lock");
+        let lock_path = sibling(path, ".lock");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -176,10 +176,20 @@ fn civil_date(secs: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// A neighbour file named by appending a suffix to the whole file name, e.g.
+/// `todo.txt` -> `todo.txt.lock`. Appending rather than `with_extension`, which
+/// would *replace* the extension and name a `tasks.md` file's lock
+/// `tasks.txt.lock` — a filename that misdescribes what it guards.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
 /// Write via a temp file in the same directory plus rename, so a reader sees
 /// either the old file or the new one and never a truncated one.
 fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
-    let tmp = path.with_extension("txt.tmp");
+    let tmp = sibling(path, ".tmp");
     std::fs::write(&tmp, contents).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("cannot replace {}: {e}", path.display()))
 }
@@ -278,6 +288,35 @@ mod tests {
         let today = Store::today();
         assert_eq!(today.len(), 10);
         assert_eq!(today.matches('-').count(), 2);
+    }
+
+    #[test]
+    fn sibling_appends_rather_than_replacing_the_extension() {
+        assert_eq!(
+            sibling(Path::new("/t/todo.txt"), ".lock"),
+            Path::new("/t/todo.txt.lock")
+        );
+        // The case `with_extension` would get wrong.
+        assert_eq!(
+            sibling(Path::new("/t/tasks.md"), ".lock"),
+            Path::new("/t/tasks.md.lock")
+        );
+    }
+
+    #[test]
+    fn works_on_a_file_not_named_todo_txt() {
+        // The lock and temp names must follow the real file name, or two
+        // differently-named stores would share one lock.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks.md"));
+        store
+            .mutate(|items| {
+                items.push(Item::parse("a thing").unwrap());
+                Ok(())
+            })
+            .unwrap();
+        assert!(dir.path().join("tasks.md.lock").exists());
+        assert_eq!(store.read_normalized().unwrap().len(), 1);
     }
 
     #[test]
