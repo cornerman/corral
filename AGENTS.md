@@ -889,8 +889,9 @@ irrelevant to it. Shown verbatim on the agent's card.
   `--file`, else `$CORRAL_TODO_FILE`, else `./todo.txt`; writes take an exclusive
   `flock` on `<file>.lock` and rewrite through temp-plus-rename. Reads the todo
   directory's own `.corral/registry` and its agents' sockets; execs `cage` for a
-  hidden dispatcher launch. Knows nothing about `corrald` (the dispatcher's own
-  tools reach it). See `todo/README.md`.
+  hidden dispatcher launch. `init` sets a directory up (policy + `todo.txt`, and
+  prints the whitelist lines to add). Knows nothing about `corrald` (the
+  dispatcher's own tools reach it). See `todo/README.md`.
 - pi extension `corral-pi` — see Extensions above.
 - Registry records and unix sockets in each `<cwd>/.corral/`, plus per-session
   pointers in `$HOME/.corral/input/registry/` (all created 0700; override with
@@ -1025,8 +1026,20 @@ long-lived dispatcher agent hands to fresh worker agents through
 `corral_spawn_agent`, with task state carried in the todo.txt line itself (`x`
 completion plus `status:progress` / `status:blocked`, and `id:` / `target:` /
 `worker:` metadata the `corral-todo` CLI maintains). Design: `todo/SPEC.md`.
-Dispatcher policy: `todo/DISPATCHER.md` (prose, not code — symlinked as the live
-todo directory's `AGENTS.md`). Setup: `todo/README.md`.
+Dispatcher policy: `todo/DISPATCHER.md` (prose, not code). Setup:
+`todo/README.md`, one command: `corral-todo init <dir>`.
+
+The policy reaches the dispatcher by **prompt, not by config**. `init` writes
+`<dir>/DISPATCHER.md` from a copy embedded with `include_str!`, and every wake
+message names that file (`wake::WAKE_MESSAGE` / `FIRST_PROMPT`), so the agent reads
+it on its first turn and again after a compaction. Deliberately not `AGENTS.md`:
+that name is ambient and would govern every agent that ever runs in the todo
+directory, including the operator's own session. Pointing at a file also keeps the
+system harness-neutral, since config names are not (`AGENTS.md` for pi and
+opencode, `CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini CLI) — it needs only
+an agent that can read a file. `watch` refuses to run when the file is missing, so
+a generic agent is never handed an uninterpretable nudge. No symlink into this
+repo, so a `git pull` here cannot change a live dispatcher's behavior.
 
 It ships in two stages, and only the first exists. **Stage 1 (done)** needs no
 corral change: the `corral-todo` crate consumes `corral-core` (registry scan,
@@ -1064,19 +1077,27 @@ records); see the spec.
     `read_normalized` writes **only when normalization changed something**, so
     `list` and the watcher's poll do not churn the file. `civil_date` is the
     days-from-civil inverse, the crate's only clock.
-  - `src/wake.rs` — `plan()`: the ordered wake chain (inject into the live socket
-    → resume that exact session → spawn fresh), every step hidden. A chain, not a
-    choice, because a record's `socket` being set does not prove it connects — the
-    same fallback `corrald`'s router uses.
+  - `src/wake.rs` — `plan()`: the ordered wake chain (`Inject` into the live socket
+    → `Resume` that exact session → `Spawn` fresh), every step hidden. A chain, not
+    a choice, because a record's `socket` being set does not prove it connects —
+    the same fallback `corrald`'s router uses. Also the two prompts and
+    `POLICY_FILE`: `Spawn` carries `FIRST_PROMPT` (what you are, where your policy
+    is), while `Inject`/`Resume` carry the bare `WAKE_MESSAGE`; both name
+    `DISPATCHER.md` and neither inlines it, so the file stays the single source.
   - `src/watch.rs` — the poll loop: normalize, fingerprint the normalized items,
     and on a change try the chain until a step lands. The fingerprint advances
     only after a wake succeeds, so a change whose wake failed is retried.
     Reads the todo dir's **own** `<dir>/.corral/registry`, not corrald's vetted
     `state/registry`, so the wake path works while corrald is down.
-  - `src/main.rs` — the CLI (`list`, `add`, `set`, `archive`, `watch`), argv
-    parsed by a hand-rolled pure `Command::parse` (no argument-parsing dependency
-    for five subcommands). `watch` never defaults the harness: the argv after `--`
-    names it, mirroring corral's rule that it never names an agent kind.
+  - `src/main.rs` — the CLI (`init`, `list`, `add`, `set`, `archive`, `watch`),
+    argv parsed by a hand-rolled pure `Command::parse` (no argument-parsing
+    dependency for six subcommands). `watch` never defaults the harness: the argv
+    after `--` names it, mirroring corral's rule that it never names an agent kind
+    (a *resume* uses the record's own `resumeCommand` instead, so the kind that ran
+    there before wins and the session id survives). `init` writes the policy and an
+    empty `todo.txt`, refuses to clobber a tuned policy without `--force`, and
+    **prints** the two whitelist lines rather than writing them — the whitelist
+    grants cross-directory authorization and stays operator-owned (SECURITY.md).
 
 ## Development Setup
 

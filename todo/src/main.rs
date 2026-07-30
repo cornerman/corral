@@ -8,9 +8,17 @@ use corral_core::launch::TerminalLauncher;
 use corral_todo::item::{Item, State};
 use corral_todo::state::{apply, Change};
 use corral_todo::store::Store;
+use corral_todo::wake::POLICY_FILE;
 use corral_todo::watch::Watcher;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// The dispatcher policy shipped with the binary, written into a todo directory
+/// by `init`. Embedded from the repo's own `DISPATCHER.md`, so the default can
+/// never drift from the documented one, and so a live todo directory needs no
+/// symlink back into a git checkout (where a `git pull` would silently change
+/// how the dispatcher behaves).
+const POLICY_TEMPLATE: &str = include_str!("../DISPATCHER.md");
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
@@ -30,6 +38,10 @@ enum Command {
         interval: u64,
         dispatch_argv: Vec<String>,
     },
+    Init {
+        dir: String,
+        force: bool,
+    },
 }
 
 const USAGE: &str = "\
@@ -38,6 +50,7 @@ corral-todo add \"<text>\"
 corral-todo set <id> <open|progress|blocked|done> [--target <dir>] [--worker <session>] [--reason <text>]
 corral-todo archive
 corral-todo watch [--dir <dir>] [--interval <secs>] -- <dispatcher argv...>
+corral-todo init <dir> [--force]
 common: [--file <todo.txt>]  (else $CORRAL_TODO_FILE, else ./todo.txt)";
 
 fn parse_state(word: &str) -> Result<State, String> {
@@ -141,6 +154,13 @@ impl Command {
                     interval,
                     dispatch_argv,
                 })
+            }
+            "init" => {
+                let force = rest.iter().any(|a| a == "--force");
+                rest.retain(|a| a != "--force");
+                reject_unknown_flags(&rest)?;
+                let dir = rest.first().ok_or("init needs a directory")?.clone();
+                Ok(Command::Init { dir, force })
             }
             other => Err(format!("unknown subcommand {other:?}\n{USAGE}")),
         }
@@ -260,7 +280,57 @@ fn run(command: Command, store: &Store) -> Result<(), String> {
             watcher.run(&TerminalLauncher);
             Ok(())
         }
+        Command::Init { dir, force } => init(Path::new(&dir), force),
     }
+}
+
+/// Set up a todo directory: the directory itself, an empty `todo.txt`, and the
+/// dispatcher policy. Prints the whitelist lines rather than writing them:
+/// `~/.corral/whitelist` grants cross-directory authorization and stays
+/// operator-owned, so a todo tool must not edit it (SECURITY.md).
+fn init(dir: &Path, force: bool) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let dir = dir
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", dir.display()))?;
+
+    let policy = dir.join(POLICY_FILE);
+    if policy.exists() && !force {
+        // The file becomes the operator's once tuned, so overwriting it needs
+        // an explicit ask.
+        return Err(format!(
+            "{} already exists; pass --force to replace it",
+            policy.display()
+        ));
+    }
+    std::fs::write(&policy, POLICY_TEMPLATE)
+        .map_err(|e| format!("cannot write {}: {e}", policy.display()))?;
+
+    let todo = dir.join("todo.txt");
+    let created_todo = !todo.exists();
+    if created_todo {
+        std::fs::write(&todo, "").map_err(|e| format!("cannot write {}: {e}", todo.display()))?;
+    }
+
+    let shown = dir.display();
+    println!("{:<8} {}", "wrote", policy.display());
+    println!(
+        "{:<8} {}",
+        if created_todo { "created" } else { "kept" },
+        todo.display()
+    );
+    println!();
+    println!("Next, for each directory workers may run in, add both lines to");
+    println!("~/.corral/whitelist (authorization is directional: one for the");
+    println!("spawn, one for the handshake and the report):");
+    println!();
+    println!("    {shown} -> /path/to/worker/dir");
+    println!("    /path/to/worker/dir -> {shown}");
+    println!();
+    println!("Then start the watcher, naming your harness:");
+    println!();
+    println!("    corral-todo watch --dir {shown} -- pi");
+    Ok(())
 }
 
 fn main() {
@@ -402,5 +472,70 @@ mod tests {
     #[test]
     fn watch_refuses_to_default_the_harness() {
         assert!(parse(&["watch", "--dir", "/home/me/todos"]).is_err());
+    }
+
+    #[test]
+    fn parses_init() {
+        assert_eq!(
+            parse(&["init", "/home/me/todos"]).unwrap(),
+            Command::Init {
+                dir: "/home/me/todos".into(),
+                force: false
+            }
+        );
+        assert_eq!(
+            parse(&["init", "/home/me/todos", "--force"]).unwrap(),
+            Command::Init {
+                dir: "/home/me/todos".into(),
+                force: true
+            }
+        );
+        assert!(parse(&["init"]).is_err());
+    }
+
+    #[test]
+    fn init_writes_the_policy_and_an_empty_todo_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("todos");
+        init(&target, false).unwrap();
+        let policy = std::fs::read_to_string(target.join(POLICY_FILE)).unwrap();
+        // The embedded copy is the repo's own DISPATCHER.md, verbatim.
+        assert_eq!(policy, POLICY_TEMPLATE);
+        assert!(policy.contains("dispatcher"));
+        assert_eq!(
+            std::fs::read_to_string(target.join("todo.txt")).unwrap(),
+            ""
+        );
+        // Never the ambient name: that would govern unrelated sessions here.
+        assert!(!target.join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn init_refuses_to_clobber_a_tuned_policy_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path(), false).unwrap();
+        std::fs::write(dir.path().join(POLICY_FILE), "my own rules").unwrap();
+        let err = init(dir.path(), false).unwrap_err();
+        assert!(err.contains("--force"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(POLICY_FILE)).unwrap(),
+            "my own rules"
+        );
+        init(dir.path(), true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(POLICY_FILE)).unwrap(),
+            POLICY_TEMPLATE
+        );
+    }
+
+    #[test]
+    fn init_keeps_an_existing_todo_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("todo.txt"), "an existing idea\n").unwrap();
+        init(dir.path(), false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("todo.txt")).unwrap(),
+            "an existing idea\n"
+        );
     }
 }

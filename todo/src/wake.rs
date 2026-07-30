@@ -15,22 +15,68 @@ use corral_core::discovery::{live_socket, RegistryEntry};
 use corral_core::launch::LaunchMode;
 use std::path::PathBuf;
 
-/// The one-line nudge the dispatcher receives. It deliberately carries no task
-/// detail: the file is the state, so the dispatcher reads it rather than
-/// trusting a message that could be stale by the time it lands.
-pub const WAKE_MESSAGE: &str =
-    "todo.txt changed. Read it with corral-todo and run your dispatcher loop.";
+/// The file holding the dispatcher's operating policy, inside the todo
+/// directory. Deliberately **not** `AGENTS.md`: that name is ambient, so it
+/// would govern every agent that ever runs in the todo directory, including the
+/// operator's own interactive session. The policy belongs to one role, so it
+/// carries that role's name and is loaded only by the wake messages below.
+pub const POLICY_FILE: &str = "DISPATCHER.md";
+
+/// The nudge an established dispatcher receives.
+///
+/// It names the policy file on *every* wake, not only the first. Nothing loads
+/// the file automatically, so the prompt is the only path by which the policy
+/// reaches the model; naming it each time means a long-lived dispatcher whose
+/// context has been compacted can still find its own law. Costs a handful of
+/// tokens per wake, which is why it points at the file rather than inlining it.
+///
+/// It carries no task detail: the file is the state, so the dispatcher reads
+/// `todo.txt` rather than trusting a message that could be stale on arrival.
+pub const WAKE_MESSAGE: &str = concat!(
+    "todo.txt changed. Run your dispatcher loop as specified in DISPATCHER.md ",
+    "in this directory (re-read it if it is not already in your context).",
+);
+
+/// The first prompt of a brand-new dispatcher, which additionally tells the
+/// session what it is — context a resumed or live session already has.
+pub const FIRST_PROMPT: &str = concat!(
+    "You are the todo dispatcher for this directory. Read DISPATCHER.md here — ",
+    "it is your operating policy — and follow it exactly. Then run your loop: ",
+    "todo.txt changed, so decide what to dispatch, answer, or close.",
+);
 
 /// One way to reach the dispatcher. No `Eq`: `LaunchMode` is only `PartialEq`.
 #[derive(Debug, PartialEq)]
 pub enum Wake {
     /// Write the wake into a live session's socket.
     Inject { socket: PathBuf },
-    /// Launch a window rooted at the todo directory, carrying the wake as its
-    /// message. Covers both resuming an exact session (argv from the record's
-    /// `resumeCommand`) and starting a fresh one (the configured argv); the two
-    /// are executed identically, so they are one variant.
-    Launch { argv: Vec<String>, mode: LaunchMode },
+    /// Relaunch this exact session (argv from the record's `resumeCommand`),
+    /// carrying the wake as its launch message.
+    Resume { argv: Vec<String>, mode: LaunchMode },
+    /// Start a brand-new dispatcher from the configured argv. Distinct from
+    /// `Resume` — though both just launch — because only a session with no
+    /// history needs to be told where its policy lives.
+    Spawn { argv: Vec<String>, mode: LaunchMode },
+}
+
+impl Wake {
+    /// The text delivered with this wake.
+    pub fn message(&self) -> &'static str {
+        match self {
+            // A resumed or live session already carries the policy in its
+            // transcript or its system prompt, so it gets the bare nudge.
+            Wake::Inject { .. } | Wake::Resume { .. } => WAKE_MESSAGE,
+            Wake::Spawn { .. } => FIRST_PROMPT,
+        }
+    }
+
+    /// The argv and launch options, for the two variants that launch.
+    pub fn launch_args(&self) -> Option<(&[String], &LaunchMode)> {
+        match self {
+            Wake::Inject { .. } => None,
+            Wake::Resume { argv, mode } | Wake::Spawn { argv, mode } => Some((argv, mode)),
+        }
+    }
 }
 
 /// The wake steps to try in order. Always non-empty: the last step is a fresh
@@ -50,13 +96,13 @@ pub fn plan(entries: &[RegistryEntry], dispatch_argv: &[String]) -> Vec<Wake> {
             steps.push(Wake::Inject { socket: live.path });
         }
         if let Some(argv) = entry.resume_argv() {
-            steps.push(Wake::Launch {
+            steps.push(Wake::Resume {
                 argv,
                 mode: hidden(entry.launch_mode()),
             });
         }
     }
-    steps.push(Wake::Launch {
+    steps.push(Wake::Spawn {
         argv: dispatch_argv.to_vec(),
         mode: hidden(LaunchMode::default()),
     });
@@ -120,13 +166,13 @@ mod tests {
                 socket: PathBuf::from("/home/me/todos/.corral/S1.sock")
             }
         );
-        let Wake::Launch { argv: resume, .. } = &steps[1] else {
-            panic!("expected a resume launch");
+        let Wake::Resume { argv: resume, .. } = &steps[1] else {
+            panic!("expected a resume");
         };
         assert_eq!(resume, &argv(&["pi", "--session", "S1"]));
         assert_eq!(
             steps[2],
-            Wake::Launch {
+            Wake::Spawn {
                 argv: argv(&["pi"]),
                 mode: hidden_mode()
             }
@@ -134,10 +180,39 @@ mod tests {
     }
 
     #[test]
+    fn only_a_fresh_spawn_is_told_where_its_policy_lives() {
+        // A live or resumed session already has the policy; repeating it every
+        // wake would be noise.
+        let entries = vec![entry(
+            "S1",
+            Some("/home/me/todos/.corral/S1.sock"),
+            "2026-07-26T10:00:00Z",
+        )];
+        let steps = plan(&entries, &argv(&["pi"]));
+        assert_eq!(steps[0].message(), WAKE_MESSAGE);
+        assert_eq!(steps[1].message(), WAKE_MESSAGE);
+        assert_eq!(steps[2].message(), FIRST_PROMPT);
+    }
+
+    #[test]
+    fn every_message_names_the_policy_file_and_inlines_nothing() {
+        // Nothing loads the policy automatically, so each wake must say where
+        // it is; a compacted dispatcher has no other way back to it.
+        for message in [WAKE_MESSAGE, FIRST_PROMPT] {
+            assert!(message.contains(POLICY_FILE), "{message}");
+            // A pointer, not a copy: the file stays the single source.
+            assert!(message.len() < 400, "{message}");
+        }
+        // The ambient name must not appear: it would govern unrelated sessions.
+        assert!(!WAKE_MESSAGE.contains("AGENTS.md"));
+        assert!(!FIRST_PROMPT.contains("AGENTS.md"));
+    }
+
+    #[test]
     fn a_dormant_record_is_resumed_with_its_own_session_id() {
         let steps = plan(&[entry("S1", None, "2026-07-26T10:00:00Z")], &argv(&["pi"]));
-        let Wake::Launch { argv: resume, mode } = &steps[0] else {
-            panic!("expected a resume launch");
+        let Wake::Resume { argv: resume, mode } = &steps[0] else {
+            panic!("expected a resume");
         };
         // The session id must survive, or every worker's reply handle breaks.
         assert_eq!(resume, &argv(&["pi", "--session", "S1"]));
@@ -149,7 +224,7 @@ mod tests {
     fn no_record_plans_a_single_fresh_spawn() {
         assert_eq!(
             plan(&[], &argv(&["pi"])),
-            vec![Wake::Launch {
+            vec![Wake::Spawn {
                 argv: argv(&["pi"]),
                 mode: hidden_mode()
             }]
@@ -180,7 +255,7 @@ mod tests {
         e.resume_command = None;
         assert_eq!(
             plan(&[e], &argv(&["pi"])),
-            vec![Wake::Launch {
+            vec![Wake::Spawn {
                 argv: argv(&["pi"]),
                 mode: hidden_mode()
             }]
@@ -195,7 +270,7 @@ mod tests {
             "2026-07-26T10:00:00Z",
         )];
         for step in plan(&entries, &argv(&["pi"])) {
-            if let Wake::Launch { mode, .. } = step {
+            if let Some((_, mode)) = step.launch_args() {
                 assert!(mode.hidden, "the dispatcher is background machinery");
             }
         }

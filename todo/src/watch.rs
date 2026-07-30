@@ -13,7 +13,7 @@
 
 use crate::item::Item;
 use crate::store::Store;
-use crate::wake::{plan, Wake, WAKE_MESSAGE};
+use crate::wake::{plan, Wake, POLICY_FILE};
 use corral_core::discovery::{scan_registry, RegistryEntry};
 use corral_core::launch::Launcher;
 use corral_core::prompt::send_prompt;
@@ -83,6 +83,19 @@ impl Watcher {
     /// The fingerprint advances only after a wake lands, so a change whose wake
     /// failed stays pending and is retried next tick.
     pub fn tick(&mut self, launcher: &dyn Launcher) -> Result<Option<Wake>, String> {
+        // Refuse to wake an agent that has no policy to follow: nothing loads
+        // `DISPATCHER.md` automatically, and a generic agent handed "run your
+        // dispatcher loop" would flail silently. Checked every tick, not once
+        // at startup, so deleting the file stops dispatch instead of quietly
+        // degrading it.
+        let policy = self.dir.join(POLICY_FILE);
+        if !policy.exists() {
+            return Err(format!(
+                "no {POLICY_FILE} in {} — run `corral-todo init {}` to write it",
+                self.dir.display(),
+                self.dir.display()
+            ));
+        }
         if !self.store.path().exists() {
             // Nothing to watch yet. Not an error: the operator may create the
             // file after starting the service.
@@ -98,12 +111,15 @@ impl Watcher {
         // through to resume and then to a fresh spawn.
         let mut last = String::from("no wake step available");
         for step in plan(&self.records(), &self.dispatch_argv) {
-            let attempt = match &step {
-                Wake::Inject { socket } => send_prompt(socket, WAKE_MESSAGE)
+            // Each step carries its own text: only a session with no history
+            // gets told what it is (see `wake::FIRST_PROMPT`).
+            let message = step.message();
+            let attempt = match (&step, step.launch_args()) {
+                (Wake::Inject { socket }, _) => send_prompt(socket, message)
                     .map_err(|e| format!("cannot wake over {}: {e}", socket.display())),
-                Wake::Launch { argv, mode } => {
-                    launcher.launch(&self.dir, argv, Some(WAKE_MESSAGE), mode)
-                }
+                (_, Some((argv, mode))) => launcher.launch(&self.dir, argv, Some(message), mode),
+                // Unreachable: every non-Inject variant launches.
+                (_, None) => Err("wake step has nothing to run".to_string()),
             };
             match attempt {
                 Ok(()) => {
@@ -164,6 +180,13 @@ mod tests {
         }
     }
 
+    /// A todo dir with the policy file present, which `tick` requires.
+    fn todo_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(POLICY_FILE), "policy").unwrap();
+        dir
+    }
+
     fn watcher(dir: &Path) -> Watcher {
         Watcher::new(
             Store::new(dir.join("todo.txt")),
@@ -175,7 +198,7 @@ mod tests {
 
     #[test]
     fn normalizing_a_fresh_dump_costs_exactly_one_wake() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = todo_dir();
         std::fs::write(dir.path().join("todo.txt"), "brand new idea\n").unwrap();
         let mut w = watcher(dir.path());
         let launcher = FakeLauncher(Mutex::new(Vec::new()));
@@ -188,7 +211,7 @@ mod tests {
 
     #[test]
     fn an_edit_wakes_again() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = todo_dir();
         let path = dir.path().join("todo.txt");
         std::fs::write(&path, "one idea\n").unwrap();
         let mut w = watcher(dir.path());
@@ -203,7 +226,7 @@ mod tests {
 
     #[test]
     fn with_no_record_it_spawns_the_dispatcher_hidden_with_the_wake_message() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = todo_dir();
         std::fs::write(dir.path().join("todo.txt"), "an idea\n").unwrap();
         let mut w = watcher(dir.path());
         let launcher = FakeLauncher(Mutex::new(Vec::new()));
@@ -212,7 +235,9 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].cwd, dir.path());
         assert_eq!(calls[0].command, vec!["pi".to_string()]);
-        assert_eq!(calls[0].message.as_deref(), Some(WAKE_MESSAGE));
+        // A brand-new session gets the first-run prompt, which tells it what it
+        // is and where its policy lives.
+        assert_eq!(calls[0].message.as_deref(), Some(crate::wake::FIRST_PROMPT));
         assert!(calls[0].mode.hidden, "a dispatcher must never pop a window");
     }
 
@@ -232,7 +257,7 @@ mod tests {
                 Err("no terminal".into())
             }
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = todo_dir();
         std::fs::write(dir.path().join("todo.txt"), "an idea\n").unwrap();
         let mut w = watcher(dir.path());
         assert!(w.tick(&Failing).is_err());
@@ -248,11 +273,25 @@ mod tests {
 
     #[test]
     fn a_missing_todo_file_is_not_a_wake_and_not_an_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = todo_dir();
         let mut w = watcher(dir.path());
         let launcher = FakeLauncher(Mutex::new(Vec::new()));
         assert!(w.tick(&launcher).unwrap().is_none());
         assert!(launcher.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_a_policy_file_it_refuses_to_wake_anything() {
+        // A dispatcher with no policy is a generic agent handed an
+        // uninterpretable nudge, so this must fail loud rather than dispatch.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("todo.txt"), "an idea\n").unwrap();
+        let mut w = watcher(dir.path());
+        let launcher = FakeLauncher(Mutex::new(Vec::new()));
+        let err = w.tick(&launcher).unwrap_err();
+        assert!(err.contains(POLICY_FILE), "{err}");
+        assert!(err.contains("corral-todo init"), "{err}");
+        assert!(launcher.0.lock().unwrap().is_empty(), "nothing may launch");
     }
 
     #[test]

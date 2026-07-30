@@ -9,23 +9,46 @@ Design: [SPEC.md](SPEC.md). Dispatcher policy: [DISPATCHER.md](DISPATCHER.md).
 ## Quick Start
 
 ```sh
-mkdir ~/todos && cd ~/todos
-git init                                             # the task log accumulates
-ln -s ~/projects/corral/todo/DISPATCHER.md AGENTS.md # the dispatcher's policy
-echo "add a --dry-run flag to the deploy script in ~/projects/deploy" > todo.txt
-corral-todo watch --dir ~/todos -- pi                # names the harness, always
+corral-todo init ~/todos              # writes DISPATCHER.md + todo.txt, prints
+                                      # the whitelist lines you need to add
+cd ~/todos && git init                # optional: the task log accumulates
+echo "add a --dry-run flag to the deploy script in ~/projects/deploy" >> todo.txt
+corral-todo watch --dir ~/todos -- pi # names the harness, always
 ```
 
 The watcher polls every 5 seconds (`--interval`), and on a change wakes exactly
 one dispatcher in that directory: injecting into its live socket, else resuming
 its dormant session, else starting one hidden. Nothing pops a window.
 
+## The Policy Is `DISPATCHER.md`, and Nothing Auto-Loads It
+
+`init` writes the dispatcher's operating policy to `~/todos/DISPATCHER.md`, from a
+copy embedded in the binary. Three consequences worth knowing:
+
+- **Not `AGENTS.md`.** That name is ambient: it would govern every agent that ever
+  runs in the todo directory, including your own interactive session. The policy
+  belongs to one role, so it carries that role's name.
+- **The prompt is what loads it.** Every wake message names the file, so a
+  dispatcher reads it on its first turn and again after a context compaction. This
+  is also why the todo system works with any harness: it relies on an agent being
+  able to read a file, not on a harness-specific config name (`AGENTS.md` for pi
+  and opencode, `CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini CLI).
+- **The copy in your directory wins, and it is yours.** Tune it as you learn what
+  the dispatcher gets wrong; the change takes effect on its next turn, with no
+  rebuild. `init` refuses to overwrite it without `--force`. No symlink points back
+  into the corral checkout, so a `git pull` there cannot silently change how your
+  dispatcher behaves.
+
+`watch` refuses to start when the file is missing, rather than waking a generic
+agent that cannot interpret "run your dispatcher loop".
+
 ## The Todo Directory Lives Outside This Repository
 
 `~/todos`, not `corral/todo/live`. pi concatenates every `AGENTS.md` up the
 directory tree, so a todo directory nested in this repository would feed corral's
 own architecture document (about 10k words) into every dispatcher, at a cost in
-tokens and in confusion about what the agent is supposed to be working on.
+tokens and in confusion about what the agent is supposed to be working on. The
+dispatcher's own policy avoids that name for the same reason, one level down.
 
 ## Prerequisites
 
@@ -33,7 +56,8 @@ tokens and in confusion about what the agent is supposed to be working on.
   The wake path does not, so a todo directory still normalizes and wakes without it.
 - **`corral-todo` and your harness are on `PATH`**, including inside a worker's
   sandbox for anything the worker itself runs.
-- **Both whitelist directions per worker directory**, in `~/.corral/whitelist`:
+- **Both whitelist directions per worker directory**, in `~/.corral/whitelist`
+  (`init` prints these with your todo directory filled in):
 
   ```
   /home/me/todos -> /home/me/projects/deploy
@@ -43,19 +67,28 @@ tokens and in confusion about what the agent is supposed to be working on.
   Authorization is directional and keyed on the directory pair, so a working pair
   needs two lines: one for the spawn, one for the handshake and the report.
   Clicking "Allow always" twice on corrald's tray does the same thing. The file is
-  re-read every tick, so no restart is needed.
+  re-read every tick, so no restart is needed. `corral-todo` prints rather than
+  writes it: the whitelist grants cross-directory authorization and stays
+  operator-owned (see `SECURITY.md`).
 - **The worker directory is known to corrald** (some session ran there once).
   A spawn into a directory corral has never seen is acked `directory_not_known`.
 
 ## The CLI
 
 ```
+corral-todo init <dir> [--force]     # DISPATCHER.md + todo.txt + whitelist hints
 corral-todo list [--open|--status <open|progress|blocked|done>]
 corral-todo add "<text>"
 corral-todo set <id> <state> [--target <dir>] [--worker <session>] [--reason <text>]
 corral-todo archive                  # completed lines move to done.txt
 corral-todo watch [--dir <dir>] [--interval <secs>] -- <harness argv...>
 ```
+
+No subcommand picks a harness. `watch`'s argv after `--` names the dispatcher's
+kind and has no default; a **resume** instead uses the record's own
+`resumeCommand`, so the kind that ran there before wins and the session id
+survives. Worker kinds are the dispatcher's choice, via `corral_spawn_agent`'s
+optional `label`.
 
 The file is `--file`, else `$CORRAL_TODO_FILE`, else `./todo.txt`. Every write
 takes an exclusive `flock` on `<file>.lock` and rewrites through a temp file plus

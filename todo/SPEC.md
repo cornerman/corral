@@ -433,12 +433,37 @@ hand-editing, and only ever one line at a time.
 
 ## Prerequisites and First Run
 
-The live todo directory (say `~/todos`) exists outside this repository, holds
-`todo.txt` and an `AGENTS.md` symlink to `todo/DISPATCHER.md`, and is ideally its
-own git repo so the task log accumulates. Outside, because pi concatenates every
-`AGENTS.md` up the tree: a todo directory nested in this repo would feed corral's
-own architecture document (about 10k words) into every dispatcher, at a cost in
-tokens and in confusion about what the agent is supposed to be working on.
+`corral-todo init ~/todos` creates the directory, an empty `todo.txt`, and the
+dispatcher's policy at `~/todos/DISPATCHER.md` (embedded in the binary with
+`include_str!`, so the shipped default cannot drift from this repo's
+`DISPATCHER.md` and a live directory needs no symlink back into a git checkout).
+Make it its own git repo if you want the task log to accumulate.
+
+It lives outside this repository because pi concatenates every `AGENTS.md` up the
+tree: a todo directory nested here would feed corral's own architecture document
+(about 10k words) into every dispatcher, at a cost in tokens and in confusion about
+what the agent is supposed to be working on.
+
+**The policy is loaded by the prompt, not by a config file.** Every wake message
+names `DISPATCHER.md`, so the dispatcher reads it on its first turn and again
+whenever a context compaction has dropped it. Three reasons that beats the
+harness's own convention:
+
+- `AGENTS.md` is ambient. It governs every agent that runs in the directory,
+  including the operator's own interactive session, whereas this policy belongs to
+  one role.
+- Config names are not harness-neutral (`AGENTS.md` for pi and opencode,
+  `CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini CLI), but `watch -- <argv>`
+  deliberately names no harness. Pointing at a file needs only an agent that can
+  read one, which every coding agent can.
+- The file in the todo directory is the operator's to tune, and a change takes
+  effect on the dispatcher's next turn with no rebuild. `init` will not overwrite
+  it without `--force`.
+
+The cost: the policy is transcript-only, never in a system prompt, so a dispatcher
+must spend one file read per fresh session (and after a compaction). `watch`
+refuses to run at all when the file is missing, so the failure is loud rather than
+a generic agent flailing at an uninterpretable nudge.
 
 `corrald` runs (spawns and reports need it; the wake path does not). `corral-todo`
 and the harness are on PATH, including inside the workers' sandboxes for anything
