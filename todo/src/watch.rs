@@ -11,7 +11,7 @@
 //! dies with the dispatcher, and a supervisor belongs outside the process whose
 //! liveness is in question.
 
-use crate::item::Item;
+use crate::item::{Item, State};
 use crate::store::Store;
 use crate::wake::{plan, Wake, POLICY_FILE};
 use corral_core::discovery::{scan_registry, RegistryEntry};
@@ -36,6 +36,35 @@ pub fn fingerprint(items: &[Item]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// What one successful wake did. Returned so the shell can log it and a test can
+/// assert on it, keeping the decision and its reporting in separate places.
+///
+/// The fingerprint is in the line because convergence is the property most worth
+/// watching: a settled system logs nothing, while a dispatcher that rewrites the
+/// file pointlessly shows up as a run of wakes with *different* fingerprints, and
+/// a genuine repeat (a wake that failed and was retried) as the same one twice.
+#[derive(Debug)]
+pub struct Woke {
+    pub step: Wake,
+    pub fingerprint: u64,
+    pub items: usize,
+    pub open: usize,
+}
+
+impl std::fmt::Display for Woke {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "wake {:016x} via {} ({} item{}, {} open)",
+            self.fingerprint,
+            self.step.kind_name(),
+            self.items,
+            if self.items == 1 { "" } else { "s" },
+            self.open
+        )
+    }
 }
 
 pub struct Watcher {
@@ -82,7 +111,7 @@ impl Watcher {
     ///
     /// The fingerprint advances only after a wake lands, so a change whose wake
     /// failed stays pending and is retried next tick.
-    pub fn tick(&mut self, launcher: &dyn Launcher) -> Result<Option<Wake>, String> {
+    pub fn tick(&mut self, launcher: &dyn Launcher) -> Result<Option<Woke>, String> {
         // Refuse to wake an agent that has no policy to follow: nothing loads
         // `DISPATCHER.md` automatically, and a generic agent handed "run your
         // dispatcher loop" would flail silently. Checked every tick, not once
@@ -124,7 +153,12 @@ impl Watcher {
             match attempt {
                 Ok(()) => {
                     self.seen = Some(print);
-                    return Ok(Some(step));
+                    return Ok(Some(Woke {
+                        step,
+                        fingerprint: print,
+                        items: items.len(),
+                        open: items.iter().filter(|i| i.state() == State::Open).count(),
+                    }));
                 }
                 Err(e) => last = e,
             }
@@ -132,12 +166,17 @@ impl Watcher {
         Err(last)
     }
 
-    /// Poll forever. A failed wake is reported and the loop continues; since the
-    /// fingerprint did not advance, the pending change is retried next tick.
+    /// Poll forever, logging one line per wake and per failure. A settled system
+    /// logs nothing, so anything in the journal is a real event.
+    ///
+    /// A failed wake is reported and the loop continues; since the fingerprint
+    /// did not advance, the pending change is retried next tick.
     pub fn run(&mut self, launcher: &dyn Launcher) {
         loop {
-            if let Err(e) = self.tick(launcher) {
-                eprintln!("corral-todo watch: {e}");
+            match self.tick(launcher) {
+                Ok(Some(woke)) => eprintln!("corral-todo watch: {woke}"),
+                Ok(None) => {}
+                Err(e) => eprintln!("corral-todo watch: {e}"),
             }
             std::thread::sleep(self.interval);
         }
@@ -278,6 +317,38 @@ mod tests {
         let launcher = FakeLauncher(Mutex::new(Vec::new()));
         assert!(w.tick(&launcher).unwrap().is_none());
         assert!(launcher.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_wake_reports_its_branch_the_fingerprint_and_the_counts() {
+        let dir = todo_dir();
+        std::fs::write(
+            dir.path().join("todo.txt"),
+            "open one\nx 2026-07-01 2026-07-01 done one id:d1\n",
+        )
+        .unwrap();
+        let mut w = watcher(dir.path());
+        let launcher = FakeLauncher(Mutex::new(Vec::new()));
+        let woke = w.tick(&launcher).unwrap().expect("a wake");
+        assert_eq!(woke.items, 2);
+        assert_eq!(woke.open, 1, "the completed line is not open");
+        let line = woke.to_string();
+        assert!(line.contains("via spawn"), "{line}");
+        assert!(line.contains("2 items, 1 open"), "{line}");
+        // Singular reads as "1 item", not "1 items".
+        let one = Woke {
+            step: Wake::Inject {
+                socket: PathBuf::from("/x"),
+            },
+            fingerprint: 1,
+            items: 1,
+            open: 1,
+        };
+        assert!(one.to_string().contains("1 item,"), "{one}");
+        assert!(
+            line.contains(&format!("{:016x}", woke.fingerprint)),
+            "{line}"
+        );
     }
 
     #[test]

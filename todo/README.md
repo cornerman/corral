@@ -118,6 +118,24 @@ would be dispatched again forever, so returning it to work is a human deleting
 one word. Everything else in a line is yours, including `+projects`, `@contexts`
 and a `(A)`-`(Z)` priority the dispatcher reads as an ordering hint.
 
+## Watching What It Does
+
+The watcher logs one line per wake and nothing at all while the system is settled:
+
+```
+corral-todo watch: wake 69fd22429f88cda6 via inject (1 item, 1 open)
+corral-todo watch: wake 28fe559c13967b0f via inject (2 items, 2 open)
+```
+
+The fingerprint is the hash of the normalized file, which makes the property that
+matters legible. Wakes with **different** fingerprints in a row mean the dispatcher
+keeps changing the file, so it is not converging — the one failure mode that burns
+tokens indefinitely. The **same** fingerprint twice means a wake failed and was
+retried. Silence means settled.
+
+To see the dispatcher's reasoning rather than its effects, open `corral`, select its
+card, and press `o`: that fetches the session's full transcript and opens it.
+
 ## Running It As A Service
 
 Lifecycle is deployment glue, not code here. Run `corral-todo watch` from a

@@ -60,6 +60,15 @@ pub enum Wake {
 }
 
 impl Wake {
+    /// Which branch of the chain this is, for a log line.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Wake::Inject { .. } => "inject",
+            Wake::Resume { .. } => "resume",
+            Wake::Spawn { .. } => "spawn",
+        }
+    }
+
     /// The text delivered with this wake.
     pub fn message(&self) -> &'static str {
         match self {
@@ -274,6 +283,20 @@ mod tests {
                 assert!(mode.hidden, "the dispatcher is background machinery");
             }
         }
+    }
+
+    #[test]
+    fn each_branch_names_itself_for_the_log() {
+        let entries = vec![entry(
+            "S1",
+            Some("/x/.corral/S1.sock"),
+            "2026-07-26T10:00:00Z",
+        )];
+        let names: Vec<&str> = plan(&entries, &argv(&["pi"]))
+            .iter()
+            .map(|s| s.kind_name())
+            .collect();
+        assert_eq!(names, vec!["inject", "resume", "spawn"]);
     }
 
     #[test]

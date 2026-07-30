@@ -1094,7 +1094,12 @@ records); see the spec.
     `DISPATCHER.md` and neither inlines it, so the file stays the single source.
   - `src/watch.rs` — the poll loop: normalize, fingerprint the normalized items,
     and on a change try the chain until a step lands. The fingerprint advances
-    only after a wake succeeds, so a change whose wake failed is retried.
+    only after a wake succeeds, so a change whose wake failed is retried. Each
+    wake returns a `Woke` the shell logs as one line (`wake <fingerprint> via
+    inject|resume|spawn (N items, M open)`); a settled system logs nothing, so a
+    dispatcher that rewrites the file pointlessly reads as a run of wakes with
+    *different* fingerprints, and a retried failure as the same one twice — the
+    convergence property `SPEC.md` requires, made countable in the journal.
     Reads the todo dir's **own** `<dir>/.corral/registry`, not corrald's vetted
     `state/registry`, so the wake path works while corrald is down.
   - `src/main.rs` — the CLI (`init`, `list`, `add`, `set`, `archive`, `watch`),
