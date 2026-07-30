@@ -4,17 +4,32 @@
 //! is unit-tested without spawning a process, and so the workspace gains no
 //! argument-parsing dependency for four subcommands.
 
+use corral_core::launch::TerminalLauncher;
 use corral_todo::item::{Item, State};
 use corral_todo::state::{apply, Change};
 use corral_todo::store::Store;
-use std::path::PathBuf;
+use corral_todo::watch::Watcher;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
-    List { filter: Option<State> },
-    Add { text: String },
-    Set { id: String, change: Change },
+    List {
+        filter: Option<State>,
+    },
+    Add {
+        text: String,
+    },
+    Set {
+        id: String,
+        change: Change,
+    },
     Archive,
+    Watch {
+        dir: Option<String>,
+        interval: u64,
+        dispatch_argv: Vec<String>,
+    },
 }
 
 const USAGE: &str = "\
@@ -22,6 +37,7 @@ corral-todo list [--open|--status <open|progress|blocked|done>]
 corral-todo add \"<text>\"
 corral-todo set <id> <open|progress|blocked|done> [--target <dir>] [--worker <session>] [--reason <text>]
 corral-todo archive
+corral-todo watch [--dir <dir>] [--interval <secs>] -- <dispatcher argv...>
 common: [--file <todo.txt>]  (else $CORRAL_TODO_FILE, else ./todo.txt)";
 
 fn parse_state(word: &str) -> Result<State, String> {
@@ -97,6 +113,34 @@ impl Command {
             "archive" => {
                 reject_unknown_flags(&rest)?;
                 Ok(Command::Archive)
+            }
+            "watch" => {
+                let dir = take_flag(&mut rest, "--dir")?;
+                let interval = take_flag(&mut rest, "--interval")?
+                    .map(|s| s.parse::<u64>().map_err(|e| format!("--interval: {e}")))
+                    .transpose()?
+                    .unwrap_or(5);
+                let at = rest.iter().position(|a| a == "--");
+                let dispatch_argv = match at {
+                    Some(at) => rest.split_off(at + 1),
+                    None => Vec::new(),
+                };
+                if dispatch_argv.is_empty() {
+                    // Never default the harness: corral's own rule is that it
+                    // does not name an agent kind, and neither does this.
+                    return Err(
+                        "watch needs a dispatcher argv after --, e.g. `watch --dir ~/todos -- pi`"
+                            .into(),
+                    );
+                }
+                // Drop the `--` separator itself before the flag check.
+                rest.retain(|a| a != "--");
+                reject_unknown_flags(&rest)?;
+                Ok(Command::Watch {
+                    dir,
+                    interval,
+                    dispatch_argv,
+                })
             }
             other => Err(format!("unknown subcommand {other:?}\n{USAGE}")),
         }
@@ -184,6 +228,36 @@ fn run(command: Command, store: &Store) -> Result<(), String> {
         Command::Archive => {
             let moved = store.archive()?;
             println!("archived {moved}");
+            Ok(())
+        }
+        Command::Watch {
+            dir,
+            interval,
+            dispatch_argv,
+        } => {
+            // `--dir` names a todo directory, whose file is `<dir>/todo.txt`.
+            // Without it, watch the file the store already resolved (`--file`,
+            // else $CORRAL_TODO_FILE, else ./todo.txt) and take its parent as
+            // the directory. Either way the watched file and the directory
+            // agree by construction, so they cannot name different places.
+            let (file, dir) = match dir {
+                Some(d) => (PathBuf::from(&d).join("todo.txt"), PathBuf::from(d)),
+                None => (
+                    store.path().to_path_buf(),
+                    store
+                        .path()
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_default(),
+                ),
+            };
+            let mut watcher = Watcher::new(
+                Store::new(file),
+                dir,
+                dispatch_argv,
+                Duration::from_secs(interval),
+            );
+            watcher.run(&TerminalLauncher);
             Ok(())
         }
     }
@@ -283,5 +357,50 @@ mod tests {
     #[test]
     fn requires_a_subcommand() {
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn parses_watch_with_its_dispatch_argv() {
+        assert_eq!(
+            parse(&[
+                "watch",
+                "--dir",
+                "/home/me/todos",
+                "--interval",
+                "2",
+                "--",
+                "pi"
+            ])
+            .unwrap(),
+            Command::Watch {
+                dir: Some("/home/me/todos".into()),
+                interval: 2,
+                dispatch_argv: vec!["pi".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn watch_defaults_its_interval() {
+        let Command::Watch { interval, .. } = parse(&["watch", "--", "pi"]).unwrap() else {
+            panic!("expected watch");
+        };
+        assert_eq!(interval, 5);
+    }
+
+    #[test]
+    fn watch_keeps_a_multi_word_dispatcher_argv() {
+        let Command::Watch { dispatch_argv, .. } =
+            parse(&["watch", "--", "pi", "--model", "x"]).unwrap()
+        else {
+            panic!("expected watch");
+        };
+        // Flags after `--` belong to the harness, not to corral-todo.
+        assert_eq!(dispatch_argv, vec!["pi", "--model", "x"]);
+    }
+
+    #[test]
+    fn watch_refuses_to_default_the_harness() {
+        assert!(parse(&["watch", "--dir", "/home/me/todos"]).is_err());
     }
 }
