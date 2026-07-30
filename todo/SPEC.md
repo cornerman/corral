@@ -1,10 +1,11 @@
 # Multi-Agent Todo System (MVP)
 
-Status: design, revised 2026-07-26. Not implemented. Two parts: a standalone
-watcher plus dispatcher agent that need no corral change (specified against the
-four-verb tool surface, CONVENTION.md v3), and a board integration that does change
-`corral-core` and both shells (see "Board Integration and Column Mapping", and the
-open questions it raises).
+Status: revised 2026-07-30. **Stage 1 is implemented** (the file, the `corral-todo`
+CLI, the `watch` supervisor, the dispatcher policy in `DISPATCHER.md`) and needs no
+corral change; it is specified against the four-verb tool surface, CONVENTION.md
+v3. **Stage 2 is not built**: the board integration, which does change
+`corral-core` and both shells (see "Board Integration and Column Mapping" and the
+open questions it raises). Setup: `README.md`.
 
 ## What This Is
 
@@ -453,6 +454,18 @@ file, the TODO column renders empty and every todo key reports that no todo file
 configured. No other corral configuration changes.
 
 ## Known Limits (MVP, Deliberate)
+
+The file is rewritten whitespace-normalized the first time `corral-todo` writes it:
+runs of spaces collapse to one, leading indentation is dropped, and blank lines are
+removed. The item list is the file's whole meaning, so preserving decorative layout
+would mean carrying each original line beside its parsed form and reconciling the
+two on every mutation. Cost: one extra dispatcher wake on first read, and a
+hand-aligned file loses its alignment.
+
+A read normalizes but writes only when something changed, so `list` and the
+watcher's poll leave the file alone in the steady state. An unidentified item still
+cannot be observed, because the write happens exactly when an id or date had to be
+coined.
 
 Nothing supervises a worker that stops without reporting. Its item sits at
 `status:progress` until you notice and edit the line. The recorded `target:` and

@@ -64,6 +64,9 @@
             cageBin="${pkgs.lib.makeBinPath [ pkgs.cage pkgs.xwayland ]}"
             wrapProgram "$out/bin/corral"  --prefix PATH : "$cageBin"
             wrapProgram "$out/bin/corrald" --prefix PATH : "$cageBin"
+            # corral-todo's watch subcommand launches the dispatcher hidden, so
+            # it execs cage exactly as the board and the daemon do.
+            wrapProgram "$out/bin/corral-todo" --prefix PATH : "$cageBin"
             wrapProgram "$out/bin/corral-gui" \
               --prefix PATH : "$cageBin" \
               --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (guiLibsFor pkgs)}"

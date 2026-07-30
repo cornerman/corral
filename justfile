@@ -65,3 +65,11 @@ watch-gui *ARGS:
 # Watch + rebuild-and-rerun the daemon on every change
 watch-daemon *ARGS:
     cargo watch -c -x 'run -p corral-daemon -- {{ARGS}}'
+
+# Watch a todo directory and wake its dispatcher (see todo/SPEC.md)
+todo-watch dir harness="pi":
+    cargo run -p corral-todo -- watch --dir {{dir}} -- {{harness}}
+
+# Run the todo CLI against a todo file (list/add/set/archive)
+todo *ARGS:
+    cargo run -p corral-todo -- {{ARGS}}

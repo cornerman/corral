@@ -132,10 +132,13 @@ control socket; the board is a pure registry reflector, so any number may run.
 
 ## Crates
 
-Four workspace crates: `core` (shared logic), `board` (TUI `corral`), `gui`
-(desktop `corral-gui`), `daemon` (`corrald`). `core` holds everything the three
-binaries share, so no UI links another's dependencies (board + gui keep
-ratatui / iced, the daemon keeps ksni).
+Four workspace crates under `crates/`: `core` (shared logic), `board` (TUI
+`corral`), `gui` (desktop `corral-gui`), `daemon` (`corrald`). `core` holds
+everything the three binaries share, so no UI links another's dependencies (board
++ gui keep ratatui / iced, the daemon keeps ksni). A fifth member, `todo/`
+(`corral-todo`), sits outside `crates/` and is not part of corral proper: it is a
+client of `corral-core` like any outside program, and nothing here depends on it
+(see Todo System).
 
 - `crates/core` — `corral-core` (lib): the shared foundation, UI-free
   (`serde_json`, `libc`, `inotify`).
@@ -880,6 +883,14 @@ irrelevant to it. Shown verbatim on the agent's card.
   mirror. Uses the environment-resolved terminal to spawn/resume delivery
   targets. Reads the same registry
   as the board.
+- CLI `corral-todo` — the todo system's only sanctioned writer of `todo.txt`
+  (`list` / `add` / `set` / `archive`), plus `watch`, the supervisor that polls a
+  todo directory and wakes exactly one dispatcher agent per change. The file is
+  `--file`, else `$CORRAL_TODO_FILE`, else `./todo.txt`; writes take an exclusive
+  `flock` on `<file>.lock` and rewrite through temp-plus-rename. Reads the todo
+  directory's own `.corral/registry` and its agents' sockets; execs `cage` for a
+  hidden dispatcher launch. Knows nothing about `corrald` (the dispatcher's own
+  tools reach it). See `todo/README.md`.
 - pi extension `corral-pi` — see Extensions above.
 - Registry records and unix sockets in each `<cwd>/.corral/`, plus per-session
   pointers in `$HOME/.corral/input/registry/` (all created 0700; override with
@@ -1007,43 +1018,83 @@ irrelevant to it. Shown verbatim on the agent's card.
   drop in as new `WindowFocuser` / `Launcher` implementations behind the same
   seams, with no change to the triage core.
 
-## Todo System (`todo/`, Design Only)
+## Todo System (`todo/`, Stage 1 Shipped)
 
-`todo/SPEC.md` (design) plus `todo/DISPATCHER.md` (the dispatcher agent's policy,
-symlinked as the live todo directory's `AGENTS.md`) design a multi-agent todo
-system that rides on corral: a watched `todo.txt` whose items a long-lived
-dispatcher agent hands to fresh worker agents through `corral_spawn_agent`, with
-task state carried in the todo.txt line itself (`x` completion plus
-`status:progress` / `status:blocked`, and `id:` / `target:` / `worker:` metadata a
-`corral-todo` CLI maintains). Nothing is implemented yet.
+A multi-agent todo system riding on corral: a watched `todo.txt` whose items a
+long-lived dispatcher agent hands to fresh worker agents through
+`corral_spawn_agent`, with task state carried in the todo.txt line itself (`x`
+completion plus `status:progress` / `status:blocked`, and `id:` / `target:` /
+`worker:` metadata the `corral-todo` CLI maintains). Design: `todo/SPEC.md`.
+Dispatcher policy: `todo/DISPATCHER.md` (prose, not code — symlinked as the live
+todo directory's `AGENTS.md`). Setup: `todo/README.md`.
 
-It ships in two stages, and only the first is corral-neutral. **Stage 1** (the
-file, the `corral-todo` CLI, the `corral-todo watch` supervisor, the dispatcher
-policy) needs no corral change: the crate consumes `corral-core` (registry scan,
+It ships in two stages, and only the first exists. **Stage 1 (done)** needs no
+corral change: the `corral-todo` crate consumes `corral-core` (registry scan,
 prompt injection, launch) exactly as an outside program would, and orchestration
-stays out of corral per `VISION.md`. **Stage 2** is a board feature and does change
-corral: a **TODO column** fed by `todo.txt`, with the four state columns collapsed
-into a stacked `PROGRESS` plus `DONE/DORMANT`, a quick-add key, and card moves that
-write task state and wake the dispatcher. That is a deliberate operator amendment
-to the "board is a pure viewer of the registry" premise (still true for running
-agents), and it touches `core::model::Column::ALL` and therefore `core::nav`,
-`core::transition` and both shells' layout/hit-testing, for every agent. Two design
-questions are open there (the drop granularity inside `PROGRESS`, and whether the
-third column holds done tasks or only dormant records); see the spec.
+stays out of corral per `VISION.md`. **Stage 2 (not built)** is a board feature and
+would change corral: a **TODO column** fed by `todo.txt`, the four state columns
+collapsed into a stacked `PROGRESS` plus `DONE/DORMANT`, a quick-add key, and card
+moves that write task state and wake the dispatcher. That is a deliberate operator
+amendment to the "board is a pure viewer of the registry" premise (still true for
+running agents), and it touches `core::model::Column::ALL` and therefore
+`core::nav`, `core::transition` and both shells' layout/hit-testing, for every
+agent. Two design questions are open there (the drop granularity inside
+`PROGRESS`, and whether the third column holds done tasks or only dormant
+records); see the spec.
+
+- `todo/` — `corral-todo` (a fifth workspace member, deliberately outside
+  `crates/` so the design docs and the code implementing them sit together). A
+  pure core plus a thin shell, unit-tested throughout.
+  - `src/item.rs` — one todo.txt line in and out. Prose and `key:value` tokens
+    stay together in one `rest` string so an operator's words, `+projects`,
+    `@contexts` and token order survive a round trip; `state()` reads the state
+    from the line alone (`x` beats a stale `status:`, an unknown status reads as
+    open). Whitespace is the one thing not preserved.
+  - `src/normalize.rs` — coin a missing `id:` (FNV-1a of the line's own text into
+    3 base36 chars, re-salted against ids already in the file, so no counter and
+    no random source) and stamp a creation date. **Idempotent**, since the watcher
+    hashes the normalized file.
+  - `src/state.rs` — apply a `Change` to an item, validated fully before any field
+    is written (a target with a space in it is refused loudly: todo.txt key values
+    cannot contain one). A blocked reason joins the task text after ` -- `, since
+    one task is one line.
+  - `src/store.rs` — the one write path: exclusive `flock` on a sidecar
+    `<file>.lock` (not the file itself, which `rename` replaces), read, normalize,
+    mutate, rewrite through temp-plus-rename. `mutate` always writes;
+    `read_normalized` writes **only when normalization changed something**, so
+    `list` and the watcher's poll do not churn the file. `civil_date` is the
+    days-from-civil inverse, the crate's only clock.
+  - `src/wake.rs` — `plan()`: the ordered wake chain (inject into the live socket
+    → resume that exact session → spawn fresh), every step hidden. A chain, not a
+    choice, because a record's `socket` being set does not prove it connects — the
+    same fallback `corrald`'s router uses.
+  - `src/watch.rs` — the poll loop: normalize, fingerprint the normalized items,
+    and on a change try the chain until a step lands. The fingerprint advances
+    only after a wake succeeds, so a change whose wake failed is retried.
+    Reads the todo dir's **own** `<dir>/.corral/registry`, not corrald's vetted
+    `state/registry`, so the wake path works while corrald is down.
+  - `src/main.rs` — the CLI (`list`, `add`, `set`, `archive`, `watch`), argv
+    parsed by a hand-rolled pure `Command::parse` (no argument-parsing dependency
+    for five subcommands). `watch` never defaults the harness: the argv after `--`
+    names it, mirroring corral's rule that it never names an agent kind.
 
 ## Development Setup
 
 - Nix flake (nixpkgs-unstable) + direnv; Rust pinned via rust-toolchain.toml
-  through rust-overlay. Four workspace crates: `corral-core` (lib), `corral`
-  (TUI board bin), `corral-gui` (desktop board bin), `corral-daemon` (`corrald`
-  bin). The flake's devShell + package carry the GUI graphics libs (`libGL`,
+  through rust-overlay. Four workspace crates under `crates/`: `corral-core`
+  (lib), `corral` (TUI board bin), `corral-gui` (desktop board bin),
+  `corral-daemon` (`corrald` bin); plus `todo/` (`corral-todo`), the todo
+  system's crate, a client of `corral-core` that corral itself never links.
+  The flake's devShell + package carry the GUI graphics libs (`libGL`,
   `libxkbcommon`, `wayland`, X11) and `wrapProgram` the `corral-gui` binary with
   the driver library path for NixOS. It also ships `cage` (+ `xwayland`) on the
   runtime PATH of all three binaries (and in the devShell), the headless
-  compositor hidden agents run inside. `just` commands: `test`, `lint`, `board`,
+  compositor hidden agents run inside (also wrapped onto `corral-todo`, whose
+  `watch` launches the dispatcher hidden). `just` commands: `test`, `lint`, `board`,
   `gui`, `daemon`, `watch` (cargo-watch tests), and `watch-board` / `watch-gui`
-  / `watch-daemon` (rebuild + rerun on change), `nix-build`, and `e2e` /
-  `e2e-one <scenario>` (VM smoke tests). GUI builds need the
+  / `watch-daemon` (rebuild + rerun on change), `nix-build`, `e2e` /
+  `e2e-one <scenario>` (VM smoke tests), and `todo` / `todo-watch <dir>
+  [harness]` for the todo system. GUI builds need the
   devShell (its `LD_LIBRARY_PATH`), so run them via `nix develop`. The e2e
   checks need KVM and a test-only `home-manager` flake input; they build a
   NixOS VM (`nix/tests/`) and are Linux-only.

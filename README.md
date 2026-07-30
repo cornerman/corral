@@ -114,6 +114,7 @@ shell (ratatui / iced / headless).
 | `crates/gui` | `corral-gui` — the same board as a desktop window (iced). |
 | `crates/daemon` | `corrald` — the messaging daemon (control socket, whitelist gate, approval tray). |
 | `extensions/` | per-harness adapters: pi, opencode, Claude Code, Cursor. |
+| `todo/` | `corral-todo` — a watched todo.txt that dispatches tasks onto agents. Rides on corral; corral does not depend on it. |
 
 Dev loop: `nix develop` then `just test` / `just lint` / `just board` / `just
 gui` / `just daemon`. Architecture depth is in [AGENTS.md](AGENTS.md).
@@ -166,3 +167,5 @@ accepted risks are in [SECURITY.md](SECURITY.md).
 - [AGENTS.md](AGENTS.md) — architecture, crates, and the messaging daemon.
 - [extensions/](extensions/) — the per-harness adapters (pi, opencode, Claude
   Code, Cursor).
+- [todo/README.md](todo/README.md) — the todo system built on top: a watched
+  `todo.txt` whose items a dispatcher agent hands to fresh worker agents.
