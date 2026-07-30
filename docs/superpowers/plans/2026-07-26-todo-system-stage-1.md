@@ -54,7 +54,9 @@ Tests are Rust unit tests in a `#[cfg(test)] mod tests` block at the bottom of e
 - Consumes: nothing.
 - Produces: `corral_todo::item::{Item, State}`; `Item { completed: bool, completion_date: Option<String>, priority: Option<char>, creation_date: Option<String>, rest: String }`; `Item::parse(&str) -> Option<Item>` (`None` for a blank line), `Item::render(&self) -> String`, `Item::key(&self, &str) -> Option<&str>`, `Item::set_key(&mut self, &str, &str)`, `Item::remove_key(&mut self, &str)`, `Item::state(&self) -> State`; `enum State { Open, Progress, Blocked, Done }`.
 
-Design note to preserve: the item holds the prose plus its `key:value` tokens together in one `rest` string, and key access scans whitespace-separated tokens. That keeps the operator's own words, `+projects`, `@contexts` and token order byte-identical through a round trip, which a struct with a parsed-out key map would not.
+Design note to preserve: the item holds the prose plus its `key:value` tokens together in one `rest` string, and key access scans whitespace-separated tokens. That keeps the operator's own words, `+projects`, `@contexts` and token order intact through a round trip, which a struct with a parsed-out key map would not.
+
+The round trip is **whitespace-normalized, not byte-exact**: parsing splits on whitespace, so a run of spaces collapses to one and leading indentation is dropped. Since every read normalizes and writes back, an operator's hand-aligned file gets reflowed once on first read, costing one extra dispatcher wake and nothing else. Task 8 records this in `todo/SPEC.md`'s known limits. Preserving byte-exact spacing would mean carrying the original line beside the parsed fields and reconciling the two on every mutation, which is more machinery than the aesthetics are worth.
 
 - [ ] **Step 1: Add the crate to the workspace**
 
@@ -173,6 +175,24 @@ mod tests {
     }
 
     #[test]
+    fn collapses_whitespace_but_loses_nothing_else() {
+        // The round trip is whitespace-normalized, not byte-exact. Asserted so
+        // the behavior is a decision rather than a surprise.
+        let item = Item::parse("   do   it    id:a7f").unwrap();
+        assert_eq!(item.render(), "do it id:a7f");
+    }
+
+    #[test]
+    fn a_priority_after_the_dates_stays_in_the_text() {
+        // Parsing it would render it back before the dates and break the round
+        // trip, so it is left alone.
+        let line = "x 2026-07-25 (A) do it id:a7f";
+        let item = Item::parse(line).unwrap();
+        assert_eq!(item.priority, None);
+        assert_eq!(item.render(), line);
+    }
+
+    #[test]
     fn an_unknown_status_value_reads_as_open() {
         // Forward-compatible: a status the dispatcher does not know must not
         // strand the item outside every column.
@@ -193,8 +213,9 @@ Expected: FAIL, `cannot find type Item in this scope` / unresolved module.
 //!
 //! The prose and its `key:value` tokens stay together in `rest` and key access
 //! scans whitespace-separated tokens, so an operator's own words, `+projects`,
-//! `@contexts` and token order survive a parse/render round trip byte for byte.
-//! A parsed-out key map would reorder and reflow them.
+//! `@contexts` and token order survive a parse/render round trip; a parsed-out
+//! key map would reorder them. Whitespace is the one thing not preserved: runs
+//! of spaces collapse to one, since parsing splits on whitespace.
 
 /// The state of an item, read from the line itself rather than a side index.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -280,10 +301,9 @@ impl Item {
                 item.creation_date = Some(first);
             }
         }
-        // Priority may also follow the dates in the wild; accept it there too.
-        if item.priority.is_none() && words.peek().is_some_and(|w| is_priority(w)) {
-            item.priority = words.next().and_then(|w| w.as_bytes().get(1).map(|b| *b as char));
-        }
+        // A priority appearing *after* the dates is deliberately not parsed: it
+        // would render back before them (render has one fixed field order) and
+        // so break the round trip. Left in `rest`, it survives untouched.
         item.rest = words.collect::<Vec<_>>().join(" ");
         Some(item)
     }
@@ -783,9 +803,13 @@ git commit -m "todo: apply state changes with all-or-nothing validation"
 
 **Interfaces:**
 - Consumes: `item::Item`, `normalize::normalize`.
-- Produces: `corral_todo::store::Store`; `Store::new(path: impl Into<PathBuf>) -> Store`, `Store::path(&self) -> &Path`, `Store::with_lock<T>(&self, f: impl FnOnce(&mut Vec<Item>) -> Result<T, String>) -> Result<T, String>`, `Store::read_normalized(&self) -> Result<Vec<Item>, String>`, `Store::archive(&self) -> Result<usize, String>`, `Store::today() -> String`.
+- Produces: `corral_todo::store::Store`; `Store::new(path: impl Into<PathBuf>) -> Store`, `Store::path(&self) -> &Path`, `Store::mutate<T>(&self, f: impl FnOnce(&mut Vec<Item>) -> Result<T, String>) -> Result<T, String>`, `Store::read_normalized(&self) -> Result<Vec<Item>, String>`, `Store::archive(&self) -> Result<usize, String>`, `Store::today() -> String`.
 
-Design notes to preserve: the lock is taken on a sidecar `<todo.txt>.lock`, not on `todo.txt` itself, because the write path replaces `todo.txt` by rename — a lock held on the replaced inode would protect a file nobody is reading any more. And `with_lock` normalizes before calling `f`, so no caller can see an unidentified item.
+Design notes to preserve.
+
+The lock is taken on a sidecar `<todo.txt>.lock`, not on `todo.txt` itself, because the write path replaces `todo.txt` by rename — a lock held on the replaced inode would protect a file nobody is reading any more.
+
+Both entry points normalize before handing items out, so no caller can see an unidentified item. They differ in when they write, and that difference is load-bearing: `read_normalized` writes **only if normalization actually changed something**, while `mutate` always writes. A single always-writing entry point would make `corral-todo list` rewrite the file on every invocation and, worse, make the watcher rewrite it every few seconds forever — endless disk churn, a constantly bumped mtime, and a pointless write racing the operator's editor. This is why there are two methods rather than one with a flag: the caller's intent (read versus change) already determines the answer.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -823,10 +847,10 @@ mod tests {
     }
 
     #[test]
-    fn with_lock_writes_back_the_mutated_items() {
+    fn mutate_writes_back_the_mutated_items() {
         let (_dir, store) = store_with("do it id:a7f\n");
         store
-            .with_lock(|items| {
+            .mutate(|items| {
                 items[0].set_key("status", "progress");
                 Ok(())
             })
@@ -839,13 +863,26 @@ mod tests {
     fn an_error_from_the_closure_leaves_the_file_untouched() {
         let (_dir, store) = store_with("do it id:a7f\n");
         let err = store
-            .with_lock(|items| {
+            .mutate(|items| {
                 items[0].set_key("status", "progress");
                 Err::<(), String>("nope".into())
             })
             .unwrap_err();
         assert_eq!(err, "nope");
         assert_eq!(store.read_normalized().unwrap()[0].key("status"), None);
+    }
+
+    #[test]
+    fn a_read_of_an_already_normalized_file_does_not_write() {
+        // Otherwise every `list`, and every watcher tick, rewrites the file
+        // forever.
+        let (_dir, store) = store_with("do it id:a7f\n");
+        store.read_normalized().unwrap();
+        let before = std::fs::metadata(store.path()).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        store.read_normalized().unwrap();
+        let after = std::fs::metadata(store.path()).unwrap().modified().unwrap();
+        assert_eq!(before, after, "a no-op read must not touch the file");
     }
 
     #[test]
@@ -888,7 +925,7 @@ Expected: FAIL, unresolved module `store`.
 //! The one write path to `todo.txt`: exclusive `flock`, read, mutate, rewrite
 //! through a temp file plus rename.
 //!
-//! Every mutation goes through `with_lock`, so a read-modify-write is atomic
+//! Every mutation goes through `mutate`, so a read-modify-write is atomic
 //! against a second dispatcher session, against the watcher's own
 //! normalization, and against an editor that honors the lock.
 
@@ -975,6 +1012,11 @@ impl Store {
         format!("{y:04}-{m:02}-{d:02}")
     }
 
+    /// Read the file's items. Blank lines are dropped rather than preserved:
+    /// the item list is the file's whole meaning, and carrying blank lines
+    /// through every mutation would mean tracking positions that no consumer
+    /// reads. A file with grouping blank lines therefore loses them on first
+    /// write (recorded in `todo/SPEC.md`'s known limits).
     fn read_items(&self) -> Result<Vec<Item>, String> {
         match std::fs::read_to_string(&self.path) {
             Ok(text) => Ok(text.lines().filter_map(Item::parse).collect()),
@@ -994,10 +1036,10 @@ impl Store {
         write_atomic(&self.path, &format!("{body}\n"))
     }
 
-    /// Lock, read, normalize, hand the items to `f`, and rewrite only if `f`
-    /// succeeded. An `Err` from `f` aborts the write, so a refused change
-    /// leaves the file exactly as it was.
-    pub fn with_lock<T>(
+    /// Lock, read, normalize, hand the items to `f`, and rewrite. An `Err` from
+    /// `f` aborts the write, so a refused change leaves the file exactly as it
+    /// was. Every mutation in the crate goes through here.
+    pub fn mutate<T>(
         &self,
         f: impl FnOnce(&mut Vec<Item>) -> Result<T, String>,
     ) -> Result<T, String> {
@@ -1009,18 +1051,23 @@ impl Store {
         Ok(out)
     }
 
-    /// The normalized items. Reading normalizes and writes back, so there is
-    /// no way to observe an item without an `id:`. One locked pass: the items
-    /// the caller gets are exactly the ones just written.
+    /// The normalized items, writing back **only if** normalization changed
+    /// something. A read that always wrote would make `list` rewrite the file
+    /// every time and the watcher rewrite it every tick, forever.
     pub fn read_normalized(&self) -> Result<Vec<Item>, String> {
-        self.with_lock(|items| Ok(items.clone()))
+        let _lock = Lock::acquire(&self.path)?;
+        let mut items = self.read_items()?;
+        if normalize(&mut items, &Store::today()) {
+            self.write_items(&items)?;
+        }
+        Ok(items)
     }
 
     /// Move completed lines out to `done.txt` beside the todo file, the
     /// todo.txt archive convention. Returns how many lines moved.
     pub fn archive(&self) -> Result<usize, String> {
         let done_path = self.path.with_file_name("done.txt");
-        self.with_lock(|items| {
+        self.mutate(|items| {
             let (done, keep): (Vec<Item>, Vec<Item>) =
                 items.iter().cloned().partition(|i| i.completed);
             if done.is_empty() {
@@ -1297,11 +1344,13 @@ fn run(command: Command, store: &Store) -> Result<(), String> {
             Ok(())
         }
         Command::Add { text } => {
-            let id = store.with_lock(|items| {
+            let id = store.mutate(|items| {
                 let item = Item::parse(&text).ok_or_else(|| "task text is empty".to_string())?;
                 items.push(item);
-                // Normalization runs on read, not after this push, so coin the
-                // id here to be able to print it.
+                // `mutate` normalized *before* this closure ran, so the item
+                // just pushed has no id yet. Normalize again to coin one and be
+                // able to print it.  (Idempotent, so the existing items are
+                // untouched.)
                 let today = Store::today();
                 corral_todo::normalize::normalize(items, &today);
                 items
@@ -1313,7 +1362,7 @@ fn run(command: Command, store: &Store) -> Result<(), String> {
             println!("{id}");
             Ok(())
         }
-        Command::Set { id, change } => store.with_lock(|items| {
+        Command::Set { id, change } => store.mutate(|items| {
             let item = items
                 .iter_mut()
                 .find(|i| i.key("id") == Some(id.as_str()))
@@ -1331,14 +1380,20 @@ fn run(command: Command, store: &Store) -> Result<(), String> {
 }
 
 fn main() {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let file = match take_flag(&mut args, "--file") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--file` is pulled only from before a literal `--`, so a dispatcher argv
+    // (`watch -- pi --file x`) keeps its own flags instead of losing them here.
+    let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    let (mut head, tail) = (args[..split].to_vec(), args[split..].to_vec());
+    let file = match take_flag(&mut head, "--file") {
         Ok(f) => f,
         Err(e) => {
             eprintln!("corral-todo: {e}");
             std::process::exit(2);
         }
     };
+    head.extend(tail);
+    let args = head;
     let command = match Command::parse(&args) {
         Ok(c) => c,
         Err(e) => {
@@ -1386,7 +1441,7 @@ git commit -m "todo: add the corral-todo CLI (list, add, set, archive)"
 
 ---
 
-### Task 6: The Wake Decision
+### Task 6: The Wake Plan
 
 **Files:**
 - Create: `todo/src/wake.rs`
@@ -1394,9 +1449,15 @@ git commit -m "todo: add the corral-todo CLI (list, add, set, archive)"
 
 **Interfaces:**
 - Consumes: `corral_core::discovery::{RegistryEntry, live_socket}`, `corral_core::launch::LaunchMode`.
-- Produces: `corral_todo::wake::{Wake, decide, WAKE_MESSAGE}`; `enum Wake { Inject { socket: PathBuf }, Resume { argv: Vec<String>, mode: LaunchMode }, Spawn { argv: Vec<String> } }`; `decide(entries: &[RegistryEntry], dispatch_argv: &[String]) -> Wake`.
+- Produces: `corral_todo::wake::{Wake, plan, WAKE_MESSAGE}`; `enum Wake { Inject { socket: PathBuf }, Launch { argv: Vec<String>, mode: LaunchMode } }`; `plan(entries: &[RegistryEntry], dispatch_argv: &[String]) -> Vec<Wake>`.
 
-Design notes to preserve. The watcher reads the todo directory's **own** `<dir>/.corral/registry`, not corrald's vetted `state/registry`: the record's physical location is what proves its directory, the watcher runs as the operator on the trusted side of the boundary, and depending on corrald's curation would make the wake path fail whenever corrald is down (the spec states the wake path does not need corrald). Records carry no `cwd` field, so the caller stamps `cwd = dir` from where they were read. Among several records the most recently seen one wins, because that is the session an operator most likely still has in mind.
+Design notes to preserve.
+
+**Why a plan (an ordered list) rather than a single decision.** A record's `socket` field being set does not prove the socket is connectable: a dispatcher that crashed leaves the field set, and `live_socket` performs no connect. A function returning one `Inject` would therefore retry a dead socket on every edit, forever, and never fall back. So `plan` returns the fallback chain — inject, then resume that exact session, then spawn fresh — and the caller tries each until one succeeds. This mirrors what `corrald`'s router already does (`AGENTS.md`: "A live socket that fails to connect (crashed session) falls back to spawn/resume — the daemon needs no dead-socket tracking"), so the todo watcher and the daemon handle a crashed agent the same way.
+
+**Why two variants, not three.** Resume and spawn differ only in the argv and are executed identically (launch a window rooted at the directory, carrying the wake as its message). Collapsing them into `Launch` keeps the executor a two-arm match and puts the `LaunchMode` decision in this pure module for both, rather than having the shell construct one for spawn and inherit one for resume.
+
+**Which registry.** The watcher reads the todo directory's **own** `<dir>/.corral/registry`, not corrald's vetted `state/registry`: the record's physical location is what proves its directory, the watcher runs as the operator on the trusted side of the boundary, and depending on corrald's curation would make the wake path fail whenever corrald is down (the spec states the wake path does not need corrald). Records carry no `cwd` field, so the caller stamps `cwd = dir` from where they were read. Among several records the most recently seen one wins, because that is the session an operator most likely still has in mind.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1407,6 +1468,8 @@ In `todo/src/wake.rs`:
 mod tests {
     use super::*;
 
+    /// `RegistryEntry` derives no `Default`, so every field is spelled out,
+    /// the same way `crates/core/src/curation.rs`'s own tests build one.
     fn entry(session: &str, socket: Option<&str>, last_seen: &str) -> RegistryEntry {
         RegistryEntry {
             session_id: session.into(),
@@ -1419,43 +1482,56 @@ mod tests {
             resume_command: Some(vec!["pi".into(), "--session".into(), "{sessionId}".into()]),
             label: Some("pi".into()),
             last_seen: Some(last_seen.into()),
-            ..Default::default()
+            gui: false,
+            message_flag: None,
+            hidden: false,
+            description: None,
+            model: None,
+            entries: None,
+            context_percent: None,
+            context_age: None,
         }
     }
 
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
     #[test]
-    fn a_live_record_is_injected() {
+    fn a_live_record_is_injected_first_then_falls_back() {
         let entries = vec![entry("S1", Some("/home/me/todos/.corral/S1.sock"), "2026-07-26T10:00:00Z")];
+        let steps = plan(&entries, &argv(&["pi"]));
+        // Inject, then resume that same session, then a fresh spawn: a record
+        // with a socket set is not proof the socket connects.
+        assert_eq!(steps.len(), 3);
         assert_eq!(
-            decide(&entries, &["pi".to_string()]),
+            steps[0],
             Wake::Inject { socket: PathBuf::from("/home/me/todos/.corral/S1.sock") }
         );
+        let Wake::Launch { argv: resume, .. } = &steps[1] else {
+            panic!("expected a resume launch");
+        };
+        assert_eq!(resume, &argv(&["pi", "--session", "S1"]));
+        assert_eq!(steps[2], Wake::Launch { argv: argv(&["pi"]), mode: hidden() });
     }
 
     #[test]
     fn a_dormant_record_is_resumed_with_its_own_session_id() {
-        let entries = vec![entry("S1", None, "2026-07-26T10:00:00Z")];
-        let Wake::Resume { argv, .. } = decide(&entries, &["pi".to_string()]) else {
-            panic!("expected a resume");
+        let steps = plan(&[entry("S1", None, "2026-07-26T10:00:00Z")], &argv(&["pi"]));
+        let Wake::Launch { argv: resume, mode } = &steps[0] else {
+            panic!("expected a resume launch");
         };
         // The session id must survive, or every worker's reply handle breaks.
-        assert_eq!(argv, vec!["pi", "--session", "S1"]);
-    }
-
-    #[test]
-    fn a_resume_stays_hidden_so_no_window_appears() {
-        let entries = vec![entry("S1", None, "2026-07-26T10:00:00Z")];
-        let Wake::Resume { mode, .. } = decide(&entries, &["pi".to_string()]) else {
-            panic!("expected a resume");
-        };
+        assert_eq!(resume, &argv(&["pi", "--session", "S1"]));
+        // Hidden, or a window pops up on every todo edit.
         assert!(mode.hidden);
     }
 
     #[test]
-    fn no_record_spawns_the_configured_argv() {
+    fn no_record_plans_a_single_fresh_spawn() {
         assert_eq!(
-            decide(&[], &["pi".to_string()]),
-            Wake::Spawn { argv: vec!["pi".to_string()] }
+            plan(&[], &argv(&["pi"])),
+            vec![Wake::Launch { argv: argv(&["pi"]), mode: hidden() }]
         );
     }
 
@@ -1466,19 +1542,29 @@ mod tests {
             entry("NEW", Some("/home/me/todos/.corral/NEW.sock"), "2026-07-26T10:00:00Z"),
         ];
         assert_eq!(
-            decide(&entries, &["pi".to_string()]),
+            plan(&entries, &argv(&["pi"]))[0],
             Wake::Inject { socket: PathBuf::from("/home/me/todos/.corral/NEW.sock") }
         );
     }
 
     #[test]
-    fn a_dormant_record_with_no_resume_command_falls_back_to_a_fresh_spawn() {
+    fn a_dormant_record_with_no_resume_command_plans_only_a_fresh_spawn() {
         let mut e = entry("S1", None, "2026-07-26T10:00:00Z");
         e.resume_command = None;
         assert_eq!(
-            decide(&[e], &["pi".to_string()]),
-            Wake::Spawn { argv: vec!["pi".to_string()] }
+            plan(&[e], &argv(&["pi"])),
+            vec![Wake::Launch { argv: argv(&["pi"]), mode: hidden() }]
         );
+    }
+
+    #[test]
+    fn every_step_is_hidden() {
+        let entries = vec![entry("S1", Some("/x/.corral/S1.sock"), "2026-07-26T10:00:00Z")];
+        for step in plan(&entries, &argv(&["pi"])) {
+            if let Wake::Launch { mode, .. } = step {
+                assert!(mode.hidden, "the dispatcher is background machinery");
+            }
+        }
     }
 
     #[test]
@@ -1488,10 +1574,12 @@ mod tests {
         assert!(WAKE_MESSAGE.contains("todo.txt"));
         assert!(!WAKE_MESSAGE.contains("spawn"));
     }
+
+    fn hidden() -> LaunchMode {
+        LaunchMode { hidden: true, ..LaunchMode::default() }
+    }
 }
 ```
-
-If `RegistryEntry` has no `Default`, construct it with every field spelled out instead of `..Default::default()`; check `crates/core/src/discovery.rs` and follow whatever its own tests do.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1501,13 +1589,18 @@ Expected: FAIL, unresolved module `wake`.
 - [ ] **Step 3: Implement `todo/src/wake.rs`**
 
 ```rust
-//! Which of the three wake branches a registry scan implies. Pure: takes
-//! records, returns an intent, performs no IO.
+//! How to wake the dispatcher: an ordered fallback chain, decided from the
+//! registry alone. Pure — takes records, returns intents, performs no IO.
 //!
-//! The branches exist so the dispatcher's session id survives across wakes: a
+//! The chain exists so the dispatcher's session id survives across wakes: a
 //! live session is injected into, a dormant one is resumed through its own
 //! `resumeCommand` (same session id, so every worker's reply handle stays
-//! valid), and only a directory with no record at all gets a fresh launch.
+//! valid), and a fresh launch is the last resort.
+//!
+//! It is a chain rather than one choice because a record's `socket` field being
+//! set does not prove the socket connects — a crashed dispatcher leaves it set.
+//! The caller tries each step until one succeeds, the same fallback `corrald`'s
+//! router uses, so neither needs dead-socket bookkeeping.
 
 use corral_core::discovery::{live_socket, RegistryEntry};
 use corral_core::launch::LaunchMode;
@@ -1519,43 +1612,44 @@ use std::path::PathBuf;
 pub const WAKE_MESSAGE: &str =
     "todo.txt changed. Read it with corral-todo and run your dispatcher loop.";
 
-// No `Eq`: `LaunchMode` in the `Resume` variant is only `PartialEq`.
+/// One way to reach the dispatcher. No `Eq`: `LaunchMode` is only `PartialEq`.
 #[derive(Debug, PartialEq)]
 pub enum Wake {
     /// Write the wake into a live session's socket.
     Inject { socket: PathBuf },
-    /// Relaunch this exact session, carrying the wake as its launch message.
-    Resume { argv: Vec<String>, mode: LaunchMode },
-    /// Launch the configured dispatcher argv fresh, carrying the wake.
-    Spawn { argv: Vec<String> },
+    /// Launch a window rooted at the todo directory, carrying the wake as its
+    /// message. Covers both resuming an exact session (argv from the record's
+    /// `resumeCommand`) and starting a fresh one (the configured argv); the two
+    /// are executed identically, so they are one variant.
+    Launch { argv: Vec<String>, mode: LaunchMode },
 }
 
-pub fn decide(entries: &[RegistryEntry], dispatch_argv: &[String]) -> Wake {
-    let fresh = || Wake::Spawn { argv: dispatch_argv.to_vec() };
-    // Most recently seen first: that is the session the operator most likely
+/// The wake steps to try in order. Always non-empty: the last step is a fresh
+/// spawn, which needs no record.
+pub fn plan(entries: &[RegistryEntry], dispatch_argv: &[String]) -> Vec<Wake> {
+    // Hidden throughout: the dispatcher is background machinery, and a window
+    // popping up on every todo edit would be intolerable.
+    let hidden = |mode: LaunchMode| LaunchMode { hidden: true, ..mode };
+    let mut steps = Vec::new();
+    // Most recently seen wins: that is the session the operator most likely
     // still has in mind, and `last_seen` is ISO-8601 so it sorts as a string.
-    let newest = entries
-        .iter()
-        .max_by(|a, b| a.last_seen.cmp(&b.last_seen));
-    let Some(entry) = newest else {
-        return fresh();
-    };
-    if let Some(live) = live_socket(entry) {
-        return Wake::Inject { socket: live.socket };
+    if let Some(entry) = entries.iter().max_by(|a, b| a.last_seen.cmp(&b.last_seen)) {
+        if let Some(live) = live_socket(entry) {
+            steps.push(Wake::Inject { socket: live.path });
+        }
+        if let Some(argv) = entry.resume_argv() {
+            steps.push(Wake::Launch { argv, mode: hidden(entry.launch_mode()) });
+        }
     }
-    match entry.resume_argv() {
-        Some(argv) => Wake::Resume {
-            argv,
-            // Hidden always: the dispatcher is background machinery, and a
-            // window popping up on every todo edit would be intolerable.
-            mode: LaunchMode { hidden: true, ..entry.launch_mode() },
-        },
-        None => fresh(),
-    }
+    steps.push(Wake::Launch {
+        argv: dispatch_argv.to_vec(),
+        mode: hidden(LaunchMode::default()),
+    });
+    steps
 }
 ```
 
-Check `SocketEntry`'s field name in `crates/core/src/discovery.rs` and use whatever it actually is rather than assuming `socket`.
+Note `live.path`: `SocketEntry`'s field is `path`, not `socket` (verified in `crates/core/src/discovery.rs`).
 
 Add `pub mod wake;` to `todo/src/lib.rs`.
 
@@ -1568,7 +1662,7 @@ Run: `cargo clippy -p corral-todo -- -D warnings` — expect clean.
 
 ```bash
 git add todo/src
-git commit -m "todo: decide the three dispatcher wake branches"
+git commit -m "todo: plan the dispatcher wake as an ordered fallback chain"
 ```
 
 ---
@@ -1580,10 +1674,16 @@ git commit -m "todo: decide the three dispatcher wake branches"
 - Modify: `todo/src/lib.rs`, `todo/src/main.rs`
 
 **Interfaces:**
-- Consumes: `store::Store`, `wake::{Wake, decide, WAKE_MESSAGE}`, `corral_core::prompt::send_prompt`, `corral_core::launch::{Launcher, TerminalLauncher}`, `corral_core::discovery::scan_registry`.
-- Produces: `corral_todo::watch::{fingerprint, Watcher}`; `fingerprint(items: &[Item]) -> u64`; `Watcher::new(store: Store, dir: PathBuf, dispatch_argv: Vec<String>, interval: Duration)`, `Watcher::tick(&mut self, launcher: &dyn Launcher) -> Result<Option<Wake>, String>`, `Watcher::run(&mut self) -> !`; and the `corral-todo watch [--dir <dir>] [--interval <secs>] -- <argv...>` subcommand.
+- Consumes: `store::Store`, `wake::{Wake, plan, WAKE_MESSAGE}`, `corral_core::prompt::send_prompt`, `corral_core::launch::{Launcher, TerminalLauncher}`, `corral_core::discovery::scan_registry`.
+- Produces: `corral_todo::watch::{fingerprint, Watcher}`; `fingerprint(items: &[Item]) -> u64`; `Watcher::new(store: Store, dir: PathBuf, dispatch_argv: Vec<String>, interval: Duration)`, `Watcher::tick(&mut self, launcher: &dyn Launcher) -> Result<Option<Wake>, String>`, `Watcher::run(&mut self, launcher: &dyn Launcher) -> !`; and the `corral-todo watch [--dir <dir>] [--interval <secs>] -- <argv...>` subcommand.
 
-Design notes to preserve: hash the **normalized** items, not the raw bytes, so id and date stamping is not itself a change (a fresh brain-dump costs one wake, not two). And `tick` returns the `Wake` it performed so the loop is testable without a real agent.
+Design notes to preserve.
+
+Hash the **normalized** items, not the raw bytes, so id and date stamping is not itself a change (a fresh brain-dump costs one wake, not two).
+
+`tick` returns the `Wake` it performed, so the loop is testable without a real agent.
+
+The fingerprint advances **only after a wake succeeds**. Noticing is this process's one job, so a change whose wake failed must stay pending and be retried on the next tick rather than being silently forgotten. A permanently failing wake therefore logs every tick; that is the intended fail-loud behavior, not a defect.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1669,6 +1769,27 @@ mod tests {
     }
 
     #[test]
+    fn a_change_whose_wake_failed_is_retried_on_the_next_tick() {
+        // Noticing is this process's one job, so a failed wake must not be
+        // recorded as handled.
+        struct Failing;
+        impl Launcher for Failing {
+            fn launch(&self, _: &Path, _: &[String], _: Option<&str>, _: &LaunchMode) -> Result<(), String> {
+                Err("no terminal".into())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("todo.txt"), "an idea\n").unwrap();
+        let mut w = watcher(dir.path());
+        assert!(w.tick(&Failing).is_err());
+        assert!(w.tick(&Failing).is_err(), "the change must still be pending");
+        // Once a wake can succeed, the pending change is delivered.
+        let ok = FakeLauncher(Mutex::new(Vec::new()));
+        assert!(w.tick(&ok).unwrap().is_some());
+        assert!(w.tick(&ok).unwrap().is_none(), "and then it settles");
+    }
+
+    #[test]
     fn a_missing_todo_file_is_not_a_wake_and_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let mut w = watcher(dir.path());
@@ -1678,9 +1799,10 @@ mod tests {
     }
 
     #[test]
-    fn the_fingerprint_ignores_line_order_changes_only_when_content_matches() {
+    fn the_fingerprint_tracks_content_and_nothing_else() {
         let a = vec![Item::parse("one id:a").unwrap()];
-        let b = vec![Item::parse("one id:a").unwrap()];
+        let b = vec![Item::parse("one   id:a").unwrap()];
+        // Whitespace collapses in parsing, so it cannot cause a spurious wake.
         assert_eq!(fingerprint(&a), fingerprint(&b));
         let c = vec![Item::parse("one id:a status:progress").unwrap()];
         assert_ne!(fingerprint(&a), fingerprint(&c));
@@ -1711,7 +1833,7 @@ Expected: FAIL, unresolved module `watch`.
 
 use crate::item::Item;
 use crate::store::Store;
-use crate::wake::{decide, Wake, WAKE_MESSAGE};
+use crate::wake::{plan, Wake, WAKE_MESSAGE};
 use corral_core::discovery::scan_registry;
 use corral_core::launch::{LaunchMode, Launcher};
 use corral_core::prompt::send_prompt;
@@ -1768,11 +1890,14 @@ impl Watcher {
         entries
     }
 
-    /// One poll. Returns the wake it performed, or `None` when the file did not
-    /// change. Returning the action is what makes the loop testable without a
-    /// real agent.
+    /// One poll. Returns the wake that succeeded, or `None` when the file did
+    /// not change. Returning the action is what makes the loop testable without
+    /// a real agent.
+    ///
+    /// The fingerprint advances only after a wake lands, so a change whose wake
+    /// failed stays pending and is retried next tick.
     pub fn tick(&mut self, launcher: &dyn Launcher) -> Result<Option<Wake>, String> {
-        if !self.store_exists() {
+        if !self.store.path().exists() {
             // Nothing to watch yet. Not an error: the operator may create the
             // file after starting the service.
             return Ok(None);
@@ -1782,32 +1907,32 @@ impl Watcher {
         if self.seen == Some(print) {
             return Ok(None);
         }
-        self.seen = Some(print);
-        let wake = decide(&self.records(), &self.dispatch_argv);
-        match &wake {
-            Wake::Inject { socket } => send_prompt(socket, WAKE_MESSAGE)
-                .map_err(|e| format!("cannot wake the dispatcher over {}: {e}", socket.display()))?,
-            Wake::Resume { argv, mode } => {
-                launcher.launch(&self.dir, argv, Some(WAKE_MESSAGE), mode)?
+        // Try each step of the chain, keeping the last error: a record's socket
+        // being set is no proof it connects, so a crashed dispatcher falls
+        // through to resume and then to a fresh spawn.
+        let mut last = String::from("no wake step available");
+        for step in plan(&self.records(), &self.dispatch_argv) {
+            let attempt = match &step {
+                Wake::Inject { socket } => send_prompt(socket, WAKE_MESSAGE).map_err(|e| {
+                    format!("cannot wake over {}: {e}", socket.display())
+                }),
+                Wake::Launch { argv, mode } => {
+                    launcher.launch(&self.dir, argv, Some(WAKE_MESSAGE), mode)
+                }
+            };
+            match attempt {
+                Ok(()) => {
+                    self.seen = Some(print);
+                    return Ok(Some(step));
+                }
+                Err(e) => last = e,
             }
-            Wake::Spawn { argv } => launcher.launch(
-                &self.dir,
-                argv,
-                Some(WAKE_MESSAGE),
-                // Hidden: the dispatcher is background machinery.
-                &LaunchMode { hidden: true, ..LaunchMode::default() },
-            )?,
         }
-        Ok(Some(wake))
+        Err(last)
     }
 
-    fn store_exists(&self) -> bool {
-        self.dir.join("todo.txt").exists()
-    }
-
-    /// Poll forever. A failed wake is reported and the loop continues, because
-    /// the next edit deserves another try; the fingerprint is already updated,
-    /// so a permanently broken wake logs once per edit rather than every tick.
+    /// Poll forever. A failed wake is reported and the loop continues; since the
+    /// fingerprint did not advance, the pending change is retried next tick.
     pub fn run(&mut self, launcher: &dyn Launcher) {
         loop {
             if let Err(e) = self.tick(launcher) {
@@ -1819,13 +1944,7 @@ impl Watcher {
 }
 ```
 
-Note the `store_exists` body above hardcodes `todo.txt` under `dir`, which would disagree with the store whenever `--file` points elsewhere. Use the store's own path instead (`Store::path`, produced by Task 4):
-
-```rust
-    fn store_exists(&self) -> bool {
-        self.store.path().exists()
-    }
-```
+Note `tick` asks `self.store.path().exists()` rather than joining `todo.txt` onto `dir`, so the existence check and the reads cannot disagree about which file is watched.
 
 - [ ] **Step 4: Add the `watch` subcommand**
 
@@ -1942,7 +2061,10 @@ Cover exactly the spec's "Prerequisites and First Run", in the inverted-pyramid 
 
 - [ ] **Step 4: Update the repository docs**
 
-In `AGENTS.md`, replace the "Todo System (`todo/`, Design Only)" heading and its stage-1 sentence: stage 1 is now implemented. State what ships (the `corral-todo` crate at `todo/`: `item`/`normalize`/`state`/`store`/`wake`/`watch` plus the CLI, a fifth workspace member, consuming `corral-core` as an outside program would), keep the stage-2 paragraph as still-unbuilt, and add `corral-todo` to the "Interfaces to the Outside World" list with its subcommands and the `$CORRAL_TODO_FILE` override. In `README.md`, add at most one line pointing at `todo/README.md` — the file is deliberately short and must not grow into a manual. In `todo/SPEC.md`, change the status header to say stage 1 is implemented and stage 2 is not.
+In `AGENTS.md`, replace the "Todo System (`todo/`, Design Only)" heading and its stage-1 sentence: stage 1 is now implemented. State what ships (the `corral-todo` crate at `todo/`: `item`/`normalize`/`state`/`store`/`wake`/`watch` plus the CLI, a fifth workspace member, consuming `corral-core` as an outside program would), keep the stage-2 paragraph as still-unbuilt, and add `corral-todo` to the "Interfaces to the Outside World" list with its subcommands and the `$CORRAL_TODO_FILE` override. In `README.md`, add at most one line pointing at `todo/README.md` — the file is deliberately short and must not grow into a manual. In `todo/SPEC.md`, change the status header to say stage 1 is implemented and stage 2 is not, and add two entries to "Known Limits (MVP, Deliberate)" that the implementation established:
+
+- **The file is rewritten whitespace-normalized.** Runs of spaces collapse to one, leading indentation is dropped, and blank lines are removed, the first time `corral-todo` writes the file. The item list is the file's whole meaning, so preserving decorative layout would mean carrying each original line beside its parsed form and reconciling them on every mutation. Cost: one extra dispatcher wake on first read, and a hand-aligned file loses its alignment.
+- **A read normalizes but writes only when something changed.** So `list` and the watcher's poll do not touch the file in the steady state; an unidentified item still cannot be observed, because the write happens whenever an id or date had to be coined.
 
 Do **not** touch `nix/tests/`: that rule covers corral's adapters, board and daemon, and stage 1 changes none of them. Say so in the commit body if you like, but add no scenario.
 
