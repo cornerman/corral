@@ -11,7 +11,7 @@
 //! and falls back to notifications only.
 
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::Sender;
 
 use ksni::blocking::TrayMethods;
 
@@ -244,19 +244,19 @@ impl ksni::Tray for CorralTray {
     }
 }
 
-/// A handle the main loop uses to push pending-approval state to the tray and
-/// receive operator actions. If the tray could not start (no StatusNotifierHost)
-/// the handle is inert and `commands` never yields, so the daemon degrades to
-/// notification-only approval with no other change.
+/// A handle the main loop uses to push pending-approval state to the tray. If
+/// the tray could not start (no StatusNotifierHost) the handle is inert and no
+/// command is ever sent, so the daemon degrades to notification-only approval
+/// with no other change.
 pub struct Tray {
     handle: Option<ksni::blocking::Handle<CorralTray>>,
-    pub commands: Receiver<TrayCommand>,
 }
 
 impl Tray {
-    /// Start the tray on its own thread (best-effort).
-    pub fn start() -> Self {
-        let (tx, commands) = mpsc::channel();
+    /// Start the tray on its own thread (best-effort). Operator actions go to
+    /// the caller's `tx`: the main loop owns that receiver so it can fold the
+    /// tray into the single event channel it blocks on.
+    pub fn start(tx: Sender<TrayCommand>) -> Self {
         // `assume_sni_available` survives the boot race: corrald starts on
         // `graphical-session.target`, often before the tray host (waybar)
         // registers the StatusNotifierWatcher. Without this, `spawn` fails
@@ -278,7 +278,7 @@ impl Tray {
                 None
             }
         };
-        Tray { handle, commands }
+        Tray { handle }
     }
 
     /// Reflect the current pending message approval (or its absence).
