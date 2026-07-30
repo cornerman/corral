@@ -30,6 +30,10 @@ pub fn refresh(
     state_registry_dir: &Path,
     approved_file: &Path,
 ) -> Vec<(String, Template)> {
+    // Drop pointers whose session record is long gone before scanning, so the
+    // scan stays proportional to the live sessions rather than to every session
+    // this machine ever ran.
+    curation::prune_orphan_pointers(pointer_dir);
     let approved = approved_commands::read_approved(approved_file);
     let split = curation::partition(curation::curate(pointer_dir), &approved);
     if std::fs::create_dir_all(state_registry_dir).is_err() {
