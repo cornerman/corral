@@ -11,7 +11,7 @@
 //! approval_needed / not-found); the actual delivery and the operator approval gate
 //! run later in the router. There is no wait for delivery.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -87,15 +87,30 @@ const MAX_CONCURRENT: usize = 64;
 /// Per-connection read timeout, so a client that connects and never sends a
 /// full request line cannot hold a handler open (T15).
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Max bytes of one request line. The timeout above bounds only *idle* time per
+/// read, so a client that keeps writing never trips it: without a byte cap, one
+/// connection grows the read buffer without limit (measured: 256 MiB from a
+/// single sender) and 64 concurrent handlers multiply it into an OOM kill of the
+/// singleton broker. A request is a `{"submit":"<path>"}` envelope, so this is
+/// generous by orders of magnitude (T15).
+const MAX_REQUEST: u64 = 8 * 1024;
 
 /// One connection: read a request line, ack the verdict, enqueue if routable.
 fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<Submission>) {
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
-    }
+    // Byte-capped read: a line that hits the cap without terminating is refused
+    // as malformed rather than buffered further.
+    let read = (&mut reader).take(MAX_REQUEST).read_line(&mut line);
     let mut conn = reader.into_inner();
+    match read {
+        Ok(n) if n as u64 == MAX_REQUEST && !line.ends_with('\n') => {
+            let _ = ack(&mut conn, "malformed");
+            return;
+        }
+        Ok(_) => {}
+        Err(_) => return,
+    }
     // Every request rides a submission envelope (`{"submit":"<outbox path>"}`):
     // corrald opens the file and derives the trusted `fromCwd` from where it
     // physically lives, so a self-reported sender cannot be forged (T2-send).
@@ -537,6 +552,39 @@ mod tests {
         assert!(
             !reply.contains(secret_path),
             "never leak an unreachable cwd"
+        );
+    }
+
+    #[test]
+    fn an_oversized_request_line_is_refused_without_unbounded_buffering() {
+        // The H3 regression: the read timeout bounds idle time, not volume, so a
+        // sender that keeps writing could grow the buffer without limit. The cap
+        // must refuse it instead, and the daemon must keep serving afterwards.
+        let (_tmp, socket, registry, whitelist, from) = setup();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let mut c = UnixStream::connect(&socket).unwrap();
+        // Far more than MAX_REQUEST, with no newline anywhere.
+        let chunk = vec![b'A'; 64 * 1024];
+        for _ in 0..16 {
+            if c.write_all(&chunk).is_err() {
+                break; // the daemon hung up on us: also a refusal
+            }
+        }
+        let mut buf = String::new();
+        let _ = c.read_to_string(&mut buf);
+        assert!(
+            buf.trim().is_empty() || buf.trim() == r#"{"status":"malformed"}"#,
+            "unexpected ack: {buf}"
+        );
+        assert!(rx.try_recv().is_err(), "an oversized line must not enqueue");
+
+        // The daemon still serves a legitimate submission afterwards.
+        assert_eq!(
+            submit(&socket, &from, "not json"),
+            r#"{"status":"malformed"}"#
         );
     }
 
