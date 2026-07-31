@@ -155,3 +155,20 @@ is still resolved (`xdg-terminal-exec`, else `$CORRAL_TERMINAL`, else `$TERMINAL
 and `cage` still needs to reach your compositor. Without them every wake fails
 with `no terminal found` and is retried on the next tick — loudly, in the journal,
 but nothing gets dispatched. This is how the VM e2e scenario first failed.
+
+`corrald` needs `CORRAL_TERMINAL` for the same reason, and for the same lack of a
+login shell: it launches the *worker* agents the dispatcher asks for, so without
+it every `corral_spawn_agent` dies with `no terminal found` in corrald's journal
+while the dispatcher's ack still says `accepted`. Set
+`programs.corral.daemon.terminal = "kitty -e"` in the home-manager module, which
+puts it in corrald's unit for you.
+
+## One Dispatcher, Never a Herd
+
+An agent takes seconds between process start and announcing its record, which is
+longer than a poll interval. So after a spawn the watcher holds further spawns for
+60s (`watch.rs` `SPAWN_GRACE`): a change arriving inside that window stays pending
+and is delivered by `inject` once the record appears, rather than starting a second
+dispatcher beside the booting one. After the grace expires a silent spawn is
+presumed dead and spawning is allowed again. Two edits in quick succession on a
+cold start therefore cost one dispatcher and two wakes, not two dispatchers.

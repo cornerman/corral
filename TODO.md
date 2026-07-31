@@ -48,10 +48,12 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
       pi/node/opencode closures granted). Once confined, flip the
       sandbox-negative checks in `scenarios/pi.py` from best-effort to hard
       asserts (cross-workdir read denied, sealed `state/registry` unwritable).
-- [ ] Hidden agents in the VM: hidden resume / hidden spawn launch
-      inside a headless `cage`, which did not come up under the VM's software
-      GL. Get `cage` working headless in the test (or document the SW-GL
-      limitation) and make sections 7-8 hard.
+- [ ] Hidden agents in the VM: **cage headless now provably works** under the
+      VM's software GL (`e2e-todo` §5, 2026-07-31: `cage -- kitty -e pi` ran and
+      the session announced with `hidden: true`). The earlier "did not come up"
+      note was wrong, or was really the `no terminal found` bug (see the todo
+      section). So flip `scenarios/pi.py` §7-8 from best-effort try/except to
+      hard asserts — they were hiding exactly that bug for weeks.
 - [ ] Run and harden the other three scenarios; each is wired and evaluates
       but was not run in the authoring sandbox. opencode needs a verified stub
       provider config, and should confirm the bun-under-Landlock outcome once
@@ -283,17 +285,54 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
    log. Different fingerprints in a row = not converging. Silence = settled.
    The wake log exists precisely to make this countable.
 2. **`e2e-todo` has never completed green** (`nix/tests/scenarios/todo.py`, wired
-   as `checks.e2e-todo`; deliberately NOT in the CI matrix yet). Sections 1-4
-   pass in a real VM: `init` writes `DISPATCHER.md` and no `AGENTS.md`, prints
-   rather than writes the whitelist lines, `list` sorts `(A)` before `(C)`, and
-   `watch` refuses a directory with no policy. Section 5 then failed with
-   `no terminal found`, because a hidden *terminal* agent is cage hosting a
-   terminal hosting pi and a systemd user unit has no `$TERMINAL`. Fixed by
-   passing `CORRAL_TERMINAL='kitty -e'` — **UNVERIFIED**, and sections 6-10
-   (inject reuses the session, fingerprint uniqueness, dispatch fan-out to a
-   worker, no windows mapped, settling) have never executed. Next run:
-   `just e2e-one e2e-todo` (~10 min). Add it to `.github/workflows/ci.yml`'s
-   matrix only once green.
+   as `checks.e2e-todo`; deliberately NOT in the CI matrix yet). **Sections 1-6
+   now pass in a real VM** (run 2026-07-31): `init` writes `DISPATCHER.md` and no
+   `AGENTS.md`, prints rather than writes the whitelist lines, `list` sorts `(A)`
+   before `(C)`, `watch` refuses a policy-less directory, the `CORRAL_TERMINAL`
+   fix for section 5 is **confirmed** (a hidden dispatcher launched under cage,
+   `hidden: true`, got `FIRST_PROMPT`, logged `via spawn`), and section 6's
+   `via inject` reached the live session. Section 7 then failed: see the two bugs
+   it found, both fixed below. Sections 8-10 (no windows mapped, file still
+   parses, settling) have still never executed. Next run: `just e2e-one e2e-todo`
+   (~10 min, needs KVM). Add it to `.github/workflows/ci.yml`'s matrix only once
+   green.
+
+   **Two real bugs found by that run, both fixed, the pair UNVERIFIED together**
+   (a re-run was started and its log was lost before it could be read — see
+   "Sandbox gotchas" below; treat section 7 onward as unproven):
+
+   - **corrald could not spawn any agent from its unit.** `corrald` resolves a
+     terminal at launch time, but a systemd user service inherits no `$TERMINAL`
+     and the VM has no `xdg-terminal-exec`, so every routed spawn died with
+     `corrald: route spawn: no terminal found` while the *caller's* ack still
+     said `accepted` (fire-and-forget hides it from the agent; only corrald's
+     journal shows it). This is a **product bug, not a test bug**: the shipped
+     `nix/hm-module.nix` unit had no `Environment=`, so every home-manager user
+     with `daemon.enable` had a corrald that could route to live agents but never
+     start one. FIX: new `programs.corral.daemon.terminal` option (null default,
+     e.g. `"kitty -e"`) rendered as a **quoted** `Environment=` entry, since
+     systemd splits unquoted spaces; `nix/tests/base.nix` sets it.
+   - **The watcher stacked dispatchers.** An agent needs seconds between process
+     start and announcing its record, which is longer than a poll interval, so a
+     change arriving in that gap found no record, fell to the end of the wake
+     chain, and spawned a *second* dispatcher (observed: two sessions in
+     `~/todos`, 4s apart, both holding `FIRST_PROMPT`). Section 6 still passed
+     because both existed before its snapshot — the assertion compared
+     before/after sets, so it could not see a herd that predated it. FIX:
+     `watch.rs` `SPAWN_GRACE` (60s) holds further spawns after one succeeds; the
+     pending change waits and lands via `inject` once the record appears, and
+     after the grace a silent spawn is presumed dead so spawning resumes.
+     `spawned_at` clears on any inject/resume (proof a session exists). The
+     scenario now asserts `len(sessions_before) == 1` so a herd fails loudly.
+
+   **`e2e-pi` §8 was masking the corrald bug.** It wraps the hidden-spawn check
+   in try/except as "best-effort (cage headless UNVERIFIED)", so the same
+   `no terminal found` failure passed silently there. e2e-todo caught it only
+   because its §7 asserts hard. Now that a hidden cage launch is **proven** to
+   work under the VM's software GL (pixman, via `environment.sessionVariables`,
+   which reaches user units through PAM), flip `scenarios/pi.py` §8 (and the
+   §7 hidden-resume probe) from best-effort to hard asserts, and drop the
+   corresponding "hidden agents in the VM" caveat from the e2e follow-ups above.
 3. **The scenario cannot test policy, only plumbing.** The stub LLM is a rule
    table, so `e2e-todo` drives `corral_spawn_agent` directly rather than letting
    a dispatcher decide. It therefore proves the wake chain and the fan-out, and
@@ -326,6 +365,19 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
    lost on first write (`todo/SPEC.md` known limits). `list` has no `--json`, so
    the dispatcher parses columns.
 
+### Sandbox gotchas (cost real time, 2026-07-31)
+
+- **`/tmp` does not survive between tool calls** in the agent sandbox. Two
+  `just e2e-one` runs were backgrounded with their logs in `/tmp`; the first was
+  readable across several calls, then both vanished mid-session, losing the
+  second run's failure detail entirely. Write long-running job logs somewhere
+  persistent (the repo dir, ignored, or `~/`) and grep them as they grow.
+- A VM check takes **~8-10 min** wall clock (build + boot + scenario), so
+  background it and do useful reading meanwhile rather than blocking.
+- `nix flake check --no-build` catches a broken module option or a bad
+  `Environment=` render in seconds, and is worth running before any 10-minute
+  VM round trip.
+
 ### Verification state at hand-off (2026-07-30)
 
 Green and re-run after every change: `just test` (290 workspace tests, 73 of them
@@ -340,3 +392,14 @@ refusal to clobber; `list` ordering; a live ACP socket receiving exactly one
 `session/prompt` per edit with the right wake text; the wake log's one-line-per-
 change behaviour with distinct fingerprints; and sections 1-4 of `e2e-todo` inside
 a real VM.
+
+### Verification state at hand-off (2026-07-31)
+
+Green after the two fixes above: `cargo test -p corral-todo` (75 tests: 59 lib +
+16, including the two new grace tests), `cargo clippy --workspace --all-targets
+-D warnings`, `nix flake check --no-build`. **Not** re-run: the full `just test`
+workspace suite, `nix build`, and `just e2e-one e2e-todo` (started, log lost).
+Do those three first — in particular the e2e run is the only thing that can
+confirm the corrald-terminal fix and sections 7-10, and `an_edit_wakes_again`
+needed `spawn_grace = Duration::ZERO` after the change, so other suites may hold
+similar timing assumptions.
