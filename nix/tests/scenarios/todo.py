@@ -164,6 +164,11 @@ assert "via spawn" in log, f"first wake should spawn: {log}"
 before = len(wake_lines())
 sessions_before = {r.get("sessionId") for r in state_records()
                    if TODOS in r.get("cwd", "")}
+# The startup content and the first add are two changes inside pi's boot
+# window; the spawn grace must hold the second one rather than stack a
+# sibling dispatcher (watch.rs SPAWN_GRACE).
+assert len(sessions_before) == 1, \
+    f"exactly one dispatcher may exist: {sessions_before}"
 todo_cli('add "second real task"')
 deadline = time.time() + 90
 while time.time() < deadline and len(wake_lines()) <= before:

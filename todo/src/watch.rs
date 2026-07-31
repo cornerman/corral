@@ -18,7 +18,16 @@ use corral_core::discovery::{scan_registry, RegistryEntry};
 use corral_core::launch::Launcher;
 use corral_core::prompt::send_prompt;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// How long a fresh spawn is trusted to still be booting. An agent needs
+/// several seconds between process start and announcing its record, and a poll
+/// interval is shorter than that, so without a grace window a second edit in
+/// that gap would spawn a second dispatcher (observed in the VM: two sessions
+/// 4s apart). While the grace holds, a pending change waits and is delivered
+/// via inject once the record appears; after it expires the spawn is presumed
+/// dead and spawning is allowed again.
+const SPAWN_GRACE: Duration = Duration::from_secs(60);
 
 /// A content hash of the **normalized** items. Normalized, so that stamping an
 /// id or a creation date is not itself seen as a change; otherwise a fresh
@@ -73,6 +82,11 @@ pub struct Watcher {
     dispatch_argv: Vec<String>,
     interval: Duration,
     seen: Option<u64>,
+    /// When the last successful `Spawn` happened, while we wait for it to
+    /// announce. Cleared once any other wake step lands.
+    spawned_at: Option<Instant>,
+    /// The grace window; a field (not the const) so tests can shrink it.
+    spawn_grace: Duration,
 }
 
 impl Watcher {
@@ -88,6 +102,8 @@ impl Watcher {
             dispatch_argv,
             interval,
             seen: None,
+            spawned_at: None,
+            spawn_grace: SPAWN_GRACE,
         }
     }
 
@@ -140,6 +156,19 @@ impl Watcher {
         // through to resume and then to a fresh spawn.
         let mut last = String::from("no wake step available");
         for step in plan(&self.records(), &self.dispatch_argv) {
+            // Never stack dispatchers: a spawn that has not announced yet is
+            // still booting, so hold this change (the fingerprint stays
+            // pending) instead of spawning a sibling next to it.
+            if matches!(step, Wake::Spawn { .. }) {
+                if let Some(at) = self.spawned_at {
+                    if at.elapsed() < self.spawn_grace {
+                        last = String::from(
+                            "waiting for the spawned dispatcher to announce; change stays pending",
+                        );
+                        continue;
+                    }
+                }
+            }
             // Each step carries its own text: only a session with no history
             // gets told what it is (see `wake::FIRST_PROMPT`).
             let message = step.message();
@@ -152,6 +181,12 @@ impl Watcher {
             };
             match attempt {
                 Ok(()) => {
+                    self.spawned_at = match step {
+                        Wake::Spawn { .. } => Some(Instant::now()),
+                        // An inject or resume proves a session exists, so the
+                        // boot watch is over.
+                        _ => None,
+                    };
                     self.seen = Some(print);
                     return Ok(Some(Woke {
                         step,
@@ -254,6 +289,9 @@ mod tests {
         let path = dir.path().join("todo.txt");
         std::fs::write(&path, "one idea\n").unwrap();
         let mut w = watcher(dir.path());
+        // The boot grace (its own tests below) would hold the second wake;
+        // here the subject is only change detection.
+        w.spawn_grace = Duration::ZERO;
         let launcher = FakeLauncher(Mutex::new(Vec::new()));
         w.tick(&launcher).unwrap();
         assert!(w.tick(&launcher).unwrap().is_none());
@@ -308,6 +346,63 @@ mod tests {
         let ok = FakeLauncher(Mutex::new(Vec::new()));
         assert!(w.tick(&ok).unwrap().is_some());
         assert!(w.tick(&ok).unwrap().is_none(), "and then it settles");
+    }
+
+    #[test]
+    fn an_edit_during_dispatcher_boot_does_not_spawn_a_sibling() {
+        // A spawned agent needs seconds to announce; a second change in that
+        // gap must wait for it, not start a second dispatcher beside it.
+        let dir = todo_dir();
+        let path = dir.path().join("todo.txt");
+        std::fs::write(&path, "one idea\n").unwrap();
+        let mut w = watcher(dir.path());
+        let launcher = FakeLauncher(Mutex::new(Vec::new()));
+        w.tick(&launcher).unwrap();
+        assert_eq!(launcher.0.lock().unwrap().len(), 1);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("another idea\n");
+        std::fs::write(&path, text).unwrap();
+        // The change is held pending, not lost and not double-spawned.
+        let err = w.tick(&launcher).unwrap_err();
+        assert!(err.contains("pending"), "{err}");
+        assert_eq!(launcher.0.lock().unwrap().len(), 1);
+        // The dispatcher announces (a dormant record is enough: inject is
+        // unavailable but resume reaches that same session).
+        let reg = dir.path().join(".corral").join("registry");
+        std::fs::create_dir_all(&reg).unwrap();
+        std::fs::write(
+            reg.join("S1.json"),
+            r#"{"sessionId":"S1","label":"pi","resumeCommand":["pi","--session","{sessionId}"],"lastSeen":"2026-07-31T10:00:00Z"}"#,
+        )
+        .unwrap();
+        let woke = w.tick(&launcher).unwrap().expect("the held change lands");
+        assert_eq!(woke.step.kind_name(), "resume");
+        // And the boot watch is over: a later change may spawn again if the
+        // record disappears.
+        std::fs::remove_file(reg.join("S1.json")).unwrap();
+        std::fs::write(&path, "third idea\n").unwrap();
+        assert_eq!(
+            w.tick(&launcher).unwrap().expect("a wake").step.kind_name(),
+            "spawn"
+        );
+    }
+
+    #[test]
+    fn after_the_grace_expires_a_silent_spawn_is_retried() {
+        // A spawn that never announces is presumed dead; the system must not
+        // wait on it forever.
+        let dir = todo_dir();
+        let path = dir.path().join("todo.txt");
+        std::fs::write(&path, "one idea\n").unwrap();
+        let mut w = watcher(dir.path());
+        w.spawn_grace = Duration::ZERO;
+        let launcher = FakeLauncher(Mutex::new(Vec::new()));
+        w.tick(&launcher).unwrap();
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("another idea\n");
+        std::fs::write(&path, text).unwrap();
+        assert!(w.tick(&launcher).unwrap().is_some());
+        assert_eq!(launcher.0.lock().unwrap().len(), 2);
     }
 
     #[test]
