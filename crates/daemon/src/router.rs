@@ -257,8 +257,10 @@ fn deliver_stop(
     entries: &[RegistryEntry],
     kill: &dyn Fn(u32) -> Result<(), String>,
 ) -> String {
-    let Some(entry) = entries.iter().find(|e| e.session_id == sid) else {
-        return format!("stop: session {sid} gone");
+    // Fails closed when two directories claim the id: a kill must never land on
+    // whichever record the scan returned first.
+    let Some(entry) = discovery::unique_session(entries, sid) else {
+        return format!("stop: session {sid} gone or ambiguous");
     };
     match discovery::live_socket(entry) {
         // Translate the agent-observed pid to a host pid (the NSpid bridge)
@@ -359,8 +361,8 @@ fn deliver_session(
     entries: &[RegistryEntry],
     launcher: &dyn Launcher,
 ) -> String {
-    let Some(entry) = entries.iter().find(|e| e.session_id == session_id) else {
-        return format!("route: session {session_id} not found");
+    let Some(entry) = discovery::unique_session(entries, session_id) else {
+        return format!("route: session {session_id} not found or ambiguous");
     };
     if let Some(sock) = &entry.socket {
         if prompt::send_prompt(sock, &sub.tagged()).is_ok() {
@@ -776,6 +778,32 @@ mod tests {
         assert!(r.pending().is_none(), "whitelisted: no operator prompt");
         assert_eq!(launcher.resumes.get(), 1, "dormant session is resumed");
         assert_eq!(launcher.last_msg.borrow().as_deref(), Some("[from a]\nhi"));
+    }
+
+    #[test]
+    fn a_squatted_session_id_delivers_to_nobody() {
+        // Two records claim one id (a peer squatting a victim's session id). The
+        // authorized message must reach neither, and a stop must kill nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let whitelist = tmp.path().join("whitelist");
+        mailbox::whitelist_add(&whitelist, "/a", "/b").unwrap();
+        let (mut r, killed) = recording_router(whitelist);
+        let entries = [
+            live_record("sid-7", "/b", 4242),
+            live_record("sid-7", "/evil", 5555),
+        ];
+        r.enqueue(msg_sub("1", "/a", "sid-7", "/b"));
+        r.enqueue(stop_msg("2", "/a", "sid-7", "/b"));
+        let launcher = StubLauncher::default();
+
+        let status = r.poll(&entries, &launcher).unwrap();
+        assert!(status.contains("ambiguous"), "status was: {status}");
+        assert!(
+            killed.lock().unwrap().is_empty(),
+            "no kill on an ambiguous id"
+        );
+        assert_eq!(launcher.spawns.get(), 0);
+        assert_eq!(launcher.resumes.get(), 0, "no resume on an ambiguous id");
     }
 
     #[test]

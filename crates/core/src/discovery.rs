@@ -195,6 +195,19 @@ pub fn scan_registry(dir: &Path) -> Vec<RegistryEntry> {
         .collect()
 }
 
+/// The one entry with this session id, or `None` when zero **or more than one**
+/// match. Ambiguity is a security condition, not a normal state: any directory
+/// may name any session id in its own record (the id is only required to match
+/// its own filename), so a peer can squat a victim's id. Every action addressed
+/// by session id therefore fails closed here rather than picking a winner,
+/// which would silently hand a peer's messages, resumes, or kills to whichever
+/// record the scan happened to return first (SECURITY.md T10).
+pub fn unique_session<'a>(entries: &'a [RegistryEntry], sid: &str) -> Option<&'a RegistryEntry> {
+    let mut hits = entries.iter().filter(|e| e.session_id == sid);
+    let first = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
 /// The connectable socket of a live registry entry, if any. Dormant records
 /// (no `socket`) yield `None`. `label`/`pid`/`pid_namespace` come from the
 /// record; a legacy `<label>-<pid>.sock` filename is a fallback only for a
@@ -629,6 +642,24 @@ mod tests {
             resolve_socket_host_pid(&table, Some(7), Some(5001)),
             Some(34521)
         );
+    }
+
+    #[test]
+    fn unique_session_fails_closed_on_a_squatted_id() {
+        let mine = parse_registry_json(r#"{"sessionId":"s1","cwd":"/a"}"#).unwrap();
+        let squat = parse_registry_json(r#"{"sessionId":"s1","cwd":"/evil"}"#).unwrap();
+        let other = parse_registry_json(r#"{"sessionId":"s2","cwd":"/b"}"#).unwrap();
+        // Exactly one match resolves.
+        assert_eq!(
+            unique_session(&[mine.clone(), other.clone()], "s1").map(|e| e.cwd.clone()),
+            Some(Some("/a".into()))
+        );
+        // Two records claiming one id resolve to nothing, in either order, so no
+        // peer can capture another session's traffic by squatting its id.
+        assert!(unique_session(&[mine.clone(), squat.clone()], "s1").is_none());
+        assert!(unique_session(&[squat, mine], "s1").is_none());
+        // Absent is still absent.
+        assert!(unique_session(&[other], "ghost").is_none());
     }
 
     #[test]

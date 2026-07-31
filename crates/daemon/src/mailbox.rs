@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::Path;
 
 use corral_core::curation;
-use corral_core::discovery::RegistryEntry;
+use corral_core::discovery::{self, RegistryEntry};
 
 /// What a submission is authorized against: the directory pair is the
 /// authorization unit, so every verb resolves to one of these. A spawn targets
@@ -263,13 +263,13 @@ pub fn classify(kind: &Kind, f: &Facts) -> Ack {
 /// basename lies about where the agent starts. A session target resolves
 /// through the vetted registry, whose `cwd` is already canonical (stamped from
 /// the record's physical location).
+/// A session id claimed by two directories resolves to nothing
+/// ([`discovery::unique_session`]), so a squatter cannot capture the traffic
+/// aimed at a peer's id.
 pub fn authenticate(target: &Target, entries: &[RegistryEntry]) -> Option<String> {
     match target {
         Target::Dir(d) => curation::canonical_dir(d),
-        Target::Session(sid) => entries
-            .iter()
-            .find(|e| &e.session_id == sid)
-            .and_then(|e| e.cwd.clone()),
+        Target::Session(sid) => discovery::unique_session(entries, sid).and_then(|e| e.cwd.clone()),
     }
 }
 
@@ -310,10 +310,9 @@ pub fn authorize(
             .is_some_and(|t| is_whitelisted(whitelist, &sub.from_cwd, t)),
         reachable: probe.is_some_and(|t| reachable(whitelist, &sub.from_cwd, &t)),
         dormant: match &target {
-            Target::Session(sid) => entries
-                .iter()
-                .find(|e| &e.session_id == sid)
-                .is_some_and(|e| e.socket.is_none()),
+            Target::Session(sid) => {
+                discovery::unique_session(entries, sid).is_some_and(|e| e.socket.is_none())
+            }
             Target::Dir(_) => false,
         },
     };
@@ -700,6 +699,32 @@ mod tests {
         assert!(!Ack::RecipientNotFound.routable());
         assert!(!Ack::DirectoryNotKnown.routable());
         assert!(!Ack::AlreadyStopped.routable());
+    }
+
+    #[test]
+    fn a_squatted_session_id_resolves_to_nothing() {
+        // Two directories claim one id: the target must not resolve, so the ack
+        // is recipient_not_found rather than a delivery into whichever record
+        // the scan returned first.
+        let entries = [
+            rec("s1", "/victim", "pi", true, None),
+            rec("s1", "/evil", "pi", true, None),
+        ];
+        assert_eq!(authenticate(&Target::Session("s1".into()), &entries), None);
+        let sub = Submission {
+            id: "1".into(),
+            from_cwd: "/evil".into(),
+            target_cwd: String::new(),
+            from_session: None,
+            kind: Kind::Message {
+                session: "s1".into(),
+                text: "hi".into(),
+            },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (cwd, ack) = authorize(&tmp.path().join("whitelist"), &sub, &entries);
+        assert_eq!(cwd, None);
+        assert_eq!(ack, Ack::RecipientNotFound);
     }
 
     #[test]

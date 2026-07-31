@@ -44,7 +44,7 @@ pub fn refresh(
 
     let mut present = BTreeSet::new();
     for rec in &split.registered {
-        let name = format!("{}.json", rec.session_id);
+        let name = vetted_name(rec.cwd.as_deref().unwrap_or_default(), &rec.session_id);
         present.insert(name.clone());
         let Ok(json) = record_json(rec) else { continue };
         let target = state_registry_dir.join(&name);
@@ -54,8 +54,7 @@ pub fn refresh(
             continue;
         }
         // Atomic write (tmp + rename) so a scanning viewer never reads a partial.
-        let tmp =
-            state_registry_dir.join(format!(".{}.{}.tmp", rec.session_id, std::process::id()));
+        let tmp = state_registry_dir.join(format!(".{}.{}.tmp", name, std::process::id()));
         if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &target);
         }
@@ -77,6 +76,30 @@ pub fn refresh(
         }
     }
     split.pending
+}
+
+/// The vetted store's filename for one record: the session id prefixed with a
+/// hash of its **authenticated cwd**. Keyed on both, because a session id alone
+/// is not unique across directories: any workdir may write a record naming any
+/// id (it need only match its own filename), so a `<sessionId>.json` name let a
+/// peer's record occupy a victim's slot and evict it from every board — taking
+/// a live session off the operator's screen and pointing operator actions at the
+/// squatter's directory. Both records are published instead, each attributed to
+/// where it really lives; a session id claimed twice is then visible and every
+/// id-addressed action fails closed (`discovery::unique_session`).
+///
+/// The hash is for uniqueness only, never integrity: the trusted cwd is inside
+/// the record, and a viewer reads that, not the filename.
+fn vetted_name(cwd: &str, session_id: &str) -> String {
+    // FNV-1a 64: dependency-free and stable across runs (unlike DefaultHasher,
+    // which is randomly seeded), so a record keeps one filename and the
+    // write-on-change check keeps working.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in cwd.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}-{session_id}.json")
 }
 
 /// Ensure the agent-writable pointer store (`~/.corral/input/registry/`) and its
@@ -220,6 +243,18 @@ pub fn audit(log: &Path, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vetted_name_separates_one_session_id_across_directories() {
+        // The H2 regression: two directories claiming one session id must not
+        // share a filename, or the later write evicts the earlier record.
+        let a = vetted_name("/home/dev/victim", "shared");
+        let b = vetted_name("/home/dev/attacker", "shared");
+        assert_ne!(a, b, "a squatted id must not collide in the vetted store");
+        // Stable across calls, so write-on-change still suppresses rewrites.
+        assert_eq!(a, vetted_name("/home/dev/victim", "shared"));
+        assert!(a.ends_with("-shared.json"));
+    }
 
     #[test]
     fn record_json_includes_model_when_set() {
