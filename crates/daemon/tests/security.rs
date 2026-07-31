@@ -328,7 +328,7 @@ fn t4_flood_of_novel_labels_all_pending_none_published() {
 fn t16_vet_rejects_flag_like_session_id() {
     // A sessionId that could be mistaken for a CLI flag never reaches launch.
     let rec = mk_rec("--config=/evil", None);
-    assert!(curation::vet("/box", "--config=/evil", rec).is_none());
+    assert!(curation::vet("/box", "--config=/evil", rec, curation::SocketPlace::Absent).is_none());
 }
 
 #[test]
@@ -337,14 +337,51 @@ fn t17_socket_must_resolve_inside_own_corral() {
     // one inside its own .corral is accepted.
     let foreign = mk_rec("s1", Some("/other/.corral/pi-1.sock"));
     assert!(
-        curation::vet("/box", "s1", foreign).is_none(),
+        curation::vet("/box", "s1", foreign, curation::SocketPlace::Foreign).is_none(),
         "foreign socket rejected"
     );
 
     let own = mk_rec("s1", Some("/box/.corral/pi-1.sock"));
     assert!(
-        curation::vet("/box", "s1", own).is_some(),
+        curation::vet("/box", "s1", own, curation::SocketPlace::Inside).is_some(),
         "own-box socket accepted"
+    );
+}
+
+#[test]
+fn t17_a_symlinked_socket_never_reaches_a_viewer() {
+    // The whole boundary, end to end: an agent may write only its own workdir,
+    // but a symlink names an unresolved string, so it can point at a peer's
+    // socket that the unsandboxed consumer *can* open. Such a record must never
+    // be published, or the operator's ungated `m` would land in the victim's
+    // session.
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = workdir(tmp.path(), "victim");
+    let attacker = workdir(tmp.path(), "attacker");
+    let victim_sock = PathBuf::from(&victim).join(".corral").join("victim.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&victim_sock).unwrap();
+    let link = PathBuf::from(&attacker).join(".corral").join("evil.sock");
+    std::os::unix::fs::symlink(&victim_sock, &link).unwrap();
+
+    write_record(
+        &attacker,
+        "evil",
+        &[
+            ("label", "pi".into()),
+            ("socket", link.to_string_lossy().into_owned().into()),
+            ("spawnCommand", vec!["pi"].into()),
+        ],
+    );
+    let idx = write_index(tmp.path(), &[attacker.as_str()]);
+    let state = tmp.path().join("state").join("registry");
+    // Register the kind, so only the socket check can stop it.
+    let approved = tmp.path().join("approved.json");
+    std::fs::write(&approved, r#"{"pi":{"spawn":["pi"]}}"#).unwrap();
+
+    curator::refresh(&idx, &state, &approved);
+    assert!(
+        published(&state).is_empty(),
+        "a symlinked socket must be quarantined, not published"
     );
 }
 

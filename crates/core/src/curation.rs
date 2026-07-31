@@ -17,7 +17,7 @@
 
 use std::io::Read;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::approved_commands::{self, Approved, Template};
@@ -131,25 +131,104 @@ fn sanitize(s: String) -> String {
     }
 }
 
+/// Where a record's `socket` field physically leads (T17). A record names its
+/// own socket, and corrald/the boards traverse that path **unsandboxed**, so
+/// the value is a borrowed-authority hazard: a lexical check on the string is
+/// not enough, because a symlink an agent plants inside its own `.corral` may
+/// name a peer's socket it could never open itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketPlace {
+    /// The socket is a real socket physically inside `<dir>/.corral/`.
+    Inside,
+    /// Nothing is there (not yet bound, or a crashed session whose socket was
+    /// unlinked while the record still names it). Not evidence of an attack, so
+    /// the record survives as dormant rather than being quarantined — a crashed
+    /// session must stay visible and resumable.
+    Absent,
+    /// The path resolves somewhere else, or is a symlink, or is not a socket:
+    /// the record is aiming corral at something outside its own box.
+    Foreign,
+}
+
+/// Resolve where a record's `socket` really leads, by physical location rather
+/// than by string shape (T17). IO, kept beside the other identity derivations.
+///
+/// A symlink is refused outright: the convention says an agent *binds* its
+/// socket, so a link is never legitimate, and following one would let an agent
+/// borrow corrald's authority to reach a path it cannot open itself. The parent
+/// is then canonicalized from a directory fd and compared with the record's own
+/// canonical `<dir>/.corral`, so neither `..` nor a symlinked `.corral` can
+/// make a foreign socket read as local. Any other IO error reads as `Absent`
+/// (fail closed without quarantining: the socket is simply not published).
+pub fn locate_socket(dir: &str, socket: &Path) -> SocketPlace {
+    // The box's own `.corral` must be a real directory. A symlinked one would
+    // canonicalize to its target on BOTH sides of the comparison below, so a
+    // peer's socket would compare equal to "my own" (see `real_dir`).
+    let corral = Path::new(dir).join(".corral");
+    if !real_dir(&corral) {
+        return SocketPlace::Foreign;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(socket) else {
+        return SocketPlace::Absent; // nothing there (or unreadable): not live
+    };
+    if meta.file_type().is_symlink() || !meta.file_type().is_socket() {
+        return SocketPlace::Foreign;
+    }
+    let Some(parent) = socket
+        .parent()
+        .and_then(|p| canonical_dir(&p.to_string_lossy()))
+    else {
+        return SocketPlace::Foreign;
+    };
+    if Some(parent) == canonical_dir(&corral.to_string_lossy()) {
+        SocketPlace::Inside
+    } else {
+        SocketPlace::Foreign
+    }
+}
+
+/// Whether `path` is a real directory rather than a symlink to one.
+/// `symlink_metadata` does not follow, so a symlink reports as a symlink and
+/// fails the `is_dir` test.
+///
+/// Load-bearing for identity: an agent may replace its own `.corral` (or the
+/// `registry` inside it) with a link to a peer's, which would make corrald read
+/// the *peer's* records and stamp them with the *attacker's* cwd — importing a
+/// victim's live socket into a card the attacker owns. Physical location is only
+/// identity if the path from the box to the record is not itself redirectable.
+fn real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+}
+
 /// Vet one raw record found physically in the canonical directory `dir` under
 /// the filename `<file_stem>.json`. Returns the trusted entry (with `cwd`
-/// stamped to `dir`), or `None` to quarantine it. Pure — no IO.
+/// stamped to `dir`), or `None` to quarantine it. Pure — the caller resolves
+/// the socket's real location ([`locate_socket`]) and passes it in, so the
+/// verdict table stays testable without a filesystem.
 ///
 /// Rules (every field is adversarial; see the security design):
 /// - `sessionId` must pass the charset gate and equal `file_stem`.
-/// - `socket`, if present, must sit directly in `<dir>/.corral/` — so a card
-///   can only ever drive a session in its own box (T17). A parent that is not
-///   exactly `<dir>/.corral` (including any `..` escape) is rejected.
+/// - a `socket` that leads outside `<dir>/.corral/` quarantines the record; one
+///   that leads nowhere is cleared, leaving a dormant (resumable) record.
 /// - `cwd` is overwritten with `dir`; any content `cwd` is ignored.
 /// - `title`/`description` are sanitized for display.
-pub fn vet(dir: &str, file_stem: &str, mut rec: RegistryEntry) -> Option<RegistryEntry> {
+pub fn vet(
+    dir: &str,
+    file_stem: &str,
+    mut rec: RegistryEntry,
+    place: SocketPlace,
+) -> Option<RegistryEntry> {
     if !discovery::valid_session_id(&rec.session_id) || rec.session_id != file_stem {
         return None;
     }
-    if let Some(socket) = &rec.socket {
-        let expected = Path::new(dir).join(".corral");
-        if socket.parent() != Some(expected.as_path()) {
-            return None; // socket aims outside this record's own box
+    if rec.socket.is_some() {
+        match place {
+            SocketPlace::Inside => {}
+            // Aiming at another box (T17): quarantine, never publish.
+            SocketPlace::Foreign => return None,
+            // Nothing bound there: publish as dormant, so a crashed session
+            // stays visible and resumable instead of vanishing.
+            SocketPlace::Absent => rec.socket = None,
         }
     }
     rec.cwd = Some(dir.to_string());
@@ -162,7 +241,13 @@ pub fn vet(dir: &str, file_stem: &str, mut rec: RegistryEntry) -> Option<Registr
 /// Scan one already-canonicalized directory's `<dir>/.corral/registry/*.json`,
 /// vetting each record. IO, but pure given the filesystem.
 pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
-    let regdir = Path::new(dir).join(".corral").join("registry");
+    let corral = Path::new(dir).join(".corral");
+    let regdir = corral.join("registry");
+    // Neither hop may be a symlink, or a box could import another box's records
+    // and have them attributed to itself (see `real_dir`).
+    if !real_dir(&corral) || !real_dir(&regdir) {
+        return Vec::new();
+    }
     let Ok(entries) = std::fs::read_dir(&regdir) else {
         return Vec::new();
     };
@@ -187,7 +272,11 @@ pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
                     return None;
                 }
             }
-            vet(dir, &stem, rec)
+            let place = match &rec.socket {
+                Some(s) => locate_socket(dir, s),
+                None => SocketPlace::Absent,
+            };
+            vet(dir, &stem, rec, place)
         })
         .collect()
 }
@@ -359,33 +448,123 @@ mod tests {
 
     #[test]
     fn vet_stamps_cwd_and_ignores_content_cwd() {
-        let out = vet("/home/dev/x", "s1", rec("s1", None)).unwrap();
+        let out = vet("/home/dev/x", "s1", rec("s1", None), SocketPlace::Absent).unwrap();
         assert_eq!(out.cwd.as_deref(), Some("/home/dev/x"));
     }
 
     #[test]
     fn vet_rejects_bad_session_id_and_filename_mismatch() {
-        assert_eq!(vet("/w", "s1", rec("--evil", None)), None); // charset
-        assert_eq!(vet("/w", "s1", rec("other", None)), None); // != filename
+        let p = SocketPlace::Absent;
+        assert_eq!(vet("/w", "s1", rec("--evil", None), p), None); // charset
+        assert_eq!(vet("/w", "s1", rec("other", None), p), None); // != filename
     }
 
     #[test]
-    fn vet_requires_socket_inside_own_corral() {
-        // Socket directly in <dir>/.corral -> accepted.
-        assert!(vet("/w", "s1", rec("s1", Some("/w/.corral/pi-1.sock"))).is_some());
-        // Socket in another box -> rejected (T17).
+    fn vet_quarantines_a_foreign_socket_and_dormants_an_absent_one() {
+        let sock = Some("/w/.corral/pi-1.sock");
+        // Physically inside its own box -> published live.
+        let ok = vet("/w", "s1", rec("s1", sock), SocketPlace::Inside).unwrap();
+        assert!(ok.socket.is_some());
+        // Leads outside the box (T17: symlink, `..`, foreign path) -> quarantined,
+        // so corral never connects there and the operator's `m` cannot land in
+        // another session.
+        assert_eq!(vet("/w", "s1", rec("s1", sock), SocketPlace::Foreign), None);
+        // Nothing bound (crashed session): the record survives as dormant, so it
+        // stays visible and resumable rather than disappearing from the board.
+        let dormant = vet("/w", "s1", rec("s1", sock), SocketPlace::Absent).unwrap();
+        assert_eq!(dormant.socket, None);
+    }
+
+    #[test]
+    fn locate_socket_refuses_a_symlink_into_another_box() {
+        // The H1 attack: an agent may write only its own workdir, but a symlink
+        // stores an unresolved string, so it can name a peer's socket it could
+        // never open itself and let the unsandboxed consumer traverse it.
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        let attacker = tmp.path().join("attacker");
+        std::fs::create_dir_all(victim.join(".corral")).unwrap();
+        std::fs::create_dir_all(attacker.join(".corral")).unwrap();
+        let victim_sock = victim.join(".corral").join("victim.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&victim_sock).unwrap();
+
+        let link = attacker.join(".corral").join("attacker.sock");
+        std::os::unix::fs::symlink(&victim_sock, &link).unwrap();
+        let dir = attacker.to_string_lossy().into_owned();
+        assert_eq!(locate_socket(&dir, &link), SocketPlace::Foreign);
+
+        // Its own genuinely bound socket is accepted.
+        let own = attacker.join(".corral").join("own.sock");
+        let _own_listener = std::os::unix::net::UnixListener::bind(&own).unwrap();
+        assert_eq!(locate_socket(&dir, &own), SocketPlace::Inside);
+
+        // A symlinked `.corral` DIRECTORY cannot launder a foreign socket
+        // either. Canonicalizing both sides would otherwise compare the victim's
+        // dir against itself and read as "my own box".
+        let laundered = tmp.path().join("laundered");
+        std::fs::create_dir_all(&laundered).unwrap();
+        std::os::unix::fs::symlink(victim.join(".corral"), laundered.join(".corral")).unwrap();
         assert_eq!(
-            vet("/w", "s1", rec("s1", Some("/victim/.corral/pi-1.sock"))),
-            None
-        );
-        // `..` escape does not slip past the parent check.
-        assert_eq!(
-            vet(
-                "/w",
-                "s1",
-                rec("s1", Some("/w/.corral/../../etc/pi-1.sock"))
+            locate_socket(
+                &laundered.to_string_lossy(),
+                &laundered.join(".corral/victim.sock")
             ),
-            None
+            SocketPlace::Foreign
+        );
+        // ...and the same laundering cannot import the victim's records either.
+        let pointers = tmp.path().join("input-laundered");
+        std::fs::create_dir_all(&pointers).unwrap();
+        std::fs::create_dir_all(victim.join(".corral").join("registry")).unwrap();
+        std::fs::write(
+            victim.join(".corral/registry/v1.json"),
+            r#"{"sessionId":"v1","label":"pi"}"#,
+        )
+        .unwrap();
+        std::fs::write(pointers.join("v1"), format!("{}\n", laundered.display())).unwrap();
+        assert!(
+            curate(&pointers).is_empty(),
+            "a symlinked .corral must not import a peer's records"
+        );
+
+        // A path with nothing at it is Absent, not an attack.
+        assert_eq!(
+            locate_socket(&dir, &attacker.join(".corral/gone.sock")),
+            SocketPlace::Absent
+        );
+        // A regular file where a socket should be is refused (never connected to).
+        let plain = attacker.join(".corral").join("plain.sock");
+        std::fs::write(&plain, b"x").unwrap();
+        assert_eq!(locate_socket(&dir, &plain), SocketPlace::Foreign);
+    }
+
+    #[test]
+    fn curate_drops_a_record_whose_socket_symlinks_out_of_its_box() {
+        // End to end through the real curation path: the vetted set must not
+        // carry the attacker's record at all.
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        let attacker = tmp.path().join("attacker");
+        std::fs::create_dir_all(victim.join(".corral")).unwrap();
+        std::fs::create_dir_all(attacker.join(".corral").join("registry")).unwrap();
+        let victim_sock = victim.join(".corral").join("victim.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&victim_sock).unwrap();
+        let link = attacker.join(".corral").join("evil.sock");
+        std::os::unix::fs::symlink(&victim_sock, &link).unwrap();
+        std::fs::write(
+            attacker.join(".corral/registry/evil.json"),
+            format!(
+                r#"{{"sessionId":"evil","label":"pi","socket":"{}"}}"#,
+                link.display()
+            ),
+        )
+        .unwrap();
+        let pointers = tmp.path().join("input");
+        std::fs::create_dir_all(&pointers).unwrap();
+        std::fs::write(pointers.join("evil"), format!("{}\n", attacker.display())).unwrap();
+
+        assert!(
+            curate(&pointers).is_empty(),
+            "a record aiming at another box must never be vetted"
         );
     }
 
@@ -393,7 +572,7 @@ mod tests {
     fn vet_sanitizes_display_fields() {
         let mut r = rec("s1", None);
         r.title = Some("hi\u{7}\nthere".into());
-        let out = vet("/w", "s1", r).unwrap();
+        let out = vet("/w", "s1", r, SocketPlace::Absent).unwrap();
         assert_eq!(out.title.as_deref(), Some("hithere"));
     }
 
