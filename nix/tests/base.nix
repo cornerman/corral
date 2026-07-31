@@ -116,6 +116,10 @@ in
     imports = [ self.homeManagerModules.corral ];
 
     programs.corral.enable = true;
+    # corrald spawns/resumes agents itself (agent-initiated spawn, dormant
+    # delivery); as a unit it has no $TERMINAL, so give it one or every
+    # route-spawn fails with "no terminal found" (proven by e2e-todo §7).
+    programs.corral.daemon.terminal = "kitty -e";
     # The pi and opencode adapters symlink from the module; the Claude scenario
     # opts in via its own module (mkDefault so it can override).
     programs.corral.extensions.claude.enable = lib.mkDefault false;

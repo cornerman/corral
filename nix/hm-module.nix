@@ -67,6 +67,19 @@ in
       '';
     };
 
+    daemon.terminal = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "kitty -e";
+      description = ''
+        Terminal argv template corrald uses to spawn/resume terminal agents
+        (set as CORRAL_TERMINAL in the unit's environment). A systemd user
+        unit inherits no $TERMINAL from your shell, so without this every
+        agent-initiated spawn fails with "no terminal found" unless
+        xdg-terminal-exec is on PATH.
+      '';
+    };
+
     extensions = {
       pi.enable = lib.mkOption {
         type = lib.types.bool;
@@ -177,6 +190,10 @@ in
         ExecStart = "${cfg.package}/bin/corrald";
         Restart = "on-failure";
         RestartSec = 2;
+        # Quoted whole so systemd keeps the space-separated argv template as
+        # one assignment (Environment= splits on unquoted spaces).
+        Environment = lib.mkIf (cfg.daemon.terminal != null)
+          [ "\"CORRAL_TERMINAL=${cfg.daemon.terminal}\"" ];
       };
       Install.WantedBy = [ "graphical-session.target" ];
     };

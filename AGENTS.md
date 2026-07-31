@@ -884,7 +884,11 @@ irrelevant to it. Shown verbatim on the agent's card.
   already live on it. Surfaces the approval gate on a `ksni` tray (Allow once /
   Allow always / Deny, plus open the board and quit) and a `notify-send`
   mirror. Uses the environment-resolved terminal to spawn/resume delivery
-  targets. Reads the same registry
+  targets, so as a systemd user service (which inherits no `$TERMINAL` from a
+  login shell) it needs `CORRAL_TERMINAL` in its unit, or every agent-initiated
+  spawn fails with `no terminal found` while the caller's ack still reads
+  `accepted`; the home-manager module's `programs.corral.daemon.terminal` sets
+  it. Reads the same registry
   as the board.
 - CLI `corral-todo` — the todo system's only sanctioned writer of `todo.txt`
   (`list` / `add` / `set` / `archive`; `list` prints id, state, priority, creation
@@ -1136,7 +1140,9 @@ records); see the spec.
   checks need KVM and a test-only `home-manager` flake input; they build a
   NixOS VM (`nix/tests/`) and are Linux-only.
 - Lifecycle is deployment glue in `~/nixos`, not corral code: a systemd user
-  service runs `corrald` (restart-on-failure) so messaging survives a crash;
+  service runs `corrald` (restart-on-failure, with
+  `programs.corral.daemon.terminal` set so it can launch the agents it routes
+  to) so messaging survives a crash;
   a WM keybind summons a board window — either a floating/borderless `kitty -e
   corral` scratchpad (the TUI as a launcher popup) or `corral-gui`. corrald owns
   behavior; nixos/WM own keep-alive and visibility.
