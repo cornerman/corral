@@ -290,12 +290,37 @@ A record's `socket` field is attacker-authored content. An agent's own record
 socket path; corral would then connect there to watch and, worse, the operator's
 ungated `m` to that card would deliver into the **victim's** session.
 
-**Mitigation `[in place]`:** corrald requires the record's `socket` to resolve
-**inside `<D>/.corral/`** (the record's own authenticated directory) before
-emitting the vetted record; a socket pointing elsewhere is rejected. So a card
-can only ever drive a session in its own box. **Future `[designed]`:** an
-install-time nonce the socket proves on connect, to authenticate the socket
-itself and not just its path location.
+**Mitigation `[in place]`:** corrald resolves where the `socket` field
+**physically leads** and rejects anything outside `<D>/.corral/`, so a card can
+only ever drive a session in its own box. Resolution, not string shape, is the
+point: the value is a path an agent chooses and corrald traverses *unsandboxed*,
+which is a borrowed-authority hazard of the same family as T14. Concretely
+(`curation::locate_socket`):
+
+- a **symlink** is refused outright. The convention says an agent *binds* its
+  socket, so a link is never legitimate — and a link needs write permission only
+  on its own parent directory, never on its target, so an agent boxed to `D` can
+  name a peer's socket it could never open itself and let corrald open it. (This
+  was a live hole until 2026-08-01: a lexical parent check passed such a record,
+  so the operator's ungated `m` landed in the victim's session.)
+- a path that is **not a socket** is refused (never connected to).
+- the socket's parent is **canonicalized from a directory fd** and compared with
+  the record's own canonical `<D>/.corral`, so neither `..` nor a symlink
+  anywhere in the path can launder a foreign location.
+- `<D>/.corral` and `<D>/.corral/registry` must be **real directories, not
+  symlinks** (`curation::real_dir`). Without this the same trick works one level
+  up: symlinking your own `.corral` at a peer's makes both sides of the
+  comparison canonicalize to the victim's directory, and worse, makes corrald
+  read the *victim's* records and stamp them with the *attacker's* cwd. Physical
+  location is identity only if the path from the box to the record is not itself
+  redirectable.
+
+A socket path with **nothing** at it is not treated as an attack: the record is
+published with `socket` cleared (dormant), so a crashed session stays visible and
+resumable instead of vanishing from the board.
+
+**Future `[designed]`:** an install-time nonce the socket proves on connect, to
+authenticate the socket itself and not just its path location.
 
 ### T18. Viewer Parses the Live Socket Stream
 
@@ -378,6 +403,26 @@ forge a *directory*, only redirect a routing key to a directory the gate still
 independently authorizes. It is the same class as the deletion denial-of-service
 below.
 
+**Two consequences of a squatted id are now closed `[in place]` (2026-08-01),**
+because neither was bounded by the argument above. Any directory may write a
+record naming any session id (the id need only match its own filename), so a peer
+could squat a victim's id and:
+
+- **evict it.** The vetted store was keyed `<sessionId>.json`, one slot per id, so
+  the later write won and a live session vanished from every board while operator
+  actions on the surviving card acted in the squatter's directory. The name is now
+  keyed on the authenticated cwd *and* the id (`curator::vetted_name`), so both
+  records are published, each attributed to where it really lives, and no record
+  can displace another. Quarantining both was rejected: it would hand the attacker
+  the same denial of service by design.
+- **capture its traffic.** Lookups took the first match by id, so whichever record
+  the scan returned first received the message, resume, or kill. Every
+  id-addressed action now goes through `discovery::unique_session`, which resolves
+  only when exactly one record claims the id and otherwise **fails closed**
+  (`recipient_not_found`; the router logs "ambiguous"). A squatter can therefore
+  deny messaging to an id, which it could already do by flooding, but can never
+  receive another session's traffic.
+
 ### T10-note. Symlink Overwrite Eliminated by the Curator Model
 
 An earlier design put per-session symlinks in an agent-writable
@@ -433,9 +478,19 @@ as malformed, never read as a message.
 A sandboxed agent with connect can open many `corrald.sock` connections
 (slowloris, accept exhaustion).
 
-**Mitigation `[in place]`:** corrald bounds concurrent accepts and applies a
-per-connection read timeout, so a flood degrades gracefully rather than blocking
-messaging.
+**Mitigation `[in place]`:** corrald bounds concurrent accepts (64), applies a
+per-connection read timeout, **and caps the request line at 8 KiB**.
+
+The byte cap is load-bearing and was missing until 2026-08-01: a read timeout
+bounds only *idle* time per read, so a client that keeps writing never trips it.
+One connection could therefore grow the read buffer without limit (measured:
+256 MiB from a single sender), and 64 handlers multiply that into an OOM kill of
+the singleton every agent depends on. A request is a `{"submit":"<path>"}`
+envelope, so the cap is generous by orders of magnitude; a line that reaches it
+unterminated is acked `malformed`.
+
+**Not covered here:** flooding corrald with *well-formed* submissions or pointer
+files. That is a separate resource-exhaustion axis, still open — see T21.
 
 ### T16. Argument Injection Into a Launched Command
 
@@ -475,6 +530,24 @@ stale reply handle and buy nothing.
 the boundary with a journal line naming sender and target, so the operator can
 see what went nowhere. The sender is not told — under the fire-and-forget
 contract it never learns whether delivery happened anyway.
+
+### T21. Resource Exhaustion by Well-Formed Volume
+
+T15 bounds one connection's bytes and the number of concurrent handlers, but not
+the volume of *valid* work an agent submits. Three uncapped paths remain: the
+router's pending-approval list (each new id also fires a `notify-send` process in
+its own thread), the registrar's pending list (a rotating `spawnCommand` mints a
+novel `(label, template)` pair every tick, since `denied` remembers exact pairs),
+and the pointer store (an agent may create unlimited pointer files, all re-read
+every tick, with orphan pruning only after a five-minute grace).
+
+**Open `[designed]`:** cap pending approvals per sender directory and coalesce
+their desktop surface, cap pending registrations per label, and cap the
+per-scan pointer count. Tracked in TODO.md ("Security Review Follow-Ups").
+Severity is bounded: no identity or code-execution gain, but a compromised agent
+can drown a genuine approval popup in noise (approval fatigue is the real risk),
+grow the sealed audit log, and burn broker CPU. The T4 flood defense covers only
+*registration* dedup, so it does not answer this.
 
 ### T20. Non-Canonical Target Path (Approval-Label Spoofing)
 
@@ -572,6 +645,19 @@ is unverified by choice (T9); a viewer still parses the live socket stream for
 display (T18, fixed by full mediation, deferred — TODO.md); and everything rests
 on the whole-process workdir sandbox precondition (deployment glue, not corral
 code). None is a code-execution or cross-directory-identity hole.
+
+One residual is **open, not accepted**: resource exhaustion by well-formed volume
+(T21), whose sharpest edge is approval fatigue.
+
+**Review history.** A line-by-line review on 2026-08-01 found three exploitable
+defects, each confirmed by a proof of concept and fixed with a regression test in
+the same change: a symlinked `socket` field defeated T17 and delivered the
+operator's own `m` into a peer's session; a squatted `sessionId` evicted a live
+session from every board and captured id-addressed traffic (T10); and an uncapped
+request line let one connection buffer unbounded memory in the broker (T15). All
+three lived in corrald's parsing boundary, and two of them were places where this
+document described a stronger check than the code performed — the lesson being
+that a claim here is only as good as the test behind it.
 
 ## Reporting a Vulnerability
 

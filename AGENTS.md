@@ -79,7 +79,7 @@ location = identity (see SECURITY.md, CONVENTION.md v2):
   { sessionId, title, label, socket, pid, pidNamespace, spawnCommand, resumeCommand, lastSeen, … }   ← NO cwd field
 <cwd>/.corral/<name>.sock                   (dir 0700; opaque unique name, <sessionId>.sock recommended)
 $HOME/.corral/input/registry/<sessionId>   (agent-writable per-session POINTER, content=cwd; write-only dir; override $CORRAL_INPUT_REGISTRY)
-$HOME/.corral/state/registry/<id>.json     (corrald-written, VETTED; the boards read only this)
+$HOME/.corral/state/registry/<cwdHash>-<id>.json  (corrald-written, VETTED; the boards read only this)}
 $HOME/.corral/state/{whitelist,approved-commands.json,audit.log}   (sealed, daemon-only)
 ```
 
@@ -462,7 +462,10 @@ client of `corral-core` like any outside program, and nothing here depends on it
     routable) **stamp the canonical `target_cwd`** onto the submission before
     handing it to the router. This is the sole place either directory of the
     authorized pair is derived. Accepts are
-    bounded and each read is timed out (slowloris/flood defense, T15). `serve`
+    bounded, each read is timed out, and the request line is byte-capped at 8 KiB
+    (slowloris/flood defense, T15 — a read timeout bounds only idle time, so a
+    sender that keeps writing could otherwise buffer unbounded memory in the
+    singleton). `serve`
     fails loud on bind error; `is_serving` is the singleton guard. Ack is
     synchronous; delivery + approval run later. Unit-tested.
   - `src/router.rs` — `Router`: routes agent-initiated messages (enqueued from

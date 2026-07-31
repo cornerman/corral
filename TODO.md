@@ -4,6 +4,54 @@ Living list of remaining work. See AGENTS.md for architecture and
 docs/superpowers/specs/ for the design. Only open, founded next steps live
 here; shipped work is described in AGENTS.md, not tracked here.
 
+## Security Review Follow-Ups (review 2026-08-01)
+
+A line-by-line review of the trust boundary found three exploitable defects and
+five smaller ones. **The three highs are fixed** (symlinked `socket` field
+defeating T17; a squatted `sessionId` evicting a live session and capturing its
+traffic; an uncapped control-socket request line buffering unbounded memory),
+each with a proof of concept first and a regression test behind it — see
+SECURITY.md T17 / T10 / T15 and its Review History. What remains, most
+load-bearing first.
+
+1. [ ] **Cap the approval surfaces (SECURITY.md T21).** `Router.pending` is an
+       uncapped `Vec`, and `lib.rs` fires one `notify-send` process in its own
+       thread per newly pending id, so a compromised agent can submit thousands
+       of well-formed unauthorized submissions and drown a genuine popup in
+       noise. **Approval fatigue is the real risk**, not the resource cost: the
+       operator who dismisses 200 notifications also dismisses the one that
+       mattered. FIX: cap pending per sender directory (drop the excess with one
+       audit line), and coalesce the desktop surface to one notification naming a
+       count. The T4 quarantine defuses *registration* flood only, so it does not
+       answer this.
+2. [ ] **Cap pending registrations per label (T21).** `Registrar.denied`
+       remembers exact `(label, Template)` pairs, so an agent that mutates its
+       `spawnCommand` every tick mints a novel pair forever: the tray head
+       rewrites and the sealed `audit.log` grows unbounded (a file the operator
+       cannot rotate from inside corral). FIX: cap pending kinds per label and
+       rate-limit the audit line. COMPOSES WITH the "multiple approved launch
+       sets per label" item below — do that first, since it changes what a
+       distinct pair means.
+3. [ ] **Cap the pointer store scan (T21).** An agent may create unlimited files
+       in the write-only pointer directory; corrald re-reads all of them every
+       tick and `prune_orphan_pointers` only acts after a five-minute grace, so a
+       peer can burn broker CPU and delay every delivery. FIX: bound the files
+       read per scan, and prefer ignoring an unparsable pointer cheaply.
+4. [ ] **Reject control characters in a whitelist path (T5).** `representable`
+       blocks only the `" -> "` separator, so "allow always" for a sender whose
+       directory name contains a newline writes two lines into the sealed
+       whitelist. Not currently exploitable — an injected line's `from` is a
+       single path component, so it can never match an absolute cwd — but the
+       store should stay a clean relation. FIX: refuse any control character in
+       `whitelist_add` and never match one in `is_whitelisted` (fail closed,
+       exactly as the separator is handled).
+5. [ ] **Write the history export `0600` (local disclosure).**
+       `core::history::write_and_open` writes a full transcript into `$TMPDIR`
+       under the default umask, so on a shared `/tmp` any local user reads it.
+       FIX: mode `0600` on the temp file, as `approved_commands::write_approved`
+       already does. One line; only unpicked because it is outside the
+       cross-agent boundary this review targeted.
+
 ## Most Urgent (review 2026-07-24)
 
 Ranked by risk to the project's core claims. The top two are validation gaps:
