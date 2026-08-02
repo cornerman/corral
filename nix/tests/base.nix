@@ -126,9 +126,19 @@ in
 
     # corrald's unit targets graphical-session.target, which a tty-launched
     # sway does not activate. Retarget it to default.target for the test only.
+    # That retarget costs the graphical environment a real session imports
+    # (`systemctl --user import-environment`) before that target activates, so
+    # hand corrald the one variable it needs to open a window: without it a
+    # *visible* launch dies in the child with "X11: DISPLAY missing" (proven by
+    # e2e-pi §7, where corrald resumes a visible session). sway's socket is
+    # wayland-1, the same name the todo scenario's watcher unit assumes.
     systemd.user.services.corrald = {
       Unit = lib.mkForce { Description = "corral inter-agent messaging daemon"; };
       Install = lib.mkForce { WantedBy = [ "default.target" ]; };
+      Service.Environment = lib.mkForce [
+        "\"CORRAL_TERMINAL=kitty -e\""
+        "WAYLAND_DISPLAY=wayland-1"
+      ];
     };
 
     # Pre-seed pi: point at the stub model, trust every project so first start

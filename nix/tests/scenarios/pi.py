@@ -234,43 +234,53 @@ wait_records(
                    for r in rs),
     timeout=40, desc="B dormant after stop")
 
-# --- 7. resume dormant B via corrald delivery (hidden by default) -------
-# BEST-EFFORT: hidden resume/spawn launch inside a headless `cage`, which needs
-# working wlroots/EGL under the VM's software GL -- a documented verify-in-VM
-# point. The corrald routing + resume decision is exercised regardless; only
-# the cage-hosted relaunch may not come up here. Backbone (announce, turns,
-# messaging, stop) is already hard-asserted above.
+# --- 7. resume dormant B via corrald delivery (placement is inherited) ---
+# Hard-asserted since 2026-08-02. These two sections used to swallow their
+# failure as "cage headless UNVERIFIED", which is precisely how corrald's `no
+# terminal found` bug (no $TERMINAL in its unit, so every routed spawn died
+# while the caller's ack said `accepted`) passed here unnoticed until e2e-todo
+# asserted hard. Do not put the try/except back.
+#
+# B was opened visibly by the scenario, so its resume comes back VISIBLE: a
+# resume inherits the record's own placement (router.rs), since the messager
+# does not get to move another agent's window. Only a *spawn* defaults hidden
+# -- that is §8. Asserting a window actually maps is what proves the
+# inheritance is real rather than a flag nobody acts on.
 before = window_count()
 stub_post_rule(json.dumps({
     "match": "smoke:resume", "tool": "corral_message_agent",
     "args": {"target_session": sid_b, "message": "wake-b"}}))
 acp(f"prompt {sock_a} {sid_a} 'smoke:resume'")
-try:
-    wait_records(
-        lambda rs: any(r.get("sessionId") == sid_b and r.get("socket")
-                       and r.get("hidden") for r in rs),
-        timeout=45, desc="B resumed hidden", diag=False)
-    assert window_count() == before, "hidden resume opened a visible window"
-    machine.log("e2e-pi: hidden resume via corrald confirmed (cage headless works)")
-except Exception as e:
-    machine.log(f"e2e-pi: hidden resume best-effort (cage headless UNVERIFIED): {e}")
+recs = wait_records(
+    lambda rs: any(r.get("sessionId") == sid_b and r.get("socket") for r in rs),
+    timeout=45, desc="B resumed")
+resumed = [r for r in recs if r.get("sessionId") == sid_b][0]
+assert not resumed.get("hidden"), \
+    f"a resume must inherit the record's visible placement: {resumed}"
+deadline = time.time() + 30
+while time.time() < deadline and window_count() <= before:
+    time.sleep(1)
+assert window_count() > before, "the visible resume mapped no window"
 
-# --- 8. hidden spawn in a fresh dir (best-effort, cage) ------------------
+# --- 8. hidden spawn in a fresh dir --------------------------------------
 PROJ_C = HOME + "/proj-c"
+# Own baseline: §7 just added B's window, so the count moved.
+before = window_count()
 as_user(f"mkdir -p {PROJ_C}")
 as_user(f"echo '{PROJ_A} -> {PROJ_C}' >> {WHITELIST}")
+# `label` is required here: proj-c has never been announced in, so there is no
+# directory-local kind to fall back on and corrald refuses to guess ("no known
+# agent kind for ..."). Omitting it is what the old try/except was silently
+# swallowing.
 stub_post_rule(json.dumps({
     "match": "smoke:spawn", "tool": "corral_spawn_agent",
-    "args": {"cwd": PROJ_C, "task": "hi-c", "window": "hidden"}}))
+    "args": {"cwd": PROJ_C, "task": "hi-c", "label": "pi",
+             "window": "hidden"}}))
 acp(f"prompt {sock_a} {sid_a} 'smoke:spawn'")
-try:
-    wait_records(
-        lambda rs: any("proj-c" in r.get("cwd", "") and r.get("hidden")
-                       for r in rs),
-        timeout=60, desc="hidden spawn in proj-c", diag=False)
-    machine.log("e2e-pi: hidden spawn via corrald confirmed")
-except Exception as e:
-    machine.log(f"e2e-pi: hidden spawn best-effort (cage headless UNVERIFIED): {e}")
+wait_records(
+    lambda rs: any("proj-c" in r.get("cwd", "") and r.get("hidden")
+                   for r in rs),
+    timeout=60, desc="hidden spawn in proj-c")
 assert window_count() == before, "hidden spawn opened a visible window"
 
 # --- 8b. a non-canonical spawn cwd hits the same grant (SECURITY.md T20) ----
