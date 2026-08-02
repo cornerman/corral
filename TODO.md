@@ -413,6 +413,37 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
    lost on first write (`todo/SPEC.md` known limits). `list` has no `--json`, so
    the dispatcher parses columns.
 
+### How to resume the e2e-todo work (read this first)
+
+```sh
+just e2e-one e2e-todo 2>&1 | tee ~/e2e-todo.log   # ~10 min, needs KVM, NOT /tmp
+grep -nE "e2e-todo: OK|Exception|DIAG" ~/e2e-todo.log
+```
+
+On a failure the scenario dumps diagnostics before raising (`nix/tests/prelude.py`
+`dump_diag` / `dump_messaging`, plus the todo scenario's own `watch_log`). The
+four that answered every question so far, in order of usefulness: corrald's
+journal (it alone shows a routed spawn failing while the caller's ack said
+`accepted`), `ps aux` (shows the real `cage -- kitty -e pi` argv and how many
+dispatchers exist), `state/registry` (what the boards would see), and the watch
+unit's journal (`journalctl --user -u corral-todo-watch`, one line per wake).
+
+Two scenario mechanics worth knowing before editing it. The stub LLM is a rule
+table matching a substring against the **last message only**, runtime rules
+before built-ins, so a rule keyed on wake text also fires for a freshly spawned
+dispatcher's first prompt (§7 carries a comment on this). And the watcher's first
+tick fingerprints whatever `todo.txt` already holds, so `watch` wakes once at
+startup **before** the scenario's first `add` — the run therefore starts with two
+changes inside pi's boot window, which is exactly what `SPAWN_GRACE` now absorbs.
+
+One thread left open from the first run: corrald's journal showed **one**
+`route spawn: no terminal found` line, though more than one wake should have
+reached a dispatcher that would call the tool. Either only one session ever got
+far enough to call it, or the others failed earlier and silently. Re-check the
+line count against the wake count on the next run; if they still disagree, the
+question is whether a spawned-but-not-yet-announced dispatcher is dropping its
+tool call.
+
 ### Sandbox gotchas (cost real time, 2026-07-31)
 
 - **`/tmp` does not survive between tool calls** in the agent sandbox. Two

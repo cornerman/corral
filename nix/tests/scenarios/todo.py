@@ -192,6 +192,13 @@ assert len(set(prints)) == len(prints), \
 # The stub is a rule table, so it cannot read todo.txt. Drive the tool call
 # directly: the next wake makes the dispatcher spawn a worker in proj-a, which
 # is the fan-out todo/SPEC.md specifies (spawn down, report up).
+#
+# WAKE_MARK is a substring of BOTH wake::WAKE_MESSAGE and wake::FIRST_PROMPT,
+# and the stub matches its rules against the LAST message only. So this rule
+# fires for an injected wake AND for any dispatcher spawned from here on. That
+# is benign today (the assertion below wants one worker in proj-a and takes the
+# first), but it means this section cannot tell WHICH dispatcher dispatched.
+# If that ever matters, give the rule a marker the wake text does not carry.
 stub_post_rule(json.dumps({
     "match": WAKE_MARK,
     "tool": "corral_spawn_agent",
