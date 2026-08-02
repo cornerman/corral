@@ -30,8 +30,10 @@ stop, resume, and hidden agents — plus the sandbox-negative checks that prove
 SECURITY.md's location=identity premise. Four flake checks, one per harness
 (`checks.e2e-<harness>`); `just e2e` runs all, `just e2e-one <name>` runs one.
 A fifth check, `checks.e2e-todo` (`nix/tests/scenarios/todo.py`), covers the todo
-system's wake + dispatch loop rather than a harness; it has never completed green,
-so it is excluded from `just e2e` and from CI's matrix until it does (TODO.md).
+system's wake + dispatch loop rather than a harness, and runs in `just e2e` and
+CI's matrix like the rest (green since 2026-08-02). It proves the plumbing only:
+the stub LLM is a rule table, so no scenario can prove a dispatcher obeys
+`DISPATCHER.md` (TODO.md).
 Design: `docs/superpowers/specs/2026-07-18-vm-e2e-smoke-test-design.md`.
 
 Any change to an adapter, the CONVENTION.md contract, or user-facing

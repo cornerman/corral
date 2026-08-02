@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [e2e-pi, e2e-opencode, e2e-claude, e2e-cursor]
+        scenario: [e2e-pi, e2e-opencode, e2e-claude, e2e-cursor, e2e-todo]
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31

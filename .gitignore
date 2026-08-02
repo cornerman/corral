@@ -3,3 +3,4 @@
 .direnv/
 .worktrees/
 .superpowers/
+/.e2e-logs

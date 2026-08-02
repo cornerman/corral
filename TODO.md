@@ -332,22 +332,20 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
    line, `corral-todo watch --dir ~/todos --interval 5 -- pi`, then read the wake
    log. Different fingerprints in a row = not converging. Silence = settled.
    The wake log exists precisely to make this countable.
-2. **`e2e-todo` has never completed green** (`nix/tests/scenarios/todo.py`, wired
-   as `checks.e2e-todo`; deliberately NOT in the CI matrix yet). **Sections 1-6
-   now pass in a real VM** (run 2026-07-31): `init` writes `DISPATCHER.md` and no
-   `AGENTS.md`, prints rather than writes the whitelist lines, `list` sorts `(A)`
-   before `(C)`, `watch` refuses a policy-less directory, the `CORRAL_TERMINAL`
-   fix for section 5 is **confirmed** (a hidden dispatcher launched under cage,
-   `hidden: true`, got `FIRST_PROMPT`, logged `via spawn`), and section 6's
-   `via inject` reached the live session. Section 7 then failed: see the two bugs
-   it found, both fixed below. Sections 8-10 (no windows mapped, file still
-   parses, settling) have still never executed. Next run: `just e2e-one e2e-todo`
-   (~10 min, needs KVM). Add it to `.github/workflows/ci.yml`'s matrix only once
-   green.
+2. **`e2e-todo` is green** (`nix/tests/scenarios/todo.py`, `checks.e2e-todo`),
+   first time on 2026-08-02, and now runs in `just e2e` and the CI matrix beside
+   the four harness scenarios. All ten sections pass in a real VM: `init`, the
+   CLI's ordering, the policy-less refusal, a hidden dispatcher spawned under
+   cage with `FIRST_PROMPT`, an injected second wake into the *same* session, a
+   dispatched worker landing in `proj-a` through corrald's gate with the charter,
+   no window mapped anywhere, the file still parsing, and a quiet interval adding
+   no wake. The run logs exactly three wakes with distinct fingerprints —
+   `via spawn (2 items)`, `via inject (3 items)`, `via inject (5 items)` — which
+   is the convergence property `todo/SPEC.md` asks for, made countable.
 
-   **Two real bugs found by that run, both fixed, the pair UNVERIFIED together**
-   (a re-run was started and its log was lost before it could be read — see
-   "Sandbox gotchas" below; treat section 7 onward as unproven):
+   **Three fixes got it there. Two were real product bugs, found by this scenario
+   alone** (the third was the scenario's own stale count: §9 asserted four open
+   items while five `add` calls reach it and the stub never completes one):
 
    - **corrald could not spawn any agent from its unit.** `corrald` resolves a
      terminal at launch time, but a systemd user service inherits no `$TERMINAL`
@@ -413,7 +411,7 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
    lost on first write (`todo/SPEC.md` known limits). `list` has no `--json`, so
    the dispatcher parses columns.
 
-### How to resume the e2e-todo work (read this first)
+### Working on e2e-todo (read this first)
 
 ```sh
 just e2e-one e2e-todo 2>&1 | tee ~/e2e-todo.log   # ~10 min, needs KVM, NOT /tmp
@@ -436,13 +434,11 @@ tick fingerprints whatever `todo.txt` already holds, so `watch` wakes once at
 startup **before** the scenario's first `add` — the run therefore starts with two
 changes inside pi's boot window, which is exactly what `SPAWN_GRACE` now absorbs.
 
-One thread left open from the first run: corrald's journal showed **one**
-`route spawn: no terminal found` line, though more than one wake should have
-reached a dispatcher that would call the tool. Either only one session ever got
-far enough to call it, or the others failed earlier and silently. Re-check the
-line count against the wake count on the next run; if they still disagree, the
-question is whether a spawned-but-not-yet-announced dispatcher is dropping its
-tool call.
+A thread from the failing runs, now closed: corrald's journal showed only **one**
+`route spawn: no terminal found` line though several wakes reached a dispatcher.
+The green run explains it — the scenario's own §7 rule is what makes a dispatcher
+call the tool, and it is posted late, so only the wakes after it dispatch at all.
+The wake count and the route count are not meant to match.
 
 ### Sandbox gotchas (cost real time, 2026-07-31)
 
@@ -472,13 +468,14 @@ refusal to clobber; `list` ordering; a live ACP socket receiving exactly one
 change behaviour with distinct fingerprints; and sections 1-4 of `e2e-todo` inside
 a real VM.
 
-### Verification state at hand-off (2026-07-31)
+### Verification state at hand-off (2026-08-02)
 
-Green after the two fixes above: `cargo test -p corral-todo` (75 tests: 59 lib +
-16, including the two new grace tests), `cargo clippy --workspace --all-targets
--D warnings`, `nix flake check --no-build`. **Not** re-run: the full `just test`
-workspace suite, `nix build`, and `just e2e-one e2e-todo` (started, log lost).
-Do those three first — in particular the e2e run is the only thing that can
-confirm the corrald-terminal fix and sections 7-10, and `an_edit_wakes_again`
-needed `spawn_grace = Duration::ZERO` after the change, so other suites may hold
-similar timing assumptions.
+`just e2e-one e2e-todo` ends in `e2e-todo: OK` (~9 min, run 4 of 4 that day), so
+the corrald-terminal fix and the watcher grace are both confirmed against real
+processes, not only unit tests. Also green: `cargo test --workspace`, `cargo
+clippy --workspace --all-targets -D warnings`, `nix flake check --no-build`.
+**Not** re-run since: `nix build`, and the four harness scenarios (`just e2e`
+now includes e2e-todo, so the whole set is one command and ~45 min).
+
+Still unproven, and the reason item 1 above stays open: no real model has driven
+the loop. The green scenario proves the plumbing, never the policy.

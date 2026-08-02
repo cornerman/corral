@@ -14,9 +14,12 @@
 # The stub LLM is a rule table, so policy compliance (above all "write nothing
 # when nothing changed") stays a live-run question.
 #
-# STATUS: has never completed green. Sections 1-4 pass in a real VM; section 5
-# first failed with "no terminal found" (see the CORRAL_TERMINAL note there) and
-# the fix is UNVERIFIED. Sections 6-10 have never executed. See TODO.md.
+# STATUS: green since 2026-08-02, and in `just e2e` + the CI matrix like the
+# four harness scenarios. Getting here took two product fixes, both found by
+# this scenario alone: corrald's systemd unit carried no $TERMINAL (so every
+# routed spawn died while the caller's ack read "accepted"), and the watcher
+# stacked a second dispatcher when an edit arrived inside pi's boot window
+# (watch.rs SPAWN_GRACE). See TODO.md.
 
 TODOS = HOME + "/todos"
 PROJ_A = HOME + "/proj-a"
@@ -226,15 +229,21 @@ machine.log(f"sway windows: {window_count()}")
 assert window_count() == 0, "the todo system must never map a window"
 
 # --- 9. the file still parses and the CLI still owns it ---------------
+# Five adds got here (middling, urgent, first, second, third) and nothing ever
+# completes one: the stub LLM never calls `corral-todo set`, so every item that
+# went in is still open. A count that drifts means the file lost or gained a
+# line behind the CLI's back.
+ITEMS = 5
 final = todo_file()
 machine.log("final todo.txt:\n" + final)
-assert final.count("\n") >= 4, f"expected four items: {final}"
+assert final.count("\n") >= ITEMS, f"expected {ITEMS} items: {final}"
 # Every line got an id and a creation date on the way through.
 for line in final.strip().splitlines():
     assert "id:" in line, f"unnormalized line survived: {line}"
 # And the dispatcher path never corrupted it: the CLI can still round-trip.
 listed = todo_cli("list --open")
-assert len(listed.strip().splitlines()) == 4, f"expected four open: {listed}"
+assert len(listed.strip().splitlines()) == ITEMS, \
+    f"expected {ITEMS} open: {listed}"
 
 # --- 10. settling: no wake without a change ---------------------------
 # The watcher polls every 2s; after the dust settles a quiet interval must add
