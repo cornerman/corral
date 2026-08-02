@@ -96,12 +96,11 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
       pi/node/opencode closures granted). Once confined, flip the
       sandbox-negative checks in `scenarios/pi.py` from best-effort to hard
       asserts (cross-workdir read denied, sealed `state/registry` unwritable).
-- [ ] Hidden agents in the VM: **cage headless now provably works** under the
-      VM's software GL (`e2e-todo` §5, 2026-07-31: `cage -- kitty -e pi` ran and
-      the session announced with `hidden: true`). The earlier "did not come up"
-      note was wrong, or was really the `no terminal found` bug (see the todo
-      section). So flip `scenarios/pi.py` §7-8 from best-effort try/except to
-      hard asserts — they were hiding exactly that bug for weeks.
+- [x] Hidden agents in the VM (done 2026-08-02). cage headless works under the
+      VM's software GL, and `scenarios/pi.py` §7-8 are hard asserts now: a
+      visible resume maps a real window, a hidden spawn maps none. Removing the
+      try/except exposed three further bugs the same day — see the todo section,
+      "`e2e-pi` §7-§8 were masking the corrald bug".
 - [ ] Run and harden the other three scenarios; each is wired and evaluates
       but was not run in the authoring sandbox. opencode needs a verified stub
       provider config, and should confirm the bun-under-Landlock outcome once
@@ -371,14 +370,38 @@ package). Design `todo/SPEC.md`, policy `todo/DISPATCHER.md`, setup
      `spawned_at` clears on any inject/resume (proof a session exists). The
      scenario now asserts `len(sessions_before) == 1` so a herd fails loudly.
 
-   **`e2e-pi` §8 was masking the corrald bug.** It wraps the hidden-spawn check
-   in try/except as "best-effort (cage headless UNVERIFIED)", so the same
-   `no terminal found` failure passed silently there. e2e-todo caught it only
-   because its §7 asserts hard. Now that a hidden cage launch is **proven** to
-   work under the VM's software GL (pixman, via `environment.sessionVariables`,
-   which reaches user units through PAM), flip `scenarios/pi.py` §8 (and the
-   §7 hidden-resume probe) from best-effort to hard asserts, and drop the
-   corresponding "hidden agents in the VM" caveat from the e2e follow-ups above.
+   **`e2e-pi` §7-§8 were masking the corrald bug, and are now hard**
+   (2026-08-02). Both wrapped their check in try/except as "best-effort (cage
+   headless UNVERIFIED)", so the same `no terminal found` failure passed
+   silently there; e2e-todo caught it only because its §7 asserts hard. Removing
+   the try/except immediately exposed three more things nobody had ever seen,
+   which is the whole argument against a swallowing assertion:
+
+   - **§7 asserted the wrong invariant.** It expected B to come back *hidden*,
+     but a resume inherits the record's own placement (`router.rs`: the messager
+     does not get to move another agent's window), and B was opened visibly.
+     Only a *spawn* defaults hidden. §7 now asserts the visible resume and waits
+     for a window to actually map, so the inheritance is proven rather than
+     read off a flag.
+   - **§8 omitted `label` on a spawn into a never-announced directory.**
+     corrald refuses to guess a kind there (`route: no known agent kind for
+     /home/alice/proj-c`), which is the documented fail-loud behavior, so the
+     section had never once exercised a working hidden spawn.
+   - **corrald in the VM had no graphical environment.** `nix/tests/base.nix`
+     retargets its unit from `graphical-session.target` to `default.target`
+     (a tty-launched sway never activates the former), which also skips the
+     `systemctl --user import-environment` a real session does first — so a
+     *visible* launch died inside the child with `X11: DISPLAY missing`. The
+     test now hands the unit `WAYLAND_DISPLAY=wayland-1` beside
+     `CORRAL_TERMINAL`. Real deployments are unaffected (the shipped unit is
+     `PartOf`/`After` `graphical-session.target`), but the pair is the same
+     lesson twice: **corrald launches windows, so it needs a launching
+     environment, and a fire-and-forget ack will never tell you it lacked one.**
+
+   One line in that run stays unexplained: `corrald[1888]: Error: No directories
+   to watch provided`, logged once just after a resume, with the resume itself
+   succeeding. Whatever printed it is a child of corrald's unit. Harmless so
+   far; worth identifying if it recurs.
 3. **The scenario cannot test policy, only plumbing.** The stub LLM is a rule
    table, so `e2e-todo` drives `corral_spawn_agent` directly rather than letting
    a dispatcher decide. It therefore proves the wake chain and the fan-out, and
