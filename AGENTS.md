@@ -171,7 +171,11 @@ client of `corral-core` like any outside program, and nothing here depends on it
     listed workdir's `.corral/registry/`), `partition` (the registration gate:
     split vetted into registered vs pending), and `resolve_submission` (open an
     outbox file non-blocking, size-capped, derive the trusted `fromCwd` from
-    its physical location). Pure/IO-thin, unit-tested.
+    its physical location). A refusal is a typed `SubmissionError`, not a bare
+    `None`, because the most common one is unactionable otherwise: an agent
+    whose workdir sits under a sandbox-private mount (a per-sandbox tmpfs over
+    `/tmp`) writes an outbox file corrald cannot open, and neither the journal
+    nor the caller could tell that from a typo. Pure/IO-thin, unit-tested.
   - `src/approved_commands.rs` — the harness-registration store. Records carry
     launch commands already in TEMPLATE form (with `{sessionId}`/`{cwd}`
     placeholders, CONVENTION.md), so `candidate` copies them verbatim and the
@@ -463,7 +467,10 @@ client of `corral-core` like any outside program, and nothing here depends on it
     for every verb, `already_stopped` included), ack the verdict, and (if
     routable) **stamp the canonical `target_cwd`** onto the submission before
     handing it to the router. This is the sole place either directory of the
-    authorized pair is derived. Accepts are
+    authorized pair is derived. Every refusal acks
+    `{"status":"malformed","reason":"…"}` and journals the same reason with the
+    submitted path: the reason is about the caller's own request, so it
+    discloses nothing, and the adapters print it in the tool result. Accepts are
     bounded, each read is timed out, and the request line is byte-capped at 8 KiB
     (slowloris/flood defense, T15 — a read timeout bounds only idle time, so a
     sender that keeps writing could otherwise buffer unbounded memory in the
@@ -980,6 +987,14 @@ irrelevant to it. Shown verbatim on the agent's card.
   its child's handle only from the child's own first message (the charter tells
   it to send one). Waiting for a newcomer to announce would be an unbounded wait
   with no way to tell two simultaneous starts apart.
+- An agent whose workdir sits under a mount its sandbox made private (a
+  per-sandbox tmpfs over `/tmp`, seen as a second `/tmp` line without a
+  `master:` field in `/proc/<pid>/mountinfo`) is invisible to corral end to end:
+  its record, socket and outbox file exist only inside that namespace, so the
+  card never appears and every submission is refused. Location = identity
+  presupposes one shared filesystem view, so this is a setup error, not a case
+  to work around — corral only names it (the `malformed` reason and the
+  journal line) instead of failing mutely. Run agents outside such a mount.
 - Each project dir where pi runs gains a `<cwd>/.corral/` holding the session
   socket. Deliberate: workdir-local is the sandbox-isolation primitive. Add it
   to a global gitignore if the stray dir bothers you.

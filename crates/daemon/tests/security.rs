@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use corral_core::approved_commands::{self, Approved, Template};
-use corral_core::curation;
+use corral_core::curation::{self, SubmissionError};
 use corral_core::discovery::{self, RegistryEntry};
 use corral_daemon::curator;
 
@@ -110,7 +110,10 @@ fn t2_symlink_target_outside_outbox_rejected() {
     let link = outbox.join("m1.json");
     std::os::unix::fs::symlink(&secret, &link).unwrap();
 
-    assert_eq!(curation::resolve_submission(&link), None);
+    assert_eq!(
+        curation::resolve_submission(&link),
+        Err(SubmissionError::OutsideOutbox)
+    );
 }
 
 #[test]
@@ -124,7 +127,10 @@ fn t14_rejects_fifo() {
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
 
     // Non-blocking open + regular-file check: a FIFO cannot hang or be read.
-    assert_eq!(curation::resolve_submission(&fifo), None);
+    assert_eq!(
+        curation::resolve_submission(&fifo),
+        Err(SubmissionError::NotRegularFile)
+    );
 }
 
 #[test]
@@ -138,14 +144,18 @@ fn t14_rejects_dir_and_oversize_and_outside_outbox() {
     // A directory at the submit path is not a regular file.
     let asdir = outbox.join("d.json");
     fs::create_dir_all(&asdir).unwrap();
-    assert_eq!(curation::resolve_submission(&asdir), None, "dir rejected");
+    assert_eq!(
+        curation::resolve_submission(&asdir),
+        Err(SubmissionError::NotRegularFile),
+        "dir rejected"
+    );
 
     // Oversize (> 256 KiB cap).
     let big = outbox.join("big.json");
     fs::write(&big, vec![b'x'; 256 * 1024 + 1]).unwrap();
     assert_eq!(
         curation::resolve_submission(&big),
-        None,
+        Err(SubmissionError::TooLarge),
         "oversize rejected"
     );
 
@@ -154,7 +164,7 @@ fn t14_rejects_dir_and_oversize_and_outside_outbox() {
     fs::write(&stray, "{}").unwrap();
     assert_eq!(
         curation::resolve_submission(&stray),
-        None,
+        Err(SubmissionError::OutsideOutbox),
         "outside outbox rejected"
     );
 }

@@ -415,6 +415,11 @@ directly. To submit, it **writes the request JSON to its own outbox**
   there), never self-reported. The consumer reads then deletes the file. The
   same envelope carries any verb (below); the request JSON is the outbox file's
   content.
+- The workdir MUST live on a mount the consumer can see. An agent confined to a
+  private mount namespace (a per-sandbox tmpfs over `/tmp`, say) writes an
+  outbox file, a record and a socket only it can reach, so the consumer resolves
+  nothing and the session never appears at all. Location = identity presupposes
+  one shared filesystem view; grant the sandbox a workdir outside such a mount.
 
 Every request names its verb in an `op` field, and each verb requires only its
 own fields — so no field's meaning depends on another, and an adapter's tool for
@@ -463,7 +468,14 @@ whitelist:
 | `approval_needed`     | Target resolved but not yet authorized; held for the operator's approval (not awaited). Also the answer for **any** spawn `cwd` the caller may not reach, existing or not (see below). |
 | `recipient_not_found` | `targetSession` is not in the registry. |
 | `directory_not_known` | A `spawn`'s `cwd` is not an existing directory. Reported only when the caller may reach that directory (its own cwd, or a whitelisted pair). |
-| `malformed`           | Unparseable request, or a verb missing one of its fields. |
+| `malformed`           | Unparseable request, a verb missing one of its fields, or an outbox file the consumer cannot resolve. |
+
+A `malformed` ack SHOULD carry a `reason` string (`{"status":"malformed",
+"reason":"…"}`) saying what was wrong with *this* request: the sender is
+otherwise stuck with a verdict it cannot act on, and the common cause (an outbox
+file invisible to the consumer, above) is invisible from the sender's side. The
+reason describes the caller's own submission only, so it discloses nothing about
+other agents or the host filesystem. Every other status stands alone.
 
 Whether an arbitrary path is a directory is a fact about the host filesystem
 outside the caller's sandbox, so the consumer MUST NOT let the ack disclose it to
@@ -534,7 +546,7 @@ for an unwhitelisted pair. The ack:
 | `approval_needed`     | Live target, not yet authorized; held for the operator (not awaited). |
 | `already_stopped`     | Target is already dormant or gone: stopping is a no-op success. |
 | `recipient_not_found` | `targetSession` is not in the registry. |
-| `malformed`           | Unparseable request. |
+| `malformed`           | Unparseable request (with a `reason`, as above). |
 
 Stopping is fire-and-forget: the ack confirms the verdict, not that the process
 has exited.

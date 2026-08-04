@@ -163,9 +163,9 @@ export default function (pi: ExtensionAPI) {
 			const dest = `session ${params.target_session}`;
 			// Submit over corral's control socket. A connect failure means corral is
 			// not running: fail loud here rather than silently queue undelivered.
-			let status: string;
+			let ack: CorralAck;
 			try {
-				status = await submitToCorral(socketPath, ctx.cwd, record);
+				ack = await submitToCorral(socketPath, ctx.cwd, record);
 			} catch {
 				return {
 					content: [
@@ -176,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 					],
 				};
 			}
-			return { content: [{ type: "text", text: describeAck(status, dest) }] };
+			return { content: [{ type: "text", text: describeAck(ack, dest) }] };
 		},
 	});
 
@@ -253,15 +253,15 @@ export default function (pi: ExtensionAPI) {
 				createdAt: new Date().toISOString(),
 			};
 			if (params.label) record.label = params.label;
-			let status: string;
+			let ack: CorralAck;
 			try {
-				status = await submitToCorral(socketPath, ctx.cwd, record);
+				ack = await submitToCorral(socketPath, ctx.cwd, record);
 			} catch {
 				return {
 					content: [{ type: "text", text: `corral is not running (cannot reach ${socketPath}); agent not spawned.` }],
 				};
 			}
-			return { content: [{ type: "text", text: describeSpawnAck(status, params.cwd) }] };
+			return { content: [{ type: "text", text: describeSpawnAck(ack, params.cwd) }] };
 		},
 	});
 
@@ -309,15 +309,15 @@ export default function (pi: ExtensionAPI) {
 				createdAt: new Date().toISOString(),
 			};
 			const dest = `session ${params.target_session}`;
-			let status: string;
+			let ack: CorralAck;
 			try {
-				status = await submitToCorral(socketPath, ctx.cwd, record);
+				ack = await submitToCorral(socketPath, ctx.cwd, record);
 			} catch {
 				return {
 					content: [{ type: "text", text: `corral is not running (cannot reach ${socketPath}); stop not sent.` }],
 				};
 			}
-			return { content: [{ type: "text", text: describeStopAck(status, dest) }] };
+			return { content: [{ type: "text", text: describeStopAck(ack, dest) }] };
 		},
 	});
 
@@ -1022,7 +1022,9 @@ function submitRawToCorral(
 	return new Promise((resolve, reject) => {
 		let file: string;
 		try {
-			const dir = outboxDir(cwd);
+			// Absolute: corrald resolves the path in its own process, so a
+			// relative one would be read against the daemon's cwd, not ours.
+			const dir = path.resolve(outboxDir(cwd));
 			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 			file = path.join(dir, `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 			fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
@@ -1053,22 +1055,30 @@ function submitRawToCorral(
 	});
 }
 
-// Submit a message record and resolve with the one-word ack status corral
-// returns (parsed from the raw reply line).
-async function submitToCorral(socketPath: string, cwd: string, record: Record<string, unknown>): Promise<string> {
+// Submit a record and resolve with corral's parsed ack (verdict plus, for a
+// refused submission, the reason).
+async function submitToCorral(socketPath: string, cwd: string, record: Record<string, unknown>): Promise<CorralAck> {
 	const line = await submitRawToCorral(socketPath, cwd, record);
 	try {
-		return String((JSON.parse(line) as { status?: unknown }).status ?? "unknown");
+		const ack = JSON.parse(line) as { status?: unknown; reason?: unknown };
+		return {
+			status: String(ack.status ?? "unknown"),
+			reason: typeof ack.reason === "string" ? ack.reason : undefined,
+		};
 	} catch {
-		return "unknown";
+		return { status: "unknown" };
 	}
 }
+
+// corral's ack: the verdict, plus (for a refused submission) the reason it was
+// refused, so the blocked agent is told what is wrong instead of a bare word.
+type CorralAck = { status: string; reason?: string };
 
 // Turn corral's ack for a stop into a message for the sending agent. Shares the
 // wire vocabulary with a message ack, plus `already_stopped` (the idempotent
 // no-op when the target was already dormant or gone).
-function describeStopAck(status: string, dest: string): string {
-	switch (status) {
+function describeStopAck(ack: CorralAck, dest: string): string {
+	switch (ack.status) {
 		case "accepted":
 			return `Stop accepted by corral (${dest}); the agent is being killed.`;
 		case "approval_needed":
@@ -1078,17 +1088,17 @@ function describeStopAck(status: string, dest: string): string {
 		case "recipient_not_found":
 			return `Not stopped: no such session (${dest}).`;
 		case "malformed":
-			return "Not stopped: corral rejected the request as malformed.";
+			return `Not stopped: corral refused the request (${ack.reason ?? "malformed"}).`;
 		default:
-			return `corral responded: ${status}.`;
+			return `corral responded: ${ack.status}.`;
 	}
 }
 
 // Turn corral's ack for a spawn into a message for the sending agent. Shares
 // the wire vocabulary with a message ack; `directory_not_known` is the spawn's
 // own failure (nowhere to start an agent).
-function describeSpawnAck(status: string, dir: string): string {
-	switch (status) {
+function describeSpawnAck(ack: CorralAck, dir: string): string {
+	switch (ack.status) {
 		case "accepted":
 			return `Spawn accepted by corral (in ${dir}); the new agent will message you with its session id.`;
 		case "approval_needed":
@@ -1096,15 +1106,15 @@ function describeSpawnAck(status: string, dir: string): string {
 		case "directory_not_known":
 			return `Not spawned: directory not known (${dir}).`;
 		case "malformed":
-			return "Not spawned: corral rejected the request as malformed.";
+			return `Not spawned: corral refused the request (${ack.reason ?? "malformed"}).`;
 		default:
-			return `corral responded: ${status}.`;
+			return `corral responded: ${ack.status}.`;
 	}
 }
 
 // Turn corral's ack status into a message for the sending agent.
-function describeAck(status: string, dest: string): string {
-	switch (status) {
+function describeAck(ack: CorralAck, dest: string): string {
+	switch (ack.status) {
 		case "accepted":
 			return `Accepted for routing by corral (to ${dest}).`;
 		case "approval_needed":
@@ -1112,9 +1122,9 @@ function describeAck(status: string, dest: string): string {
 		case "recipient_not_found":
 			return `Not sent: no such session (${dest}). List sessions with corral_list_agents, or spawn a new agent with corral_spawn_agent.`;
 		case "malformed":
-			return "Not sent: corral rejected the message as malformed.";
+			return `Not sent: corral refused the message (${ack.reason ?? "malformed"}).`;
 		default:
-			return `corral responded: ${status}.`;
+			return `corral responded: ${ack.status}.`;
 	}
 }
 

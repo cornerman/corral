@@ -105,7 +105,7 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<S
     let mut conn = reader.into_inner();
     match read {
         Ok(n) if n as u64 == MAX_REQUEST && !line.ends_with('\n') => {
-            let _ = ack(&mut conn, "malformed");
+            let _ = reject(&mut conn, "the request line exceeds the size cap");
             return;
         }
         Ok(_) => {}
@@ -115,14 +115,24 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<S
     // corrald opens the file and derives the trusted `fromCwd` from where it
     // physically lives, so a self-reported sender cannot be forged (T2-send).
     let Some(path) = mailbox::parse_submit(line.trim()) else {
-        let _ = ack(&mut conn, "malformed");
+        let _ = reject(
+            &mut conn,
+            "the request is not a {\"submit\":\"<path>\"} envelope",
+        );
         return;
     };
     // resolve_submission reads AND consumes the file, deriving the trusted
     // facts from the fd it holds; the raw `path` is never touched again.
-    let Some((from_cwd, content)) = curation::resolve_submission(Path::new(&path)) else {
-        let _ = ack(&mut conn, "malformed");
-        return;
+    let (from_cwd, content) = match curation::resolve_submission(Path::new(&path)) {
+        Ok(resolved) => resolved,
+        Err(why) => {
+            // The sender is unknown here (deriving it is what just failed), so
+            // the path is all the operator gets; `{path:?}` keeps hostile text
+            // from mangling the journal line.
+            eprintln!("corrald: refused submission {path:?}: {why}");
+            let _ = reject(&mut conn, &why.to_string());
+            return;
+        }
     };
 
     // A read-only roster query, answered synchronously and never routed. The
@@ -136,7 +146,7 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<S
         return;
     }
     let Some(mut sub) = mailbox::parse(&content) else {
-        let _ = ack(&mut conn, "malformed");
+        let _ = reject(&mut conn, "the submission is not a valid corral request");
         return;
     };
     sub.from_cwd = from_cwd; // authenticated, overrides any content fromCwd
@@ -149,7 +159,10 @@ fn handle(conn: UnixStream, registry_dir: &Path, whitelist: &Path, tx: &Sender<S
     // evidence about the sender, not about the payload.
     if let Some(sid) = sub.from_session.as_deref() {
         if mailbox::session_claims_other_dir(&entries, sid, &sub.from_cwd) {
-            let _ = ack(&mut conn, "malformed");
+            let _ = reject(
+                &mut conn,
+                "the reply handle names a session in another directory",
+            );
             return;
         }
     }
@@ -198,6 +211,35 @@ fn ack_and_route(
 
 fn ack(conn: &mut UnixStream, status: &str) -> std::io::Result<()> {
     writeln!(conn, "{{\"status\":\"{status}\"}}")
+}
+
+/// Ack `malformed` with the reason attached, so the blocked agent learns why
+/// its own submission was refused instead of reading a bare verdict. The reason
+/// is about the caller's own request only, so it discloses nothing about other
+/// agents or the host filesystem.
+fn reject(conn: &mut UnixStream, reason: &str) -> std::io::Result<()> {
+    writeln!(
+        conn,
+        "{{\"status\":\"malformed\",\"reason\":{}}}",
+        json_string(reason)
+    )
+}
+
+/// Minimal JSON string escaping for a reason we author ourselves (quotes and
+/// backslashes only; the reasons carry no control characters).
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
@@ -357,7 +399,7 @@ mod tests {
                 target.to_str().unwrap()
             ),
         );
-        assert_eq!(ack, r#"{"status":"malformed"}"#);
+        assert_malformed(&ack, "reply handle");
         assert!(rx.try_recv().is_err(), "a forged handle must not route");
     }
 
@@ -576,16 +618,13 @@ mod tests {
         let mut buf = String::new();
         let _ = c.read_to_string(&mut buf);
         assert!(
-            buf.trim().is_empty() || buf.trim() == r#"{"status":"malformed"}"#,
+            buf.trim().is_empty() || buf.trim().starts_with(r#"{"status":"malformed""#),
             "unexpected ack: {buf}"
         );
         assert!(rx.try_recv().is_err(), "an oversized line must not enqueue");
 
         // The daemon still serves a legitimate submission afterwards.
-        assert_eq!(
-            submit(&socket, &from, "not json"),
-            r#"{"status":"malformed"}"#
-        );
+        assert_malformed(&submit(&socket, &from, "not json"), "valid corral request");
     }
 
     #[test]
@@ -595,10 +634,36 @@ mod tests {
         serve(socket.clone(), registry, whitelist, tx).unwrap();
         while UnixStream::connect(&socket).is_err() {}
 
-        assert_eq!(
-            submit(&socket, &from, "not json"),
-            r#"{"status":"malformed"}"#
-        );
+        assert_malformed(&submit(&socket, &from, "not json"), "valid corral request");
         assert!(rx.try_recv().is_err());
+    }
+
+    /// A submission corrald cannot open is the sandbox-private-mount case (an
+    /// agent whose workdir lives under a mount only it sees): the ack must name
+    /// that cause, since the caller has no other way to learn why it is stuck.
+    #[test]
+    fn unopenable_submission_is_acked_with_the_reason() {
+        let (tmp, socket, registry, whitelist, _from) = setup();
+        let (tx, rx) = mpsc::channel();
+        serve(socket.clone(), registry, whitelist, tx).unwrap();
+        while UnixStream::connect(&socket).is_err() {}
+
+        let missing = tmp.path().join("gone/.corral/outbox/m.json");
+        let mut c = UnixStream::connect(&socket).unwrap();
+        c.write_all(format!("{{\"submit\":\"{}\"}}\n", missing.display()).as_bytes())
+            .unwrap();
+        let mut buf = String::new();
+        c.read_to_string(&mut buf).unwrap();
+        assert_malformed(buf.trim(), "mount namespace corrald cannot see");
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Every refusal is `malformed` plus a reason naming what went wrong.
+    fn assert_malformed(ack: &str, expect: &str) {
+        assert!(
+            ack.starts_with(r#"{"status":"malformed","reason":"#),
+            "expected a malformed ack with a reason, got: {ack}"
+        );
+        assert!(ack.contains(expect), "reason lacks {expect:?}: {ack}");
     }
 }

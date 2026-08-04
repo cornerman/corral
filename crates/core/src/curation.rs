@@ -55,24 +55,70 @@ const DORMANT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(14 *
 /// - the fd's real path must match `<cwd>/.corral/outbox/<name>` — any other
 ///   location (a symlink target elsewhere, `/etc/...`) is rejected, so corrald
 ///   never reads an arbitrary file.
-pub fn resolve_submission(path: &Path) -> Option<(String, String)> {
+///
+/// Every rejection carries a [`SubmissionError`] rather than a bare `None`: a
+/// refused submission is acked to its sender as `malformed`, and without a
+/// reason neither the operator's journal nor the calling agent can tell a typo
+/// from an unreachable file (the mount-namespace case below).
+pub fn resolve_submission(path: &Path) -> Result<(String, String), SubmissionError> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)
-        .ok()?;
-    let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_SUBMISSION {
-        return None;
+        .map_err(|_| SubmissionError::Unopenable)?;
+    let meta = file.metadata().map_err(|_| SubmissionError::Unopenable)?;
+    if !meta.is_file() {
+        return Err(SubmissionError::NotRegularFile);
     }
-    let real = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
-    let cwd = discovery::cwd_from_outbox_path(&real)?;
+    if meta.len() > MAX_SUBMISSION {
+        return Err(SubmissionError::TooLarge);
+    }
+    let real = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| SubmissionError::Unopenable)?;
+    let cwd = discovery::cwd_from_outbox_path(&real).ok_or(SubmissionError::OutsideOutbox)?;
     let mut content = String::new();
-    file.read_to_string(&mut content).ok()?;
+    file.read_to_string(&mut content)
+        .map_err(|_| SubmissionError::Unreadable)?;
     // Consume the outbox file via the deduced real path, so the caller never
     // touches the raw envelope path again (best-effort).
     let _ = std::fs::remove_file(&real);
-    Some((cwd, content))
+    Ok((cwd, content))
+}
+
+/// Why corrald refused an outbox submission. Each variant is one rejection in
+/// [`resolve_submission`], reported verbatim to the operator's journal and to
+/// the calling agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmissionError {
+    /// The path could not be opened at all. The common cause is not a typo: an
+    /// agent whose workdir sits under a mount the sandbox made private (a
+    /// per-sandbox tmpfs over `/tmp`, say) writes an outbox file only it can
+    /// see, so corrald opens nothing. That breaks the whole location=identity
+    /// premise for such a session, which is why the message names it.
+    Unopenable,
+    /// Not a regular file (a FIFO, device or directory in its place).
+    NotRegularFile,
+    /// Larger than the submission cap.
+    TooLarge,
+    /// The real path is not `<cwd>/.corral/outbox/<name>`.
+    OutsideOutbox,
+    /// Opened, but reading failed.
+    Unreadable,
+}
+
+impl std::fmt::Display for SubmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Unopenable => {
+                "cannot open the submitted file (missing, or written inside a mount namespace corrald cannot see, e.g. a workdir under a sandbox-private /tmp)"
+            }
+            Self::NotRegularFile => "the submitted path is not a regular file",
+            Self::TooLarge => "the submitted file exceeds the size cap",
+            Self::OutsideOutbox => "the submitted file is not under <cwd>/.corral/outbox/",
+            Self::Unreadable => "the submitted file could not be read",
+        };
+        f.write_str(s)
+    }
 }
 
 /// Read the raw pointer store (`~/.corral/input/registry/`) into a deduplicated
@@ -674,9 +720,16 @@ mod tests {
         // arbitrary path).
         let stray = boxd.join(".corral").join("stray.json");
         std::fs::write(&stray, "{}").unwrap();
-        assert_eq!(resolve_submission(&stray), None);
-        // A missing file is rejected.
-        assert_eq!(resolve_submission(&outbox.join("nope.json")), None);
+        assert_eq!(
+            resolve_submission(&stray),
+            Err(SubmissionError::OutsideOutbox)
+        );
+        // A missing file is rejected, with the reason the sandbox-private-mount
+        // case needs.
+        assert_eq!(
+            resolve_submission(&outbox.join("nope.json")),
+            Err(SubmissionError::Unopenable)
+        );
     }
 
     #[test]
