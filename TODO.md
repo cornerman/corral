@@ -61,12 +61,33 @@ runtime.
 
 1. **Prove the cross-harness claim at runtime.** VISION item #2 ("two harnesses
    on one board is the demonstration that makes the claim real") is still
-   UNVERIFIED: only `e2e-pi` runs green; opencode/claude/cursor have never taken
-   a real turn. opencode is the load-bearing second adapter and its runtime
-   event field paths are guessed (`properties.sessionID`, message-part text).
-   Until one non-pi adapter is validated end-to-end, "the open coordination
-   layer for many harnesses" rests on one harness. (Details in the four
-   adapter sections below.)
+   UNVERIFIED: opencode/claude/cursor have never taken a real turn, and their
+   scenarios are **green while swallowing that fact** — the same pattern that hid
+   the corrald bug in `e2e-pi`, so treat those three greens as "the VM boots",
+   not "the adapter works". Until one non-pi adapter is validated end-to-end,
+   "the open coordination layer for many harnesses" rests on one harness.
+
+   **opencode, diagnosed 2026-08-04** (was pinned for weeks on a false cause).
+   The plugin *does* load and its Bun socket *does* bind in the VM, so "opencode
+   SIGTRAPs under Landlock, hence untestable" was simply wrong; the process runs
+   fine and unconfined there. Two real walls stand behind it:
+
+   - **An idle opencode window emits no session-naming event**, so nothing was
+     ever announced (measured: 130s past its own boot, no record). FIXED in
+     `extensions/corral-opencode.ts` by `adoptNewestSession` — adopt this
+     directory's newest existing session at load. A brand-new directory still
+     announces only on its first event (the record's name is the session id, and
+     creating a session would intrude on the user's session list). **The fix
+     itself is unverified in the VM**: proving it needs a directory with prior
+     opencode history, which no scenario sets up yet.
+   - **The VM is offline, so opencode cannot reach a model.** It fails
+     `models.dev` and then its background dependency install (~70s of the boot,
+     before `init`), so a stub turn needs `@ai-sdk/openai-compatible` vendored
+     into the image the way `nix/tests/npm/pi/` pins pi. Until then e2e-opencode
+     can at best prove announce + routing + teardown, never a turn — and its
+     event field paths (`properties.sessionID`, message-part text) stay guesses.
+
+   (Details for claude/cursor in the four adapter sections below.)
 2. **Validate the security precondition in the VM.** The whole SECURITY.md model
    rests on "whole-process workdir sandbox", but the e2e agents run UNCONFINED
    (`open_kitty` runs plain `pi`, not `nono run`), so every T1-T18 gate is
@@ -101,13 +122,18 @@ The `nix/tests/` e2e suite landed with `e2e-pi` passing end-to-end (see
       visible resume maps a real window, a hidden spawn maps none. Removing the
       try/except exposed three further bugs the same day — see the todo section,
       "`e2e-pi` §7-§8 were masking the corrald bug".
-- [ ] Run and harden the other three scenarios; each is wired and evaluates
-      but was not run in the authoring sandbox. opencode needs a verified stub
-      provider config, and should confirm the bun-under-Landlock outcome once
-      confined. claude (unfree) must verify the sidecar announce plus the
-      Stop-block / asyncRewake hook delivery paths. cursor (unfree) must verify
-      the extension announce and the state hooks. Turn each scenario's
-      best-effort logs into hard asserts as it is validated on a real run.
+- [ ] Run and harden the other three scenarios. All four now really run in a VM
+      (2026-08-04), but opencode and claude reach their swallowed branch and pass
+      anyway, so their green is worthless until hardened. opencode: the plugin
+      loads and binds (Landlock was never the problem), and it needs both a dir
+      with prior session history to prove `adoptNewestSession` and a vendored
+      `@ai-sdk/openai-compatible` to take a turn offline. claude (unfree) must
+      verify the sidecar announce plus the Stop-block / asyncRewake hook delivery
+      paths. cursor (unfree) announces its `gui` record and correctly refuses
+      `session/load`; the Composer inject stays unproven. Turn each scenario's
+      best-effort logs into hard asserts as it is validated on a real run — and
+      note that in `e2e-pi` removing the try/except exposed three bugs the same
+      afternoon.
 - [ ] CI gating for the unvalidated scenarios. `.github/workflows/ci.yml` runs
       all four e2e checks in a matrix; only `e2e-pi` is proven green. Until
       opencode/claude/cursor are validated on real hardware, decide whether to

@@ -610,7 +610,17 @@ client of `corral-core` like any outside program, and nothing here depends on it
   cleared on `permission.replied`). It also broadcasts + persists the model as a
   `config_options_update` config option, probed defensively from the assistant
   message metadata (UNVERIFIED here). It tracks a single active session per window
-  (multi-session multiplexing is deferred) and, lacking a plugin-unload hook,
+  (multi-session multiplexing is deferred). Where pi announces at `session_start`,
+  opencode names a session only through its event bus, and an **idle window emits
+  no event at all** (measured in the e2e VM: 130s past boot, nothing), so the
+  plugin would show no card until the user typed. It therefore **adopts the newest
+  session of its own directory at load** (`adoptNewestSession`, via
+  `client.session.list()`), which covers every directory with history; a
+  brand-new one still waits for its first event, since the record's file name is
+  the session id and creating a session would push an uninvited empty entry into
+  the user's session list. The first real event overrides the adopted id, so the
+  card converges on the session the window actually drives. Lacking a
+  plugin-unload hook, it
   clears the record's socket and unlinks on process exit/SIGINT/SIGTERM;
   best-effort, since corral's dead-socket sweep makes a missed teardown dormant
   anyway. It registers the same four tools (`corral_message_agent`,

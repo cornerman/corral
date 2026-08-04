@@ -53,11 +53,20 @@
  * is unresolvable from the nix store path this plugin loads from. That check found
  * tool activity arrives as the dedicated `tool.execute.before/after` plugin
  * hooks (there is no `tool.*` event), so it is handled as hooks here, not in the
- * `event` switch. Still UNVERIFIED at runtime: opencode is a Bun-compiled
- * binary that SIGTRAPs under the Landlock sandbox, so a live load test (Bun
- * socket bind, real event payload field paths, message-part text extraction)
- * must run outside the sandbox. Every event field access stays guarded and all
- * bridge work is wrapped so the plugin never throws into opencode.
+ * `event` switch.
+ *
+ * PROVEN at runtime in the e2e VM (2026-08-04): opencode loads this plugin from
+ * ~/.config/opencode/plugin/ and the Bun unix socket binds
+ * (`<cwd>/.corral/opencode-<pid>.sock` appears). The earlier claim that opencode
+ * SIGTRAPs under Landlock and could therefore not be tested was wrong — the
+ * process runs fine there (unconfined in that scenario) — and it masked the real
+ * gap for weeks: an IDLE opencode window emits no event that names a session, so
+ * nothing announced. Hence `adoptNewestSession` below.
+ * Still UNVERIFIED: the event payload field paths, message-part text
+ * extraction, and turn behavior, since the VM is offline and opencode cannot
+ * reach a model there (it fails models.dev and its background dependency
+ * install). Every event field access stays guarded and all bridge work is
+ * wrapped so the plugin never throws into opencode.
  *
  * Install: symlink into ~/.config/opencode/plugin/ (global) or
  * .opencode/plugin/ (project).
@@ -189,6 +198,9 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		stop();
 	}
 
+	// Socket is up; now try to announce a session without waiting for a turn.
+	if (server) void adoptNewestSession();
+
 	// Clear the socket in the registry before unlinking it, leaving a dormant,
 	// resumable entry, then stop the server. Idempotent and synchronous so it is
 	// safe from a process-exit handler. opencode has no plugin-unload hook, so
@@ -315,18 +327,65 @@ export const CorralOpencode: Plugin = async ({ client, directory }) => {
 		}
 	}
 
+	// One session list, two callers (adopt + title refresh). The client shape is
+	// unverified, so tolerate either { data } or a bare array, and any failure.
+	type SessionSummary = {
+		id?: string;
+		title?: unknown;
+		directory?: unknown;
+		time?: { created?: unknown; updated?: unknown };
+	};
+	async function listSessions(): Promise<SessionSummary[]> {
+		try {
+			const res = (await client.session.list()) as { data?: SessionSummary[] };
+			if (Array.isArray(res?.data)) return res.data;
+			if (Array.isArray(res)) return res as SessionSummary[];
+		} catch {}
+		return [];
+	}
+
+	// Announce a session the moment the plugin loads, rather than waiting for the
+	// event bus to reveal one. opencode's event bus is the only thing that names a
+	// session id, and an IDLE TUI emits nothing: measured in the e2e VM, an
+	// opencode window sat 130s past its own boot without a single event, so its
+	// card never appeared on the board at all (pi announces at session start).
+	// Adopting the newest session this project already has fixes every directory
+	// with history, which is the normal case.
+	//
+	// Two deliberate limits. A brand-new directory has no session to adopt and
+	// still announces on its first event: the record's file name IS the session id
+	// (CONVENTION.md), so there is nothing to write, and creating a session would
+	// push an uninvited empty entry into the user's own session list. And the
+	// adopted session is the newest PAST one, which is not what the fresh TUI will
+	// use once the user talks -- so an injected prompt before the first turn lands
+	// in that past session. The event handler overrides `activeSessionId` on the
+	// first event carrying one, so the card converges on the true active session
+	// as soon as the window is used.
+	async function adoptNewestSession() {
+		if (activeSessionId) return;
+		const stamp = (s: SessionSummary) => {
+			const t = s?.time ?? {};
+			const n = typeof t.updated === "number" ? t.updated : typeof t.created === "number" ? t.created : 0;
+			return n;
+		};
+		const mine = (await listSessions()).filter(
+			(s) => typeof s?.id === "string" && (typeof s.directory !== "string" || s.directory === activeCwd),
+		);
+		if (mine.length === 0) return;
+		const newest = mine.reduce((a, b) => (stamp(b) > stamp(a) ? b : a));
+		if (activeSessionId) return; // an event won the race; it is more current
+		activeSessionId = newest.id as string;
+		writeRegistry();
+		void refreshTitle();
+	}
+
 	// Fetch the session title from opencode and, if it changed, broadcast the
 	// rename and persist it. opencode auto-names sessions, so unlike pi there is
-	// no first-user-message fallback to compute. Uses session.list() (the
-	// confirmed client method) and matches by id. Best-effort: the client shape
-	// is unverified, so tolerate either { data } or a bare array, and any failure.
+	// no first-user-message fallback to compute.
 	async function refreshTitle() {
 		if (!activeSessionId) return;
 		try {
-			const res = (await client.session.list()) as {
-				data?: Array<{ id?: string; title?: unknown }>;
-			};
-			const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? (res as never[]) : [];
+			const list = await listSessions();
 			const s = list.find((x: { id?: string }) => x?.id === activeSessionId);
 			const raw = s && typeof s.title === "string" ? s.title : "";
 			const clean = raw.replace(/\s+/g, " ").trim();

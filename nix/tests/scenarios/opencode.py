@@ -1,9 +1,14 @@
 # e2e-opencode: opencode announces, takes a stub turn, receives operator and
-# cross-kind (pi -> opencode) delivery, and teardown makes it dormant. opencode
-# is bun-compiled and may SIGTRAP under Landlock (the TODO.md landmine); the
-# scenario pins that outcome either way. Turn behavior depends on opencode's
-# provider config for the stub (UNVERIFIED, version-specific), so turn checks
-# are best-effort; the hard backbone is announce + teardown + corrald routing.
+# cross-kind (pi -> opencode) delivery, and teardown makes it dormant.
+#
+# STATUS (2026-08-04): everything below the announce is still SWALLOWED, so this
+# scenario is green while proving almost nothing -- read `dump_plugin_state`
+# before trusting it. What the diagnostics established: the plugin loads and
+# binds its socket, so the old pinned cause ("bun SIGTRAPs under Landlock") was
+# false; opencode simply never emits a session-naming event while idle, and
+# offline it also cannot reach a model (models.dev + dependency install both
+# fail), so a real turn is out of reach here without vendoring the ai-sdk
+# package into the VM. Hardening this is TODO.md's cross-harness item.
 import time as _t
 
 PROJ_O = HOME + "/proj-o"
@@ -19,20 +24,48 @@ def stub_saw(substr):
 boot()
 as_user(f"mkdir -p {PROJ_O} {PROJ_A}")
 
-# opencode on PATH is nono-wrapped. If it SIGTRAPs under Landlock, no record
-# appears -- pin that as the known outcome (the test still passes; a fix flips
-# this branch).
 open_kitty(PROJ_O, "opencode")
+
+
+def dump_plugin_state(tag):
+    """Why an opencode record is missing, narrowed to one of three causes.
+
+    The plugin binds its socket and creates `<cwd>/.corral/` the moment it
+    LOADS, and writes the record only once a session event reveals a session id
+    (see extensions/corral-opencode.ts). So:
+      no `<cwd>/.corral/` at all  -> the plugin never loaded (install path,
+                                     syntax, or opencode not reading it)
+      `.corral/` with a .sock     -> loaded, but no session ever started
+                                     (opencode sat on a config/provider screen)
+      record but no `socket`      -> loaded and announced, then torn down
+    Without this the failure was pinned for weeks on the wrong cause
+    ("bun SIGTRAPs under Landlock") while the process was in fact alive and
+    unconfined.
+    """
+    machine.log(f"=== DIAG opencode ({tag}): plugin dir ===")
+    machine.log(machine.execute(f"ls -la {HOME}/.config/opencode/plugin/ 2>&1")[1])
+    machine.log(f"=== DIAG opencode ({tag}): workdir .corral ===")
+    machine.log(machine.execute(f"ls -laR {PROJ_O}/.corral/ 2>&1")[1])
+    machine.log(f"=== DIAG opencode ({tag}): opencode state + logs ===")
+    machine.log(machine.execute(
+        f"ls -la {HOME}/.local/share/opencode/ 2>&1; "
+        f"tail -n 40 {HOME}/.local/share/opencode/log/*.log 2>&1")[1])
+
+
 announced = True
 try:
     recs = wait_records(
         lambda rs: any(r.get("socket") for r in records_with_label(rs, "opencode")),
-        timeout=90, desc="live opencode record")
+        # 200s, not 90: offline, opencode spends ~70s failing to fetch
+        # models.dev and then failing a background dependency install before it
+        # even reaches `init`, so a 90s budget left it 19 seconds of real life.
+        timeout=200, desc="live opencode record")
 except Exception as e:
     announced = False
-    machine.log("e2e-opencode: opencode did not announce under nono within 90s "
-                "(likely the bun-under-Landlock SIGTRAP, TODO.md). Pinned as the "
-                f"current known outcome: {e}")
+    dump_plugin_state("no record")
+    machine.log("e2e-opencode: opencode did not announce within 90s. Still "
+                "swallowed (the adapter is UNVERIFIED at runtime), but read the "
+                f"DIAG above before blaming Landlock: {e}")
 
 if announced:
     sock_o = next(r["socket"] for r in records_with_label(recs, "opencode") if r.get("socket"))
