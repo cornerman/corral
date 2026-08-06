@@ -285,8 +285,10 @@ pub fn vet(
 }
 
 /// Scan one already-canonicalized directory's `<dir>/.corral/registry/*.json`,
-/// vetting each record. IO, but pure given the filesystem.
-pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
+/// vetting each record. IO, but pure given the filesystem and `table` (the
+/// `/proc` view backing the crashed-session check; production passes
+/// `discovery::RealProc`).
+pub fn curate_dir(dir: &str, table: &impl discovery::ProcTable) -> Vec<RegistryEntry> {
     let corral = Path::new(dir).join(".corral");
     let regdir = corral.join("registry");
     // Neither hop may be a symlink, or a box could import another box's records
@@ -305,9 +307,17 @@ pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
             let stem = p.file_stem()?.to_string_lossy().into_owned();
             let text = std::fs::read_to_string(&p).ok()?;
             let rec = parse_registry_json(&text)?;
-            // Prune a dormant record (socket cleared) whose file has gone stale
-            // past the horizon; live records (socket set) are never pruned.
-            if rec.socket.is_none() {
+            // A socketed record whose announced process is provably gone (NSpid
+            // bridge, decided only with both `pid` + `pidNamespace`) is a
+            // crashed session: a crash/kill/reboot never unlinks the socket
+            // FILE, so its mere existence would read as live forever — the
+            // roster's `live` and the dormant prune both depend on this check.
+            let crashed = rec.socket.is_some()
+                && discovery::record_pid_alive(table, rec.pid, rec.pid_namespace) == Some(false);
+            // Prune a dormant record (socket cleared, or crashed) whose file
+            // has gone stale past the horizon; a genuinely live record is
+            // never pruned.
+            if rec.socket.is_none() || crashed {
                 let stale = std::fs::metadata(&p)
                     .and_then(|m| m.modified())
                     .ok()
@@ -319,6 +329,9 @@ pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
                 }
             }
             let place = match &rec.socket {
+                // A crashed session's socket leads nowhere anyone listens:
+                // publish it dormant (resumable), exactly like an unlinked one.
+                Some(_) if crashed => SocketPlace::Absent,
                 Some(s) => locate_socket(dir, s),
                 None => SocketPlace::Absent,
             };
@@ -331,7 +344,7 @@ pub fn curate_dir(dir: &str) -> Vec<RegistryEntry> {
 /// dir, and vet every record under it. Deduplicated by canonical dir. The
 /// result is the authenticated + field-validated set; corrald then applies the
 /// registration gate before writing `state/registry/`.
-pub fn curate(pointer_dir: &Path) -> Vec<RegistryEntry> {
+pub fn curate(pointer_dir: &Path, table: &impl discovery::ProcTable) -> Vec<RegistryEntry> {
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for listed in read_pointers(pointer_dir) {
@@ -341,7 +354,7 @@ pub fn curate(pointer_dir: &Path) -> Vec<RegistryEntry> {
         if !seen.insert(dir.clone()) {
             continue; // a symlink and its target both listed: curate once
         }
-        out.extend(curate_dir(&dir));
+        out.extend(curate_dir(&dir, table));
     }
     out
 }
@@ -568,7 +581,7 @@ mod tests {
         .unwrap();
         std::fs::write(pointers.join("v1"), format!("{}\n", laundered.display())).unwrap();
         assert!(
-            curate(&pointers).is_empty(),
+            curate(&pointers, &discovery::RealProc).is_empty(),
             "a symlinked .corral must not import a peer's records"
         );
 
@@ -609,7 +622,7 @@ mod tests {
         std::fs::write(pointers.join("evil"), format!("{}\n", attacker.display())).unwrap();
 
         assert!(
-            curate(&pointers).is_empty(),
+            curate(&pointers, &discovery::RealProc).is_empty(),
             "a record aiming at another box must never be vetted"
         );
     }
@@ -757,6 +770,94 @@ mod tests {
         assert_eq!(split.pending[0].0, "opencode");
     }
 
+    struct FakeProc {
+        self_ino: Option<u64>,
+        procs: Vec<discovery::ProcInfo>,
+    }
+    impl discovery::ProcTable for FakeProc {
+        fn self_pid_ns_ino(&self) -> Option<u64> {
+            self.self_ino
+        }
+        fn processes(&self) -> Vec<discovery::ProcInfo> {
+            self.procs.clone()
+        }
+    }
+
+    /// A box with one bound socket and one registry record naming it, with the
+    /// given pid fields. Returns the box dir.
+    fn crashed_box(tmp: &Path, name: &str, pid_fields: &str) -> String {
+        let boxd = tmp.join(name);
+        let regdir = boxd.join(".corral/registry");
+        std::fs::create_dir_all(&regdir).unwrap();
+        let sock = boxd.join(".corral/s1.sock");
+        // Bind and drop the listener: the socket FILE persists (as after a
+        // crash/kill/reboot), only the listener is gone — exactly the state a
+        // metadata check cannot tell from live.
+        drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
+        std::fs::write(
+            regdir.join("s1.json"),
+            format!(
+                r#"{{"sessionId":"s1","label":"pi","socket":"{}"{}}}"#,
+                sock.display(),
+                pid_fields
+            ),
+        )
+        .unwrap();
+        boxd.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn curate_demotes_a_socketed_record_whose_process_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        // pid 7 in namespace 5001 is dead (not in the table): publish dormant.
+        let dead = crashed_box(tmp.path(), "dead", r#","pid":7,"pidNamespace":5001"#);
+        // pid 8 in namespace 5001 is alive: stays live.
+        let live = crashed_box(tmp.path(), "live", r#","pid":8,"pidNamespace":5001"#);
+        // No pidNamespace: undecidable, never demoted (pre-bridge record).
+        let nons = crashed_box(tmp.path(), "nons", r#","pid":7"#);
+        let table = FakeProc {
+            self_ino: Some(1000),
+            procs: vec![discovery::ProcInfo {
+                host_pid: 30008,
+                pid_ns_ino: 5001,
+                deepest_nspid: 8,
+            }],
+        };
+        let socket_of = |dir: &str| {
+            let v = curate_dir(dir, &table);
+            assert_eq!(v.len(), 1);
+            v[0].socket.clone()
+        };
+        assert_eq!(socket_of(&dead), None, "dead pid must publish dormant");
+        assert!(socket_of(&live).is_some(), "live pid must stay live");
+        assert!(socket_of(&nons).is_some(), "undecidable must stay live");
+    }
+
+    #[test]
+    fn curate_prunes_a_stale_crashed_record() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let boxd = crashed_box(tmp.path(), "proj", r#","pid":7,"pidNamespace":5001"#);
+        let table = FakeProc {
+            self_ino: Some(1000),
+            procs: vec![],
+        };
+        let record = Path::new(&boxd).join(".corral/registry/s1.json");
+        // Fresh crash: survives as dormant.
+        assert_eq!(curate_dir(&boxd, &table).len(), 1);
+        assert!(record.exists());
+        // Past the dormant horizon: pruned like any dormant record (a crashed
+        // record's socket never clears itself, so without the pid check it
+        // would be immortal).
+        let old = SystemTime::now() - DORMANT_MAX_AGE - Duration::from_secs(60);
+        std::fs::File::open(&record)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(curate_dir(&boxd, &table).is_empty());
+        assert!(!record.exists(), "stale crashed record must be pruned");
+    }
+
     #[test]
     fn curate_scans_project_records_and_attributes_cwd() {
         let tmp = tempfile::tempdir().unwrap();
@@ -776,7 +877,7 @@ mod tests {
         std::fs::create_dir_all(&ptrdir).unwrap();
         std::fs::write(ptrdir.join("s1"), format!("{}\n", boxd.to_string_lossy())).unwrap();
 
-        let vetted = curate(&ptrdir);
+        let vetted = curate(&ptrdir, &discovery::RealProc);
         assert_eq!(vetted.len(), 1);
         assert_eq!(vetted[0].session_id, "s1");
         // cwd is the real canonical dir, not the content lie.

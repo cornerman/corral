@@ -329,6 +329,23 @@ assert not reached_idle, \
     "pi abort unexpectedly unblocked the question -> accepted limitation no longer holds"
 machine.log("e2e-pi: session/cancel left the question blocked (accepted, confirmed)")
 
+# --- 3b. a SIGKILLed session must read dormant, not live forever ---------
+# SIGKILL skips pi's session_shutdown, so the socket FILE survives in
+# proj-a/.corral while nothing listens. Before the curator's pid-liveness
+# check (NSpid bridge over the record's pid + pidNamespace) the vetted record
+# kept its socket, so corral_list_agents reported the crashed session live
+# for days and the 14-day dormant prune never applied. A is already spent
+# (wedged on the question above), so it is the natural victim.
+recs = wait_records(
+    lambda rs: any(r.get("sessionId") == sid_a and r.get("pid") for r in rs),
+    timeout=30, desc="A's record carries a pid")
+pid_a = next(r["pid"] for r in recs if r.get("sessionId") == sid_a)
+as_user(f"kill -9 {pid_a}")
+wait_records(
+    lambda rs: any(r.get("sessionId") == sid_a and not r.get("socket")
+                   for r in rs),
+    timeout=40, desc="SIGKILLed A demoted to dormant by the pid check")
+
 # --- 9. sandbox-negative: the confinement premise (BEST-EFFORT) ---------
 # Running arbitrary commands under nono needs per-command path discovery
 # (`nono learn`) just like the agents do, so these probes are best-effort

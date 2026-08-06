@@ -168,7 +168,13 @@ client of `corral-core` like any outside program, and nothing here depends on it
     `canonical_dir` (race-safe dir-fd canonicalize),
     `vet` (per-field validation: sessionId, socket-under-`<cwd>/.corral/`, cwd
     stamped from location, title/description sanitized), `curate` (scan every
-    listed workdir's `.corral/registry/`), `partition` (the registration gate:
+    listed workdir's `.corral/registry/`; a socketed record whose announced
+    process is provably gone — `discovery::record_pid_alive` over the NSpid
+    bridge, decided only when the record carries both `pid` and `pidNamespace`
+    — is published dormant and ages into the 14-day prune, since a
+    crash/kill/reboot never unlinks the socket FILE and mere file existence
+    would read as live forever, lying in the `corral_list_agents` roster),
+    `partition` (the registration gate:
     split vetted into registered vs pending), and `resolve_submission` (open an
     outbox file non-blocking, size-capped, derive the trusted `fromCwd` from
     its physical location). A refusal is a typed `SubmissionError`, not a bare
@@ -1012,9 +1018,14 @@ irrelevant to it. Shown verbatim on the agent's card.
   first), resume on Enter, dismiss
   on `d`, and are pruned when their session file is gone or the record is >14
   days stale. A crashed session (no clean shutdown, so its registry `socket`
-  stays set) is caught by a staleness sweep: the board records sockets whose
+  stays set) is demoted twice over: corrald's curation checks the record's
+  announced process via the NSpid bridge (`discovery::record_pid_alive`) and
+  publishes a dead one as dormant (so the `corral_list_agents` roster and the
+  14-day prune see the truth), and the board additionally records sockets whose
   watcher fails to connect (`dead_sockets`) and treats a dead-socketed record
-  as dormant, so a crashed agent stays resumable instead of vanishing. A
+  as dormant — the fallback for a record without `pid`+`pidNamespace`, where
+  pid liveness is undecidable and curation must not demote a living agent. A
+  crashed agent stays resumable instead of vanishing either way. A
   freshly starting session (socket set, not yet proven dead) stays on the live
   path and never flickers through the Dormant column.
 

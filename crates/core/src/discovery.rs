@@ -252,6 +252,12 @@ pub trait ProcTable {
     /// Every process the reader can see, with its namespace inode and deepest
     /// namespace-local pid.
     fn processes(&self) -> Vec<ProcInfo>;
+    /// Whether a host-level pid currently exists. Default: membership in
+    /// `processes()` (sufficient for test fakes); `RealProc` overrides with a
+    /// plain `/proc/<pid>` stat so the common host-level case needs no scan.
+    fn alive(&self, host_pid: u32) -> bool {
+        self.processes().iter().any(|p| p.host_pid == host_pid)
+    }
 }
 
 /// Translate a namespace-local pid to a host pid (the NSpid bridge). The
@@ -269,6 +275,30 @@ pub fn resolve_host_pid(table: &impl ProcTable, ns_pid: u32, pidns_ino: u64) -> 
         .into_iter()
         .find(|p| p.pid_ns_ino == pidns_ino && p.deepest_nspid == ns_pid)
         .map(|p| p.host_pid)
+}
+
+/// Whether the process a registry record names is still alive — decided only
+/// when the record carries BOTH `pid` and `pidNamespace`, because only then is
+/// the NSpid bridge's answer definitive. `None` means undecidable: no pid, a
+/// pre-bridge record without its namespace key (a namespace-local pid could
+/// collide with an unrelated host pid, so declaring it dead would demote a
+/// living agent), or a reader that cannot see `/proc` at all (which must not
+/// read every agent as dead). Used by curation to catch a crashed session
+/// whose socket file survived (a crash/kill/reboot never unlinks it, so file
+/// existence alone reads as live forever).
+pub fn record_pid_alive(
+    table: &impl ProcTable,
+    pid: Option<u32>,
+    pid_namespace: Option<u64>,
+) -> Option<bool> {
+    let (pid, ino) = (pid?, pid_namespace?);
+    table.self_pid_ns_ino()?;
+    Some(match resolve_host_pid(table, pid, ino) {
+        // Same-namespace shortcut returns the pid unverified; a bridged match
+        // already proves existence, so the extra `alive` is a harmless re-check.
+        Some(host) => table.alive(host),
+        None => false,
+    })
 }
 
 /// Resolve a socket's `(pid, pid_namespace)` to a host pid for window
@@ -295,6 +325,9 @@ pub struct RealProc;
 impl ProcTable for RealProc {
     fn self_pid_ns_ino(&self) -> Option<u64> {
         pid_ns_ino(Path::new("/proc/self"))
+    }
+    fn alive(&self, host_pid: u32) -> bool {
+        Path::new(&format!("/proc/{host_pid}")).exists()
     }
     fn processes(&self) -> Vec<ProcInfo> {
         let Ok(rd) = std::fs::read_dir("/proc") else {
@@ -642,6 +675,35 @@ mod tests {
             resolve_socket_host_pid(&table, Some(7), Some(5001)),
             Some(34521)
         );
+    }
+
+    #[test]
+    fn record_pid_alive_decides_only_with_pid_and_namespace() {
+        let table = FakeProc {
+            self_ino: Some(1000),
+            procs: vec![proc(34521, 5001, 7), proc(42, 1000, 42)],
+        };
+        // Undecidable without both keys: no pid at all, or a namespace-local
+        // pid whose namespace is unknown (it could collide with an unrelated
+        // host pid, so declaring it dead would demote a living agent).
+        assert_eq!(record_pid_alive(&table, None, Some(5001)), None);
+        assert_eq!(record_pid_alive(&table, Some(7), None), None);
+        // Bridged: a matching (ns, nspid) process proves life; no match is death.
+        assert_eq!(record_pid_alive(&table, Some(7), Some(5001)), Some(true));
+        assert_eq!(record_pid_alive(&table, Some(8), Some(5001)), Some(false));
+        // Host-level (record ns == reader ns): plain existence decides.
+        assert_eq!(record_pid_alive(&table, Some(42), Some(1000)), Some(true));
+        assert_eq!(record_pid_alive(&table, Some(43), Some(1000)), Some(false));
+    }
+
+    #[test]
+    fn record_pid_alive_is_undecidable_without_proc() {
+        // A reader that cannot see /proc must not declare every agent dead.
+        let table = FakeProc {
+            self_ino: None,
+            procs: vec![],
+        };
+        assert_eq!(record_pid_alive(&table, Some(7), Some(5001)), None);
     }
 
     #[test]

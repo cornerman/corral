@@ -35,7 +35,10 @@ pub fn refresh(
     // this machine ever ran.
     curation::prune_orphan_pointers(pointer_dir);
     let approved = approved_commands::read_approved(approved_file);
-    let split = curation::partition(curation::curate(pointer_dir), &approved);
+    let split = curation::partition(
+        curation::curate(pointer_dir, &corral_core::discovery::RealProc),
+        &approved,
+    );
     if std::fs::create_dir_all(state_registry_dir).is_err() {
         return split.pending;
     }
