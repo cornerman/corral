@@ -551,10 +551,13 @@ client of `corral-core` like any outside program, and nothing here depends on it
   `title` on rename. The title broadcasts whenever it changes, on rename and on
   `turn_end` (so the first-user-message fallback title reaches clients that
   connected before it existed, not only explicit renames). Serves `initialize`, `session/list` (id, title,
-  cwd), `session/prompt` (injects via `pi.sendUserMessage`; queued as follow-up
-  while busy; responds with stopReason once the message queue drains, coarse,
-  documented in-file), `session/load` (replays the effective system prompt as a
-  synthetic `system_prompt` update, then user/assistant message text),
+  cwd), `session/prompt` (injects via `pi.sendUserMessage` with
+  `deliverAs: "steer"`, so a busy session takes the message at its next turn
+  boundary rather than after the whole run stops — a parent in a tool loop must
+  see its spawned child's session id mid-run; responds with stopReason once the
+  message queue drains, coarse, documented in-file), `session/load` (replays the
+  effective system prompt as a synthetic `system_prompt` update, then
+  user/assistant message text),
   `session/cancel` -> abort. Broadcasts to all connected
   clients: `session/update` message and tool events (whole messages on
   `message_end`; token deltas deferred), `session_info_update` on rename; and
@@ -996,9 +999,18 @@ irrelevant to it. Shown verbatim on the agent's card.
   `~/.corral/whitelist` and the next poll releases the pending message and
   delivers it (the file is re-read every tick). No auto-deny; the tray count
   shows what is waiting, and the tray stays the reliable interactive path.
-- A message to a Running session is queued by that adapter as a follow-up, so it
-  can intrude on a human-driven turn (the provenance tag makes that visible). A
-  never-inject-while-Running policy is deferred until real use decides.
+- A message to a Running session is steered in at the next turn boundary (pi;
+  other adapters deliver as early as their harness allows — Claude only at
+  `Stop`, Cursor in a separate chat), so it can intrude on a human-driven turn
+  (the provenance tag makes that visible). Early delivery is the deliberate
+  tradeoff: a spawn handshake is worthless if it lands after the parent already
+  finished. A never-inject-while-Running policy is deferred until real use
+  decides.
+- No e2e scenario discriminates steer from follow-up delivery. Doing so needs a
+  tool call slow enough to inject *during*, and the stub LLM closes a turn as
+  soon as a tool result lands — so the window is neither controllable nor
+  deterministic. The scenarios cover that a message to a running session
+  arrives, not how soon.
 - A spawn is fire-and-forget: corrald returns no session id, so the caller learns
   its child's handle only from the child's own first message (the charter tells
   it to send one). Waiting for a newcomer to announce would be an unbounded wait

@@ -248,11 +248,15 @@ socket to its record and route a session-addressed message to the right agent.
 Inject a user message into the session. Params carry `prompt` as an array of
 content blocks; an agent MUST read at least `{ "type": "text", "text": … }`
 blocks. Respond with `{ "stopReason": … }` once the injected message has been
-consumed by a turn. Whether the message runs immediately or is queued as a
-follow-up while the agent is busy is implementation latitude; a busy agent
-SHOULD queue rather than reject. Serving `session/prompt` is what makes a
-consumer able to deliver messages to the session; an agent that omits it is
-discoverable and triageable but not messageable.
+consumed by a turn. A busy agent SHOULD queue rather than reject, and SHOULD
+deliver as early as its harness allows — at the next turn boundary where one
+exists, not only once the whole run stops. The deadline matters because a
+spawned agent's first reply carries the only copy of its session id (Appendix
+A): a parent working through a long tool loop must be able to see it mid-run.
+An agent whose harness offers no mid-run injection point delivers at the end of
+the run; that is a platform limit, not a choice. Serving `session/prompt` is
+what makes a consumer able to deliver messages to the session; an agent that
+omits it is discoverable and triageable but not messageable.
 
 ### `session/cancel` (SHOULD)
 
