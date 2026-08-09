@@ -16,8 +16,8 @@
  * null, leaving a dormant, resumable record. Served surface:
  *   initialize            identity (agentInfo)
  *   session/list          this session: id, title, cwd
- *   session/prompt        inject a user message (queued as follow-up while
- *                         the agent is busy); responds on turn completion
+ *   session/prompt        inject a user message (steered into a busy agent at
+ *                         its next turn boundary); responds on turn completion
  *   session/load           replay the effective system prompt (getSystemPrompt,
  *                          a synthetic system_prompt update) then the full
  *                          message history (user/assistant text only, not tool
@@ -531,9 +531,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (_event, ctx) => {
 		// Resolve waiting session/prompt requests once the queue is drained:
-		// a prompt delivered as follow-up is processed before this condition
-		// holds, so "idle with nothing pending" means every injected message
-		// has had its turn. Coarser than per-message tracking, documented so.
+		// a steered prompt is consumed before this condition holds, so "idle
+		// with nothing pending" means every injected message has had its turn.
+		// Coarser than per-message tracking, documented so.
 		if (pendingPrompts.length === 0 || ctx.hasPendingMessages()) return;
 		while (pendingPrompts.length > 0) {
 			const p = pendingPrompts.shift();
@@ -728,14 +728,17 @@ export default function (pi: ExtensionAPI) {
 					.map((b) => b.text)
 					.join("\n");
 				if (!text) return fail(-32602, "prompt has no text content");
-				// Busy sessions get the message queued as a follow-up; the
-				// request stays open until the queue drains (see agent_end).
+				// Steering, not follow-up: a busy session takes the message at its
+				// next turn boundary (after the running turn's tool calls, before the
+				// next LLM call) instead of only once the whole run stops. That
+				// difference is load-bearing for the spawn handshake: a spawned
+				// agent's first reply carries the only copy of its session id, so a
+				// parent still working through a tool loop must see it mid-run rather
+				// than after it goes idle on its own. `deliverAs` applies only while
+				// streaming (extensions.md), so one unconditional call covers the idle
+				// case too. The request stays open until the queue drains (agent_end).
 				pendingPrompts.push({ conn, id: msg.id });
-				if (currentCtx.isIdle()) {
-					pi.sendUserMessage(text);
-				} else {
-					pi.sendUserMessage(text, { deliverAs: "followUp" });
-				}
+				pi.sendUserMessage(text, { deliverAs: "steer" });
 				break;
 			}
 			case "session/load": {
