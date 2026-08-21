@@ -158,6 +158,16 @@ launch command runs until you approve it once. Adding corral is **risk-neutral**
 precondition (a whole-process workdir sandbox), the full threat model, and the
 accepted risks are in [SECURITY.md](SECURITY.md).
 
+## Built With AI
+
+Nearly all of corral was written by AI agents under human direction: a human set
+the design, the invariants and the gates, and reviewed those rather than every
+line. So judge it by what you can run (`just test`, `just lint`, `just e2e`) and by
+where the risk sits. The pure core (registry parsing, the vetting boundary,
+navigation, the card-move table) is pinned by unit tests, and the whole loop by
+NixOS VM smoke tests that take real turns against a stub LLM through the real
+home-manager module.
+
 ## Learn More
 
 - [CONVENTION.md](CONVENTION.md) — the filesystem convention any agent joins by
