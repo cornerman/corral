@@ -194,9 +194,12 @@ or takes turns, which is really a subagent-shaped need.
   `~/.corral/corrald.sock` (reachable by the sandboxed extension because
   `~/.corral` is on its allowlist, the same reason the outbox file works). This
   gives an immediate ack ("accepted for routing", not "delivered") and turns
-  "daemon down" from a silent queue into a visible connect failure. TCP is
-  rejected: it breaks the "no network exposure, peer-auth via directory
-  permissions" property. The registry stays filesystem-based, not a socket
+  "daemon down" from a silent queue into a visible connect failure. TCP was
+  rejected for the *local* submit path, since it breaks the "no network
+  exposure, peer-auth via directory permissions" property that holds on one
+  host; remote harnesses (in scope since 2026-07-26, design pending) need a
+  network transport, and the open question is how far it stays outside corral's
+  own process. The registry stays filesystem-based, not a socket
   command, because it is broadcast state read by many consumers (board and
   router alike) and must survive restarts and work with no daemon running.
 

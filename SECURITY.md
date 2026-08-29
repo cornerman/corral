@@ -44,9 +44,13 @@ boundary.
   blast-radius reduction, not a new boundary; see TODO.md "Confine the broker".
   Being out of scope here is not a regression from adding corral — see "Adoption
   Is Risk-Neutral" below.
-- **Multi-host or remote agents.** `[out of scope]` Physical-location identity
-  is same-host. Message signing with a one-time location proof at enrollment is
-  the clean path if remote agents ever appear.
+Multi-host agents were out of scope until 2026-07-26 and are now **in scope,
+under design**: harnesses on other hosts (including Android) join the same
+board. Physical-location identity is same-host by construction, so a remote
+session's identity cannot come from where its record lives; it must come from
+an authenticated peer host, and the whitelist pair becomes `(host, dir)`. Until
+that design lands, nothing here defends a remote agent, because none can
+connect.
 
 **The load-bearing precondition:** the isolation primitive assumes the *whole*
 agent process is boxed to its workdir (the nono / bwrap model, or a per-agent
