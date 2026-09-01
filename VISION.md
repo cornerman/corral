@@ -116,7 +116,7 @@ model maps to whole-agent boxing, not to a tool-level sandbox.
 
 Two tiers of multi-agent work, split by the box:
 
-- **Inside one session: subagents.** pi's `spawn_agent` fans out helpers that
+- **Inside one session: subagents.** pi's `spawn_subagent` fans out helpers that
   share the sandbox and workdir, die with the parent, and have no window of
   their own. No escape from the box, no corral. Cheap and contained.
 - **Across sessions: corral.** Reaching a *different* box (another workdir,

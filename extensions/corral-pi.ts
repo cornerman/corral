@@ -189,8 +189,10 @@ export default function (pi: ExtensionAPI) {
 		name: "corral_spawn_agent",
 		label: "Spawn agent",
 		description:
-			"Start a NEW coding-agent session in a directory, with a task as its first prompt. Use " +
-			"it to hand work to a fresh agent (its own directory, its own transcript); to talk to an " +
+			"Start a NEW coding-agent session — a fresh harness process (pi, opencode, …) launched " +
+			"in its own directory, with a task as its first prompt. It runs as a full agent of its " +
+			"own, with its own window, transcript and session id. Use " +
+			"it to hand work to a fresh agent; to talk to an " +
 			"agent that already runs, use corral_message_agent with its session id.\n\n" +
 			"The new agent is always dedicated to you: corral never hands your task to a session " +
 			"someone else is already using. It starts with no window (see window), and its charter " +
