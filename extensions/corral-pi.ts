@@ -781,13 +781,32 @@ export default function (pi: ExtensionAPI) {
 							type?: string;
 							message?: { role?: string; content?: unknown };
 						}>) {
+							// A custom_message entry (an injected operator/inter-agent
+							// message, delivered as a pi custom message rather than a user
+							// message) still belongs in the exported transcript. Replay it
+							// as an incoming user_message_chunk; its provenance tag already
+							// rides in the text. Its content sits on the entry top level
+							// (not under `.message`), same shape as a user message.
+							if (e.type === "custom_message") {
+								const text = messageText(e as { content?: unknown });
+								if (text) {
+									conn.write(
+										sessionUpdateLine({
+											sessionUpdate: "user_message_chunk",
+											content: { type: "text", text },
+										}),
+									);
+								}
+								continue;
+							}
 							// Deliberate scope cut: only `type: "message"` entries
-							// (role user/assistant) are replayed, not tool_call/other
-							// SessionTreeEntry types (thinking_level_change,
-							// model_change, compaction, branch_summary, custom, label,
-							// session_info) -- no established ACP mapping for those, and
-							// the feature's ask is message history, not a tool-call log
-							// (YAGNI). Mirrors message_end's own role filter above.
+							// (role user/assistant) beyond custom_message are replayed, not
+							// tool_call/other SessionTreeEntry types (thinking_level_change,
+							// model_change, compaction, branch_summary, the data-only
+							// `custom` type, label, session_info) -- no established ACP
+							// mapping for those, and the feature's ask is message history,
+							// not a tool-call log (YAGNI). Mirrors message_end's own role
+							// filter above.
 							if (e.type !== "message") continue;
 							const role = e.message?.role;
 							if (role !== "user" && role !== "assistant") continue;
