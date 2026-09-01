@@ -551,8 +551,10 @@ client of `corral-core` like any outside program, and nothing here depends on it
   `title` on rename. The title broadcasts whenever it changes, on rename and on
   `turn_end` (so the first-user-message fallback title reaches clients that
   connected before it existed, not only explicit renames). Serves `initialize`, `session/list` (id, title,
-  cwd), `session/prompt` (injects via `pi.sendUserMessage` with
-  `deliverAs: "steer"`, so a busy session takes the message at its next turn
+  cwd), `session/prompt` (injects via `pi.sendMessage` as a custom message —
+  `customType: "corral-message"`, `triggerTurn: true`, `deliverAs: "steer"` — so
+  socket-injected text is not treated as user-typed input yet still enters LLM
+  context, and a busy session takes the message at its next turn
   boundary rather than after the whole run stops — a parent in a tool loop must
   see its spawned child's session id mid-run; responds with stopReason once the
   message queue drains, coarse, documented in-file), `session/load` (replays the

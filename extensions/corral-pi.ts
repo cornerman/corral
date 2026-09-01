@@ -16,8 +16,9 @@
  * null, leaving a dormant, resumable record. Served surface:
  *   initialize            identity (agentInfo)
  *   session/list          this session: id, title, cwd
- *   session/prompt        inject a user message (steered into a busy agent at
- *                         its next turn boundary); responds on turn completion
+ *   session/prompt        inject a custom message (role custom_message, steered
+ *                         into a busy agent at its next turn boundary); responds
+ *                         on turn completion
  *   session/load           replay the effective system prompt (getSystemPrompt,
  *                          a synthetic system_prompt update) then the full
  *                          message history (user/assistant text only, not tool
@@ -728,17 +729,26 @@ export default function (pi: ExtensionAPI) {
 					.map((b) => b.text)
 					.join("\n");
 				if (!text) return fail(-32602, "prompt has no text content");
-				// Steering, not follow-up: a busy session takes the message at its
-				// next turn boundary (after the running turn's tool calls, before the
-				// next LLM call) instead of only once the whole run stops. That
-				// difference is load-bearing for the spawn handshake: a spawned
-				// agent's first reply carries the only copy of its session id, so a
-				// parent still working through a tool loop must see it mid-run rather
-				// than after it goes idle on its own. `deliverAs` applies only while
-				// streaming (extensions.md), so one unconditional call covers the idle
-				// case too. The request stays open until the queue drains (agent_end).
+				// A message arriving over the ACP socket (operator `m` or an
+				// agent-to-agent send) is not text the human typed into this session,
+				// so it is delivered as a custom message (pi role "custom_message")
+				// rather than a user message; it still participates in LLM context.
+				// One `customType` covers both delivery paths, since this handler
+				// cannot distinguish them. `deliverAs: "steer"` is load-bearing: a
+				// busy session takes the message at its next turn boundary (after the
+				// running turn's tool calls, before the next LLM call) instead of only
+				// once the whole run stops -- a spawned agent's first reply carries the
+				// only copy of its session id, so a parent still working through a tool
+				// loop must see it mid-run. `deliverAs` applies only while streaming
+				// (extensions.md), and `triggerTurn: true` makes an idle session start
+				// a turn and respond, so one unconditional call covers both cases.
+				// `display: true` keeps it visible in the transcript. The request
+				// stays open until the queue drains (agent_end).
 				pendingPrompts.push({ conn, id: msg.id });
-				pi.sendUserMessage(text, { deliverAs: "steer" });
+				pi.sendMessage(
+					{ customType: "corral-message", content: text, display: true },
+					{ deliverAs: "steer", triggerTurn: true },
+				);
 				break;
 			}
 			case "session/load": {
