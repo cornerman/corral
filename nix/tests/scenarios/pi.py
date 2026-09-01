@@ -102,7 +102,10 @@ assert stub_saw("operator-turn"), "stub never saw the operator turn"
 # --- 2b. history export: session/load replays the turn we just ran ------
 load_res = json.loads(acp(f"load {sock_a} {sid_a} 15"))
 assert load_res.get("ok"), f"pi session/load failed: {load_res}"
-assert load_res["chunks"] >= 2, f"expected at least a user+assistant chunk: {load_res}"
+# The driving prompt arrives over session/prompt, so it is a custom message
+# (replayed as a user_message_chunk), not a user-typed message -- expect at
+# least an injected(custom)+assistant chunk pair.
+assert load_res["chunks"] >= 2, f"expected at least an injected(custom)+assistant chunk: {load_res}"
 # pi has no system-prompt session entry (session-format.md), so the export
 # must synthesize it from ctx.getSystemPrompt() as a system_prompt update.
 assert load_res.get("systemPrompt"), f"pi session/load did not replay the system prompt: {load_res}"
