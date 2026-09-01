@@ -843,13 +843,29 @@ export default function (pi: ExtensionAPI) {
 		// never fired message_end here).
 		let raw = pi.getSessionName() ?? firstUserText ?? undefined;
 		if (!raw) {
-			for (const e of ctx.sessionManager.getEntries() as Array<{ type?: string; message?: unknown }>) {
-				if (e.type === "message" && (e.message as { role?: string })?.role === "user") {
-					const t = messageText(e.message as { content?: unknown });
-					if (t) {
-						raw = t;
-						break;
-					}
+			for (const e of ctx.sessionManager.getEntries() as Array<{
+				type?: string;
+				message?: unknown;
+				content?: unknown;
+			}>) {
+				// The fallback title is the first incoming message. That is a user
+				// message (content under `.message`) or an injected custom message
+				// (content on the entry top level, same shape): a session driven only
+				// by socket injection has no user message, so custom_message must
+				// count too or the card stays untitled. First match in entry order
+				// wins. Any provenance tag in an inter-agent message rides along --
+				// the extension does not know that format (mailbox.rs owns it).
+				const src =
+					e.type === "message" && (e.message as { role?: string })?.role === "user"
+						? (e.message as { content?: unknown })
+						: e.type === "custom_message"
+							? (e as { content?: unknown })
+							: undefined;
+				if (!src) continue;
+				const t = messageText(src);
+				if (t) {
+					raw = t;
+					break;
 				}
 			}
 		}
