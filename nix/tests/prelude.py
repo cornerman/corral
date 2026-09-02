@@ -124,8 +124,19 @@ def stub_post_rule(rule_json):
 
 
 def stub_requests():
-    out = machine.succeed("curl -s 127.0.0.1:6556/requests")
-    return json.loads(out)
+    # The nixos test-driver reads command output over a shell socket that tears
+    # large payloads at recv chunk boundaries; the stub's /requests log grows
+    # past 100 KB late in a scenario. The JSON is valid at the source (the stub
+    # dumps REQUESTS under a lock), so a torn read is a transport artifact --
+    # re-fetch until it parses instead of crashing on a truncated copy.
+    out = ""
+    for _ in range(10):
+        out = machine.succeed("curl -s 127.0.0.1:6556/requests")
+        try:
+            return json.loads(out)
+        except ValueError:
+            time.sleep(0.3)
+    return json.loads(out)  # exhausted retries: re-raise on the last payload
 
 
 def dump_messaging():
