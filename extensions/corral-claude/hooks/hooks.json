@@ -1,5 +1,5 @@
 {
-  "//": "corral-claude plugin hooks. Auto-discovered when the plugin is enabled; no manual settings.json merge. ${CLAUDE_PLUGIN_ROOT} is substituted per arg (exec form), so paths are never hardcoded. Requires `node` (>=23, for native TS type-stripping) on PATH; bun crashes under Landlock sandboxes.",
+  "description": "corral-claude: announce this Claude Code session to the corral board and deliver board/agent messages. Details: README.md.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,6 @@
         "hooks": [
           { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts"] },
           {
-            "//": "Doorbell armed before the first turn so a board/agent message reaches a session that has not yet prompted (no Stop has fired to arm it otherwise).",
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hook.ts", "await"],
